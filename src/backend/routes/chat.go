@@ -16,14 +16,19 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/hpwn/EloraChat/src/backend/pkg/storage"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/jdavasligil/emodl"
 )
 
-// Initialize a Redis client as a global variable.
-var redisClient *redis.Client
-var ctx = context.Background()
+// Initialize clients as global variables.
+var (
+	redisClient *redis.Client
+	sqliteDB    *storage.DB
+	ctx         = context.Background()
+	chatHandler *ChatHandler
+)
 
 type CmdMap struct {
 	data sync.Map
@@ -92,14 +97,20 @@ func init() {
 		ConnMaxLifetime: 30 * time.Minute,            // Maximum amount of time a connection may be reused.
 	})
 
-	// Context for Redis operations
-	ctx := context.Background()
-
 	// Check the Redis connection
 	_, err := redisClient.Ping(ctx).Result()
 	if err != nil {
 		log.Fatalf("redis: Failed to connect to Redis: %v", err)
 	}
+
+	// Initialize SQLite database
+	sqliteDB, err = storage.NewDB()
+	if err != nil {
+		log.Fatalf("sqlite: Failed to initialize database: %v", err)
+	}
+
+	// Initialize chat handler
+	chatHandler = NewChatHandler(sqliteDB, redisClient)
 
 	// Load third party emotes
 	downloader := emodl.NewDownloader(emodl.DownloaderOptions{
@@ -214,15 +225,9 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 			continue
 		}
 
-		// Add the modified message to Redis Stream.
-		_, err = redisClient.XAdd(ctx, &redis.XAddArgs{
-			Stream: "chatMessages",
-			Values: map[string]any{"message": string(modifiedMessage)},
-			MaxLen: 100,
-			Approx: true,
-		}).Result()
-		if err != nil {
-			log.Printf("redis: Failed to add message to stream: %v, Modified message: %s\n", err, string(modifiedMessage))
+		// Process the message using the chat handler
+		if err := chatHandler.ProcessMessage(modifiedMessage); err != nil {
+			log.Printf("chat: Failed to process message: %v\n", err)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -232,143 +237,60 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 
 // StreamChat initializes a WebSocket connection and streams chat messages
 func StreamChat(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Print("ws: WebSocket upgrade error:", err)
-		return
-	}
-	defer conn.Close()
-
-	// Channel to signal closure of WebSocket connection
-	done := make(chan struct{})
-	messageChan := make(chan []byte, 8)
-
-	lastID := "0" // Start from the beginning of the stream
-
-	// Read the last 100 messages from the stream to send to the client immediately.
-	streams, err := redisClient.XRevRangeN(ctx, "chatMessages", "+", "-", 100).Result()
-	if err != nil {
-		log.Printf("redis: Failed to read messages from stream: %v\n", err)
-		return
-	}
-
-	// Send the messages in reverse order so the newest will be at the bottom
-	for i := len(streams) - 1; i >= 0; i-- {
-		message := streams[i]
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(message.Values["message"].(string))); err != nil {
-			log.Println("ws: WebSocket write error:", err)
-			return
-		}
-		if message.ID > lastID {
-			lastID = message.ID // Update last ID to the newest message
-		}
-	}
-
-	// Go routine to receive new messages from Redis Stream and forward them to WebSocket
-	go func() {
-		for {
-			streams, err := redisClient.XRead(ctx, &redis.XReadArgs{
-				Streams: []string{"chatMessages", lastID},
-				Block:   0,
-			}).Result()
-
-			if err != nil {
-				log.Println("redis: Error reading from stream:", err)
-				return
-			}
-
-			for _, stream := range streams {
-				for _, message := range stream.Messages {
-					// Before sending a message to the client
-					// log.Printf("Sending message to client: %s\n", message)
-					messageChan <- []byte(message.Values["message"].(string))
-					lastID = message.ID // Update last ID to the newest message
-				}
-			}
-		}
-	}()
-
-	// Websocket writer
-	go func() {
-		// Keep alive ticker
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case m := <-messageChan:
-				if err := conn.WriteMessage(websocket.TextMessage, m); err != nil {
-					log.Println("ws: WebSocket write error:", err)
-					return
-				}
-			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.TextMessage, []byte("__keepalive__")); err != nil {
-					log.Println("ws: Failed to send keep-alive message:", err)
-					return
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	// Read loop to keep connection alive and detect close
-	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
-				log.Println("ws: WebSocket read error, closing connection:", err)
-			}
-			close(done)
-			break
-		}
-	}
+	chatHandler.HandleWebSocket(w, r)
 }
 
 func ImageProxy(w http.ResponseWriter, r *http.Request) {
-	imageURL := r.URL.Query().Get("url")
-	if imageURL == "" {
-		http.Error(w, "Missing URL parameter", http.StatusBadRequest)
+	vars := mux.Vars(r)
+	url := vars["url"]
+	if url == "" {
+		http.Error(w, "URL parameter is required", http.StatusBadRequest)
 		return
 	}
 
-	resp, err := http.Get(imageURL)
-	if err != nil || resp.StatusCode == 404 {
-		// Log error and serve a default placeholder image
-		log.Printf("http: Error fetching image or not found: %s", imageURL)
-		http.ServeFile(w, r, "../public/refresh.png")
+	// Make a request to the image URL
+	resp, err := http.Get(url)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to fetch image: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Copy headers
-	for key, value := range resp.Header {
-		w.Header().Set(key, value[0])
+	// Copy the response headers
+	for k, v := range resp.Header {
+		w.Header()[k] = v
 	}
 
-	// Stream the image content
+	// Set CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+
+	// Copy the status code
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+
+	// Copy the body
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		log.Printf("Failed to copy image response: %v", err)
+	}
 }
 
 // StopChatFetches stops all ongoing chat fetch commands
 func StopChatFetches(w http.ResponseWriter, r *http.Request) {
-	chatFetchCmds.Range(func(key string, cmd *exec.Cmd) bool {
-		if cmd != nil && cmd.Process != nil {
-			err := cmd.Process.Kill()
-			if err != nil {
-				log.Printf("http: Failed to stop chat fetch command: %v", err)
-			}
+	chatFetchCmds.Range(func(url string, cmd *exec.Cmd) bool {
+		if err := cmd.Process.Kill(); err != nil {
+			log.Printf("Failed to kill chat fetch process for %s: %v", url, err)
 		}
 		return true
 	})
-	fmt.Fprintln(w, "Chat fetch commands stopped. Restarting...")
+	w.WriteHeader(http.StatusOK)
 }
 
 // SetupChatRoutes sets up WebSocket routes
 func SetupChatRoutes(router *mux.Router) {
 	// Public routes
-	router.HandleFunc("/ws/chat", StreamChat).Methods("GET")
-	router.HandleFunc("/imageproxy", ImageProxy).Methods("GET")
+	router.HandleFunc("/ws", StreamChat)
+	router.HandleFunc("/image/{url:.*}", ImageProxy).Methods("GET", "OPTIONS")
+	router.HandleFunc("/stop", StopChatFetches).Methods("POST")
 
 	// Subrouter for chat routes that require authentication
 	protectedRoutes := router.PathPrefix("").Subrouter()

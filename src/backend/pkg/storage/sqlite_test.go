@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-	"time"
 )
 
 const testDBPath = "test_chat.db"
 
 func cleanup() {
-	os.Remove(testDBPath)
+	os.Remove("test_chat.db")
 }
 
 func setupTest(t *testing.T) *DB {
@@ -40,17 +39,23 @@ func TestMain(m *testing.M) {
 }
 
 func TestNewDB(t *testing.T) {
-	db := setupTest(t)
+	cleanup()
+	defer cleanup()
+
+	db, err := NewDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
 	defer db.Close()
 
-	// Verify the database is accessible
+	// Test that we can ping the database
 	if err := db.Ping(); err != nil {
 		t.Fatalf("Failed to ping database: %v", err)
 	}
 
 	// Verify the messages table exists
 	var tableName string
-	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").Scan(&tableName)
+	err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").Scan(&tableName)
 	if err != nil {
 		t.Fatalf("Failed to verify messages table: %v", err)
 	}
@@ -70,52 +75,109 @@ func TestNewDB(t *testing.T) {
 }
 
 func TestMessageOperations(t *testing.T) {
-	db := setupTest(t)
+	cleanup()
+	defer cleanup()
+
+	db, err := NewDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
 	defer db.Close()
 
-	// Get current time before insertion
-	beforeInsert := time.Now().Unix()
-	time.Sleep(time.Millisecond * 100) // Small delay to ensure timestamp difference
-
-	// Test message insertion
-	testData := json.RawMessage(`{"platform": "test", "message": "hello"}`)
-	if err := db.InsertMessage(testData); err != nil {
+	// Test inserting a message
+	msg := json.RawMessage(`{"author": "test", "message": "hello"}`)
+	if err := db.InsertMessage(msg); err != nil {
 		t.Fatalf("Failed to insert message: %v", err)
 	}
 
-	time.Sleep(time.Millisecond * 100) // Small delay to ensure timestamp difference
-	afterInsert := time.Now().Unix()
-
-	// Test retrieving latest messages
-	messages, err := db.GetLatestMessages(1)
+	// Test retrieving messages
+	messages, err := db.GetMessages(0, 9999999999)
 	if err != nil {
-		t.Fatalf("Failed to get latest messages: %v", err)
+		t.Fatalf("Failed to get messages: %v", err)
 	}
+
 	if len(messages) != 1 {
-		t.Errorf("Expected 1 message, got %d", len(messages))
-	}
-	if string(messages[0].Data) != string(testData) {
-		t.Errorf("Expected message data %s, got %s", testData, messages[0].Data)
+		t.Fatalf("Expected 1 message, got %d", len(messages))
 	}
 
-	// Test retrieving messages by time range
-	messages, err = db.GetMessages(beforeInsert, afterInsert)
+	if string(messages[0].Data) != string(msg) {
+		t.Errorf("Expected message data %s, got %s", string(msg), string(messages[0].Data))
+	}
+}
+
+func TestGetMessagesAfterID(t *testing.T) {
+	cleanup()
+	defer cleanup()
+
+	db, err := NewDB()
 	if err != nil {
-		t.Fatalf("Failed to get messages by time range: %v", err)
+		t.Fatalf("Failed to create test database: %v", err)
 	}
-	if len(messages) != 1 {
-		t.Errorf("Expected 1 message in time range, got %d", len(messages))
-	}
-	if string(messages[0].Data) != string(testData) {
-		t.Errorf("Expected message data %s, got %s", testData, messages[0].Data)
+	defer db.Close()
+
+	// Insert test messages
+	messages := []json.RawMessage{
+		json.RawMessage(`{"author": "user1", "message": "test1"}`),
+		json.RawMessage(`{"author": "user2", "message": "test2"}`),
+		json.RawMessage(`{"author": "user3", "message": "test3"}`),
 	}
 
-	// Test retrieving messages outside time range
-	messages, err = db.GetMessages(0, beforeInsert-1)
-	if err != nil {
-		t.Fatalf("Failed to get messages outside time range: %v", err)
+	for _, msg := range messages {
+		if err := db.InsertMessage(msg); err != nil {
+			t.Fatalf("Failed to insert test message: %v", err)
+		}
 	}
-	if len(messages) != 0 {
-		t.Errorf("Expected 0 messages outside time range, got %d", len(messages))
+
+	// Test getting messages after ID 1
+	msgs, err := db.GetMessagesAfterID(1, 2)
+	if err != nil {
+		t.Fatalf("Failed to get messages after ID: %v", err)
+	}
+
+	if len(msgs) != 2 {
+		t.Errorf("Expected 2 messages, got %d", len(msgs))
+	}
+
+	if msgs[0].ID != 2 {
+		t.Errorf("Expected first message ID to be 2, got %d", msgs[0].ID)
+	}
+
+	if msgs[1].ID != 3 {
+		t.Errorf("Expected second message ID to be 3, got %d", msgs[1].ID)
+	}
+}
+
+func TestGetLastMessageID(t *testing.T) {
+	cleanup()
+	defer cleanup()
+
+	db, err := NewDB()
+	if err != nil {
+		t.Fatalf("Failed to create test database: %v", err)
+	}
+	defer db.Close()
+
+	// Test empty database
+	lastID, err := db.GetLastMessageID()
+	if err != nil {
+		t.Fatalf("Failed to get last message ID: %v", err)
+	}
+	if lastID != 0 {
+		t.Errorf("Expected last ID to be 0 for empty database, got %d", lastID)
+	}
+
+	// Insert test message
+	msg := json.RawMessage(`{"author": "user1", "message": "test"}`)
+	if err := db.InsertMessage(msg); err != nil {
+		t.Fatalf("Failed to insert test message: %v", err)
+	}
+
+	// Test with one message
+	lastID, err = db.GetLastMessageID()
+	if err != nil {
+		t.Fatalf("Failed to get last message ID: %v", err)
+	}
+	if lastID != 1 {
+		t.Errorf("Expected last ID to be 1, got %d", lastID)
 	}
 }

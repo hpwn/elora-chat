@@ -152,3 +152,47 @@ func (db *DB) GetLatestMessages(limit int) ([]Message, error) {
 
 	return messages, nil
 }
+
+// GetMessagesAfterID retrieves messages after a specific ID
+func (db *DB) GetMessagesAfterID(lastID int64, limit int) ([]Message, error) {
+	query := `
+		SELECT id, json, timestamp 
+		FROM messages 
+		WHERE id > ?
+		ORDER BY id ASC 
+		LIMIT ?
+	`
+	rows, err := db.Query(query, lastID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query messages after ID: %v", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		if err := rows.Scan(&msg.ID, &msg.Data, &msg.Timestamp); err != nil {
+			return nil, fmt.Errorf("failed to scan message: %v", err)
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating messages: %v", err)
+	}
+
+	return messages, nil
+}
+
+// GetLastMessageID returns the ID of the most recent message
+func (db *DB) GetLastMessageID() (int64, error) {
+	var lastID int64
+	query := `SELECT id FROM messages ORDER BY id DESC LIMIT 1`
+	err := db.QueryRow(query).Scan(&lastID)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to get last message ID: %v", err)
+	}
+	return lastID, nil
+}
