@@ -12,6 +12,8 @@ services:
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - PORT=${PORT}
       - DEPLOYED_URL=${DEPLOYED_URL}
+    volumes:
+      - sqlite_data:/app/data
     develop:
       watch:
         - action: sync
@@ -28,3 +30,6 @@ services:
     image: "redis:alpine"
     ports:
       - "6379:6379"
+
+volumes:
+  sqlite_data:
