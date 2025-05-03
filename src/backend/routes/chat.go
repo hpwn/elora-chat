@@ -225,6 +225,9 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 			continue
 		}
 
+		// Debug: Log outgoing message JSON to verify emote data
+		log.Printf("Outgoing chat message: %s\n", string(modifiedMessage))
+
 		// Process the message using the chat handler
 		if err := chatHandler.ProcessMessage(modifiedMessage); err != nil {
 			log.Printf("chat: Failed to process message: %v\n", err)
@@ -243,6 +246,9 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 func ImageProxy(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	url := vars["url"]
+	if url == "" {
+		url = r.URL.Query().Get("url")
+	}
 	if url == "" {
 		http.Error(w, "URL parameter is required", http.StatusBadRequest)
 		return
@@ -288,8 +294,9 @@ func StopChatFetches(w http.ResponseWriter, r *http.Request) {
 // SetupChatRoutes sets up WebSocket routes
 func SetupChatRoutes(router *mux.Router) {
 	// Public routes
-	router.HandleFunc("/ws", StreamChat)
+	router.HandleFunc("/ws/chat", StreamChat)
 	router.HandleFunc("/image/{url:.*}", ImageProxy).Methods("GET", "OPTIONS")
+	router.HandleFunc("/imageproxy", ImageProxy).Methods("GET") // Backward compatibility
 	router.HandleFunc("/stop", StopChatFetches).Methods("POST")
 
 	// Subrouter for chat routes that require authentication
