@@ -31,11 +31,6 @@ Thumbs.db
 # Ignore local .env files
 .env*
 
-# HTMX frontend specific
-/frontend/node_modules/
-/frontend/build/
-/frontend/.cache
-
 # Miscellaneous
 *.tgz
 *.swp
