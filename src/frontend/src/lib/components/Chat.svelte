@@ -1,10 +1,11 @@
 <script lang="ts">
-  import type { Message } from '$lib/types/messages';
-  import { onMount } from 'svelte';
+  import type { Message, Keymods } from '$lib/types/messages';
+  import { onMount, setContext } from 'svelte';
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
   import { deployedUrl, useDeployedApi } from '$lib/config';
+  import { SvelteSet } from 'svelte/reactivity';
 
   let container: HTMLDivElement;
 
@@ -14,6 +15,36 @@
   let processing = $state(false);
   let paused = $state(false);
   let newMessageCount = $state(0);
+  let blacklist = loadBlacklist();
+  let keymods: Keymods = {
+    ctrl: false,
+    shift: false,
+    alt: false,
+    reset() {
+      this.ctrl = false;
+      this.shift = false;
+      this.alt = false;
+    }
+  };
+
+  setContext('blacklist', blacklist);
+  setContext('keymods', keymods);
+
+  function loadBlacklist(): SvelteSet<string> {
+    const list = window.localStorage.getItem('blacklist');
+    if (!list) {
+      return new SvelteSet();
+    }
+    const parsedList = JSON.parse(list);
+    if (!parsedList) {
+      return new SvelteSet();
+    }
+    return new SvelteSet(parsedList);
+  }
+
+  function saveBlacklist() {
+    window.localStorage.setItem('blacklist', JSON.stringify([...blacklist]));
+  }
 
   function pauseChat() {
     paused = true;
@@ -25,6 +56,14 @@
       container.scrollTop = container.scrollHeight;
       newMessageCount = 0;
     }, 0);
+  }
+
+  function togglePause() {
+    if (paused) {
+      unpauseChat();
+    } else {
+      pauseChat();
+    }
   }
 
   function processMessageQueue() {
@@ -117,13 +156,40 @@
     initializeWebSocket();
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'P' || e.key === 'p') {
-        if (paused) {
-          unpauseChat();
-        } else {
-          pauseChat();
-        }
+      switch (e.key) {
+        case 'P':
+        case 'p':
+          togglePause();
+          break;
+        case 'Control':
+          keymods.ctrl = true;
+          break;
+        case 'Shift':
+          keymods.shift = true;
+          break;
+        case 'Alt':
+          keymods.alt = true;
+          break;
       }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      switch (e.key) {
+        case 'Control':
+          keymods.ctrl = false;
+          break;
+        case 'Shift':
+          keymods.shift = false;
+          break;
+        case 'Alt':
+          keymods.alt = false;
+          break;
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      saveBlacklist();
+      keymods.reset();
     });
 
     window.addEventListener('beforeunload', () => {
@@ -131,6 +197,7 @@
         ws.close();
         ws = null;
       }
+      saveBlacklist();
     });
   });
 </script>
@@ -144,7 +211,9 @@
   bind:this={container}
 >
   {#each messages as message}
-    <ChatMessage {message} />
+    {#if !blacklist.has(message.author)}
+      <ChatMessage {message} />
+    {/if}
   {/each}
   {#if paused}
     <PauseOverlay {newMessageCount} {unpauseChat} />

@@ -21,10 +21,11 @@
     transform: translate(-50%, -80%);
     z-index: 1000;
     text-align: center;
-    border: 2px solid #242729;
+    border: 2px solid var(--accent-color);
     border-radius: 8px;
-    color: white;
-    background-color: rgba(12, 15, 18, 0.9);
+    color: var(--text-color);
+    background-color: var(--secondary-color);
+    opacity: 0.9;
     font-weight: bold;
     padding: 0px 8px;
   }

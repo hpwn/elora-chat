@@ -43,3 +43,11 @@ export interface Message {
   emotes: Emote[];
   source: 'YouTube' | 'Twitch';
 }
+
+export interface Keymods {
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+
+  reset: () => void;
+}
