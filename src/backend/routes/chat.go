@@ -49,6 +49,11 @@ var upgrader = websocket.Upgrader{
 
 var tokenizer Tokenizer
 
+var commandParser CommandParser
+
+// TODO: replace with table in SQLite
+var userColorMap map[string]string = make(map[string]string)
+
 type Image struct {
 	URL    string `json:"url"`
 	Width  int    `json:"width"`
@@ -111,6 +116,17 @@ func InitRoutes(timeout time.Duration) {
 		case <-timeoutTimer.C:
 			log.Fatalf("redis: Failed to connect to Redis: %v", err)
 		}
+	}
+
+	// Initialize tokenizer
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+
+	// Initialize command parser
+	// TODO: Replace hardcoded timer duration with config setting
+	commandParser = CommandParser{
+		HelpTimer:         time.NewTimer(10 * time.Second),
+		HelpResetDuration: 10 * time.Second,
 	}
 
 	// Load third party emotes
@@ -196,6 +212,7 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		var msg Message
+		var err error
 		rawMessage := scanner.Bytes()
 		if err := json.Unmarshal(rawMessage, &msg); err != nil {
 			log.Printf("chat: Failed to unmarshal message: %v, Raw message: %s\n", err, string(rawMessage))
@@ -216,6 +233,20 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 		msg.Tokens = make([]Token, 0)
 		for token := range tokenizer.Iter(msg.Message) {
 			msg.Tokens = append(msg.Tokens, token)
+		}
+
+		// Process command
+		if len(msg.Tokens) > 0 && msg.Tokens[0].Type == TokenTypeCommand {
+			msg, err = commandParser.Parse(msg, userColorMap)
+			if err != nil {
+				log.Printf("chat: Failed to process command: %v, Message: %#v\n", err, msg)
+			}
+		}
+
+		// Apply user preferences
+		// TODO: Replace map lookup with db query
+		if _, ok := userColorMap[msg.Author]; ok {
+			msg.Colour = userColorMap[msg.Author]
 		}
 
 		// Prevent nil slices

@@ -1,12 +1,17 @@
 <script lang="ts">
   import { type Message } from '$lib/types/messages';
-  import { loadImage, formatMessageFragments } from '$lib/utils';
+  import { loadImage, formatMessageFragments, validNameColors } from '$lib/utils';
   import { TwitchIcon, YoutubeIcon } from './icons';
 
   let { message }: { message: Message } = $props();
   let visible = $state(true);
 
   const { messageWithHTML, effects } = formatMessageFragments(message.fragments);
+
+  const hexColour = validNameColors.get(message.colour);
+  if (hexColour != undefined) {
+    message.colour = hexColour;
+  }
 
   function toggleVisible() {
     visible = !visible;
@@ -21,47 +26,48 @@
   }
 </script>
 
-<div
-  role="button"
-  aria-pressed="false"
-  tabindex="0"
-  onkeypress={keyHandler}
-  onclick={toggleVisible}
-  class="chat-message"
->
-  <span class="sender">
-    {#if message.source === 'Twitch'}
-      <span title="Twitch">
-        <TwitchIcon class="badge-icon" alt="Twitch user" width={18} height={18} />
+{#if messageWithHTML !== ''}
+  <div
+    role="button"
+    aria-pressed="false"
+    tabindex="0"
+    onkeypress={keyHandler}
+    onclick={toggleVisible}
+    class="chat-message"
+  >
+    <span class="sender">
+      {#if message.source === 'Twitch'}
+        <span title="Twitch">
+          <TwitchIcon class="badge-icon" alt="Twitch user" width={18} height={18} />
+        </span>
+      {:else if message.source === 'YouTube'}
+        <span title="YouTube">
+          <YoutubeIcon class="badge-icon" alt="YouTube user" width={18} height={18} />
+        </span>
+      {/if}
+
+      {#each message.badges as badge}
+        {#if badge.icons && badge.icons.length > 0}
+          <img
+            class="badge-icon"
+            src={loadImage(badge.icons[badge.icons.length - 1].url)}
+            title={badge.title}
+            alt={badge.title}
+          />
+        {/if}
+      {/each}
+      <span class="message-username" style="color: {message.colour}">
+        {message.author}:
       </span>
-    {:else if message.source === 'YouTube'}
-      <span title="YouTube">
-        <YoutubeIcon class="badge-icon" alt="YouTube user" width={18} height={18} />
+    </span>
+
+    {#if visible}
+      <span class={['message-text', effects].filter(Boolean).join(' ')}>
+        {@html messageWithHTML}
       </span>
     {/if}
-
-    {#each message.badges as badge}
-      {#if badge.icons && badge.icons.length > 0}
-        <img
-          class="badge-icon"
-          src={loadImage(badge.icons[badge.icons.length - 1].url)}
-          title={badge.title}
-          alt={badge.title}
-        />
-      {/if}
-    {/each}
-
-    <span class="message-username" style="color: {message.colour}">
-      {message.author}:
-    </span>
-  </span>
-
-  {#if visible}
-    <span class={['message-text', effects].filter(Boolean).join(' ')}>
-      {@html messageWithHTML}
-    </span>
-  {/if}
-</div>
+  </div>
+{/if}
 
 <style lang="scss">
   .chat-message {
