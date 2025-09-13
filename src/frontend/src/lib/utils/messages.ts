@@ -3,20 +3,20 @@ import { FragmentType, type Emote, type Fragment } from '$lib/types/messages';
 import { buildApiUrl } from './misc';
 
 export const validNameColors = new Map<string, string>([
-  ["red", "#df5858"],
-  ["orange", "#f96708"],
-  ["yellow", "#fabd40"],
-  ["green", "#2ddd6a"],
-  ["lightblue", "#6ad7d6"],
-  ["blue", "#2bb5f3"],
-  ["violet", "#ba29e0"],
-  ["pink", "#e94079"],
-  ["tan", "#ebb369"],
-  ["olive", "#def169"],
-  ["lime", "#73df5c"],
-  ["sky", "#64d1fb"],
-  ["purple", "#8e73ef"],
-])
+  ['red', '#df5858'],
+  ['orange', '#f96708'],
+  ['yellow', '#fabd40'],
+  ['green', '#2ddd6a'],
+  ['lightblue', '#6ad7d6'],
+  ['blue', '#2bb5f3'],
+  ['violet', '#ba29e0'],
+  ['pink', '#e94079'],
+  ['tan', '#ebb369'],
+  ['olive', '#def169'],
+  ['lime', '#73df5c'],
+  ['sky', '#64d1fb'],
+  ['purple', '#8e73ef']
+]);
 
 export function sanitizeMessage(message: string): string {
   // replace < and > with HTML entities to prevent XSS attacks

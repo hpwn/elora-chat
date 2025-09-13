@@ -32,7 +32,7 @@
   function handleClickMessage() {
     if (keymods.ctrl) {
       blacklistAuthor();
-    } else {
+    } else if (keymods.shift) {
       toggleVisible();
     }
   }
@@ -137,76 +137,160 @@
   }
 
   /* Message effects */
-  .text-bold { font-weight: bold; }
-  .text-italic { font-style: italic; }
+  .text-bold {
+    font-weight: bold;
+  }
+  .text-italic {
+    font-style: italic;
+  }
 
-  .color-yellow { color: #ffff00; }
-  .color-red    { color: #ff0000; }
-  .color-green  { color: #00ff00; }
-  .color-cyan   { color: #00ffff; }
-  .color-purple { color: #9c59d1; }
-  .color-pink   { color: #ff00ff; }
+  .color-yellow {
+    color: #ffff00;
+  }
+  .color-red {
+    color: #ff0000;
+  }
+  .color-green {
+    color: #00ff00;
+  }
+  .color-cyan {
+    color: #00ffff;
+  }
+  .color-purple {
+    color: #9c59d1;
+  }
+  .color-pink {
+    color: #ff00ff;
+  }
 
   .color-rainbow {
     background: linear-gradient(
       to right,
-      #ef5350, #f48fb1, #7e57c2, #2196f3, #26c6da,
-      #43a047, #eeff41, #f9a825, #ff5722
+      #ef5350,
+      #f48fb1,
+      #7e57c2,
+      #2196f3,
+      #26c6da,
+      #43a047,
+      #eeff41,
+      #f9a825,
+      #ff5722
     );
     background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
 
-  .color-flash1 { animation: flash1 0.45s steps(1, end) infinite; }
-  .color-flash2 { animation: flash2 0.45s steps(1, end) infinite; }
-  .color-flash3 { animation: flash3 0.45s steps(1, end) infinite; }
-  .color-glow1  { animation: glow1  3s linear infinite; }
-  .color-glow2  { animation: glow2  3s linear infinite; }
-  .color-glow3  { animation: glow2  3s linear infinite; }
+  .color-flash1 {
+    animation: flash1 0.45s steps(1, end) infinite;
+  }
+  .color-flash2 {
+    animation: flash2 0.45s steps(1, end) infinite;
+  }
+  .color-flash3 {
+    animation: flash3 0.45s steps(1, end) infinite;
+  }
+  .color-glow1 {
+    animation: glow1 3s linear infinite;
+  }
+  .color-glow2 {
+    animation: glow2 3s linear infinite;
+  }
+  .color-glow3 {
+    animation: glow2 3s linear infinite;
+  }
 
   :global {
-    .effect-wave span  { display: inline-block; animation: wave  1s ease-in-out infinite; }
-    .effect-wave2 span { display: inline-block; animation: wave2 1s ease-in-out infinite; }
+    .effect-wave span {
+      display: inline-block;
+      animation: wave 1s ease-in-out infinite;
+    }
+    .effect-wave2 span {
+      display: inline-block;
+      animation: wave2 1s ease-in-out infinite;
+    }
 
     .effect-wave span:nth-child(16n),
-    .effect-wave2 span:nth-child(16n) { animation-delay: 0s; }
+    .effect-wave2 span:nth-child(16n) {
+      animation-delay: 0s;
+    }
     .effect-wave span:nth-child(16n + 1),
-    .effect-wave2 span:nth-child(16n + 1) { animation-delay: 0.0625s; }
+    .effect-wave2 span:nth-child(16n + 1) {
+      animation-delay: 0.0625s;
+    }
     .effect-wave span:nth-child(16n + 2),
-    .effect-wave2 span:nth-child(16n + 2) { animation-delay: 0.125s; }
+    .effect-wave2 span:nth-child(16n + 2) {
+      animation-delay: 0.125s;
+    }
     .effect-wave span:nth-child(16n + 3),
-    .effect-wave2 span:nth-child(16n + 3) { animation-delay: 0.1875s; }
+    .effect-wave2 span:nth-child(16n + 3) {
+      animation-delay: 0.1875s;
+    }
     .effect-wave span:nth-child(16n + 4),
-    .effect-wave2 span:nth-child(16n + 4) { animation-delay: 0.25s; }
+    .effect-wave2 span:nth-child(16n + 4) {
+      animation-delay: 0.25s;
+    }
     .effect-wave span:nth-child(16n + 5),
-    .effect-wave2 span:nth-child(16n + 5) { animation-delay: 0.3125s; }
+    .effect-wave2 span:nth-child(16n + 5) {
+      animation-delay: 0.3125s;
+    }
     .effect-wave span:nth-child(16n + 6),
-    .effect-wave2 span:nth-child(16n + 6) { animation-delay: 0.375s; }
+    .effect-wave2 span:nth-child(16n + 6) {
+      animation-delay: 0.375s;
+    }
     .effect-wave span:nth-child(16n + 7),
-    .effect-wave2 span:nth-child(16n + 7) { animation-delay: 0.4375s; }
+    .effect-wave2 span:nth-child(16n + 7) {
+      animation-delay: 0.4375s;
+    }
     .effect-wave span:nth-child(16n + 8),
-    .effect-wave2 span:nth-child(16n + 8) { animation-delay: 0.5s; }
+    .effect-wave2 span:nth-child(16n + 8) {
+      animation-delay: 0.5s;
+    }
     .effect-wave span:nth-child(16n + 9),
-    .effect-wave2 span:nth-child(16n + 9) { animation-delay: 0.5625s; }
+    .effect-wave2 span:nth-child(16n + 9) {
+      animation-delay: 0.5625s;
+    }
     .effect-wave span:nth-child(16n + 10),
-    .effect-wave2 span:nth-child(16n + 10) { animation-delay: 0.625s; }
+    .effect-wave2 span:nth-child(16n + 10) {
+      animation-delay: 0.625s;
+    }
     .effect-wave span:nth-child(16n + 11),
-    .effect-wave2 span:nth-child(16n + 11) { animation-delay: 0.6875s; }
+    .effect-wave2 span:nth-child(16n + 11) {
+      animation-delay: 0.6875s;
+    }
     .effect-wave span:nth-child(16n + 12),
-    .effect-wave2 span:nth-child(16n + 12) { animation-delay: 0.75s; }
+    .effect-wave2 span:nth-child(16n + 12) {
+      animation-delay: 0.75s;
+    }
     .effect-wave span:nth-child(16n + 13),
-    .effect-wave2 span:nth-child(16n + 13) { animation-delay: 0.8125s; }
+    .effect-wave2 span:nth-child(16n + 13) {
+      animation-delay: 0.8125s;
+    }
     .effect-wave span:nth-child(16n + 14),
-    .effect-wave2 span:nth-child(16n + 14) { animation-delay: 0.875s; }
+    .effect-wave2 span:nth-child(16n + 14) {
+      animation-delay: 0.875s;
+    }
     .effect-wave span:nth-child(16n + 15),
-    .effect-wave2 span:nth-child(16n + 15) { animation-delay: 0.9375s; }
+    .effect-wave2 span:nth-child(16n + 15) {
+      animation-delay: 0.9375s;
+    }
 
-    .effect-cheddar span:nth-child(4n)     { color: #feddb0; }
-    .effect-cheddar span:nth-child(4n + 1) { color: #f8aa72; }
-    .effect-cheddar span:nth-child(4n + 2) { color: #ef965b; }
-    .effect-cheddar span:nth-child(4n + 3) { color: #fdc28d; }
+    .effect-cheddar span:nth-child(4n) {
+      color: #feddb0;
+    }
+    .effect-cheddar span:nth-child(4n + 1) {
+      color: #f8aa72;
+    }
+    .effect-cheddar span:nth-child(4n + 2) {
+      color: #ef965b;
+    }
+    .effect-cheddar span:nth-child(4n + 3) {
+      color: #fdc28d;
+    }
 
-    .effect-shake { /* TODO: implement this */ animation: wave 1s linear infinite; }
+    .effect-shake {
+      /* TODO: implement this */
+      animation: wave 1s linear infinite;
+    }
   }
 </style>
