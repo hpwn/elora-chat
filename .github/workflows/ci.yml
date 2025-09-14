@@ -39,7 +39,7 @@ jobs:
           fi
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [ build-and-test ]
     runs-on: ubuntu-latest
     steps:
