@@ -19,8 +19,8 @@ jobs:
 
       - name: Backend tests
         run: |
-          if [ -f backend/go.mod ]; then
-            (cd backend && go test ./...)
+          if [ -f src/backend/go.mod ]; then
+            (cd src/backend && go test ./...)
           elif [ -f go.mod ]; then
             go test ./...
           else
