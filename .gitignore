@@ -30,6 +30,7 @@ Thumbs.db
 
 # Ignore local .env files
 .env*
+!.env.example
 
 # Miscellaneous
 *.tgz
