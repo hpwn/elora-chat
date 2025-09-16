@@ -1,0 +1,57 @@
+name: Lint & Format (Prettier)
+
+on:
+  pull_request:
+    branches: [ "main", "feat/sqlite-db" ]
+
+permissions:
+  contents: write
+
+jobs:
+  prettier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps
+        if: ${{ hashFiles('src/frontend/package-lock.json') != '' }}
+        working-directory: src/frontend
+        run: npm ci
+
+      - name: Prettier check
+        id: check
+        working-directory: src/frontend
+        run: npx prettier --check .
+
+      # Auto-fix ON by default for same-repo PRs (not forks) and avoid loops.
+      - name: Auto-fix with Prettier and commit
+        if: |
+          failure() &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'github-actions[bot]'
+        working-directory: src/frontend
+        run: |
+          npx prettier --write .
+          if git status --porcelain | grep -q '^[AM]'; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "chore(format): apply Prettier auto-fix"
+            git push
+          else
+            echo "No changes after write; skipping commit."
+          fi
+
+      - name: Post-fix check
+        if: |
+          failure() &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'github-actions[bot]'
+        working-directory: src/frontend
+        run: npx prettier --check .

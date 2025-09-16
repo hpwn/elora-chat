@@ -41,3 +41,6 @@ python/venv
 
 # YouTube Token
 youtube-go.json
+.vscode/*
+!.vscode/settings.json
+env.local.smoke.*
