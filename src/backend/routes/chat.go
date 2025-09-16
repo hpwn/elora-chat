@@ -14,16 +14,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"github.com/jdavasligil/emodl"
 )
 
 // Initialize a Redis client as a global variable.
 var redisClient *redis.Client
+var chatStore storage.Store
 var ctx = context.Background()
+var subscribersMu sync.Mutex
+var subscribers map[chan []byte]struct{}
 
 type CmdMap struct {
 	data sync.Map
@@ -86,25 +91,27 @@ type Message struct {
 	Colour  string  `json:"colour"`
 }
 
-func InitRoutes(timeout time.Duration) {
-	var err error
+func InitRoutes(timeout time.Duration, client *redis.Client, store storage.Store) {
+	if client == nil {
+		log.Fatalf("redis: client is nil")
+	}
+	if store == nil {
+		log.Fatalf("storage: store is nil")
+	}
 
-	// Initialize the Redis client without TLS.
-	redisClient = redis.NewClient(&redis.Options{
-		Addr:            os.Getenv("REDIS_ADDR"),
-		Password:        os.Getenv("REDIS_PASSWORD"), // The password for the Redis server (if required)
-		DB:              0,                           // Default DB
-		PoolSize:        200,                         // Adjusted pool size
-		MinIdleConns:    10,                          // Maintain a minimum of 10 idle connections
-		ConnMaxIdleTime: 5 * time.Minute,             // Maximum amount of time a connection may be idle.
-		ConnMaxLifetime: 30 * time.Minute,            // Maximum amount of time a connection may be reused.
-	})
+	redisClient = client
+	chatStore = store
+	subscribersMu.Lock()
+	if subscribers == nil {
+		subscribers = make(map[chan []byte]struct{})
+	}
+	subscribersMu.Unlock()
 
 	// Context for Redis operations
 	ctx := context.Background()
 
 	// Check the Redis connection
-	_, err = redisClient.Ping(ctx).Result()
+	err := redisClient.Ping(ctx).Err()
 
 	// Retry until timeout reached
 	retryTicker := time.NewTicker(100 * time.Millisecond)
@@ -112,7 +119,7 @@ func InitRoutes(timeout time.Duration) {
 	for err != nil {
 		select {
 		case <-retryTicker.C:
-			_, err = redisClient.Ping(ctx).Result()
+			err = redisClient.Ping(ctx).Err()
 		case <-timeoutTimer.C:
 			log.Fatalf("redis: Failed to connect to Redis: %v", err)
 		}
@@ -264,20 +271,75 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 			continue
 		}
 
-		// Add the modified message to Redis Stream.
-		_, err = redisClient.XAdd(ctx, &redis.XAddArgs{
-			Stream: "chatMessages",
-			Values: map[string]any{"message": string(modifiedMessage)},
-			MaxLen: 100,
-			Approx: true,
-		}).Result()
-		if err != nil {
-			log.Printf("redis: Failed to add message to stream: %v, Modified message: %s\n", err, string(modifiedMessage))
+		if chatStore != nil {
+			emotesJSON, err := json.Marshal(msg.Emotes)
+			if err != nil {
+				log.Printf("storage: Failed to marshal emotes: %v", err)
+				emotesJSON = []byte("[]")
+			}
+			storedMessage := &storage.Message{
+				ID:         uuid.NewString(),
+				Timestamp:  time.Now().UTC(),
+				Username:   msg.Author,
+				Platform:   msg.Source,
+				Text:       msg.Message,
+				EmotesJSON: string(emotesJSON),
+				RawJSON:    string(modifiedMessage),
+			}
+			if err := chatStore.InsertMessage(ctx, storedMessage); err != nil {
+				log.Printf("storage: Failed to insert message: %v", err)
+			}
 		}
+
+		broadcastChatMessage(modifiedMessage)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Println("chat: Error reading standard output:", err)
 	}
+}
+
+func broadcastChatMessage(msg []byte) {
+	subscribersMu.Lock()
+	if len(subscribers) == 0 {
+		subscribersMu.Unlock()
+		return
+	}
+	targets := make([]chan []byte, 0, len(subscribers))
+	for ch := range subscribers {
+		targets = append(targets, ch)
+	}
+	subscribersMu.Unlock()
+
+	for _, ch := range targets {
+		payload := make([]byte, len(msg))
+		copy(payload, msg)
+		select {
+		case ch <- payload:
+		default:
+		}
+	}
+}
+
+func addSubscriber() chan []byte {
+	ch := make(chan []byte, 64)
+	subscribersMu.Lock()
+	if subscribers == nil {
+		subscribers = make(map[chan []byte]struct{})
+	}
+	subscribers[ch] = struct{}{}
+	subscribersMu.Unlock()
+	return ch
+}
+
+func removeSubscriber(ch chan []byte) {
+	subscribersMu.Lock()
+	if subscribers != nil {
+		if _, ok := subscribers[ch]; ok {
+			delete(subscribers, ch)
+			close(ch)
+		}
+	}
+	subscribersMu.Unlock()
 }
 
 // StreamChat initializes a WebSocket connection and streams chat messages
@@ -291,52 +353,41 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 
 	// Channel to signal closure of WebSocket connection
 	done := make(chan struct{})
-	messageChan := make(chan []byte, 8)
+	messageChan := addSubscriber()
+	defer removeSubscriber(messageChan)
 
-	lastID := "0" // Start from the beginning of the stream
-
-	// Read the last 100 messages from the stream to send to the client immediately.
-	streams, err := redisClient.XRevRangeN(ctx, "chatMessages", "+", "-", 100).Result()
-	if err != nil {
-		log.Printf("redis: Failed to read messages from stream: %v\n", err)
-		return
-	}
-
-	// Send the messages in reverse order so the newest will be at the bottom
-	for i := len(streams) - 1; i >= 0; i-- {
-		message := streams[i]
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(message.Values["message"].(string))); err != nil {
-			log.Println("ws: WebSocket write error:", err)
-			return
-		}
-		if message.ID > lastID {
-			lastID = message.ID // Update last ID to the newest message
-		}
-	}
-
-	// Go routine to receive new messages from Redis Stream and forward them to WebSocket
-	go func() {
-		for {
-			streams, err := redisClient.XRead(ctx, &redis.XReadArgs{
-				Streams: []string{"chatMessages", lastID},
-				Block:   0,
-			}).Result()
-
-			if err != nil {
-				log.Println("redis: Error reading from stream:", err)
-				return
-			}
-
-			for _, stream := range streams {
-				for _, message := range stream.Messages {
-					// Before sending a message to the client
-					// log.Printf("Sending message to client: %s\n", message)
-					messageChan <- []byte(message.Values["message"].(string))
-					lastID = message.ID // Update last ID to the newest message
+	// Read the last 100 messages from the backing store to send to the client immediately.
+	if chatStore != nil {
+		history, err := chatStore.GetRecent(ctx, storage.QueryOpts{Limit: 100})
+		if err != nil {
+			log.Printf("storage: Failed to read messages from store: %v\n", err)
+		} else {
+			for i := len(history) - 1; i >= 0; i-- {
+				payload := history[i].RawJSON
+				if payload == "" {
+					fallback := Message{
+						Author:  history[i].Username,
+						Message: history[i].Text,
+						Tokens:  []Token{},
+						Emotes:  []Emote{},
+						Badges:  []Badge{},
+						Source:  history[i].Platform,
+						Colour:  userColorMap[history[i].Username],
+					}
+					raw, marshalErr := json.Marshal(fallback)
+					if marshalErr != nil {
+						log.Printf("chat: Failed to marshal fallback history message: %v\n", marshalErr)
+						continue
+					}
+					payload = string(raw)
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+					log.Println("ws: WebSocket write error:", err)
+					return
 				}
 			}
 		}
-	}()
+	}
 
 	// Websocket writer
 	go func() {
@@ -346,7 +397,10 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 
 		for {
 			select {
-			case m := <-messageChan:
+			case m, ok := <-messageChan:
+				if !ok {
+					return
+				}
 				var msg Message
 				err := json.Unmarshal(m, &msg)
 				if err != nil {
