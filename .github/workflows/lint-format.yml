@@ -26,13 +26,14 @@ jobs:
 
       - name: Prettier check
         id: check
+        continue-on-error: true        # <-- keep going if it fails
         working-directory: src/frontend
         run: npx prettier --check .
 
-      # Auto-fix ON by default for same-repo PRs (not forks) and avoid loops.
+      # Auto-fix ON for same-repo PRs (not forks); avoid loops
       - name: Auto-fix with Prettier and commit
         if: |
-          failure() &&
+          steps.check.outcome == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.actor != 'github-actions[bot]'
         working-directory: src/frontend
@@ -50,7 +51,7 @@ jobs:
 
       - name: Post-fix check
         if: |
-          failure() &&
+          steps.check.outcome == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.actor != 'github-actions[bot]'
         working-directory: src/frontend
