@@ -1,4 +1,3 @@
-<h1 id="app-title-elora-chat" class="visually-hidden">Elora Chat</h1>
 <script>
   import { checkLoginStatus } from '$lib/api/auth.svelte';
   import { Chat, Header, Footer } from '$lib/components';
@@ -11,6 +10,8 @@
     checkLoginStatus();
   });
 </script>
+
+<h1 id="app-title-elora-chat" class="visually-hidden">Elora Chat</h1>
 
 <svelte:head>
   <title>Chat Display</title>
