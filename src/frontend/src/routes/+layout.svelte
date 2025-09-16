@@ -4,5 +4,5 @@
 
 <slot />
 
-<!-- Import global stylesheet for the whole app -->
+<!-- Import global stylesheet for the whole app FIRST -->
 <style global src="../app.css"></style>
