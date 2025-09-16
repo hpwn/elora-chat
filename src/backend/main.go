@@ -7,10 +7,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/hpwn/EloraChat/src/backend/internal/storage"
+	redisstore "github.com/hpwn/EloraChat/src/backend/internal/storage/redis"
+	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
 	"github.com/hpwn/EloraChat/src/backend/routes" // Ensure this is the correct path to your routes package
 )
 
@@ -29,12 +36,69 @@ func serveConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	port := os.Getenv("PORT")
+	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = "8080" // Default to port 8080 if not specified
 	}
 
-	routes.InitRoutes(2 * time.Second)
+	baseCtx := context.Background()
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:            os.Getenv("REDIS_ADDR"),
+		Password:        os.Getenv("REDIS_PASSWORD"),
+		DB:              0,
+		PoolSize:        200,
+		MinIdleConns:    10,
+		ConnMaxIdleTime: 5 * time.Minute,
+		ConnMaxLifetime: 30 * time.Minute,
+	})
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			log.Printf("redis: close error: %v", err)
+		}
+	}()
+
+	storeKind := strings.ToLower(strings.TrimSpace(getEnvOrDefault("ELORA_STORE", "redis")))
+	var store storage.Store
+	switch storeKind {
+	case "sqlite":
+		sqliteCfg := sqlite.Config{
+			Mode:            getEnvOrDefault("ELORA_DB_MODE", "ephemeral"),
+			Path:            getEnvOrDefault("ELORA_DB_PATH", "./data/elora-chat.db"),
+			MaxConns:        getEnvAsInt("ELORA_DB_MAX_CONNS", 16),
+			BusyTimeoutMS:   getEnvAsInt("ELORA_DB_BUSY_TIMEOUT_MS", 5000),
+			PragmasExtraCSV: getEnvOrDefault("ELORA_DB_PRAGMAS_EXTRA", "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY"),
+		}
+		store = sqlite.New(sqliteCfg)
+	case "redis", "":
+		store = redisstore.New(redisstore.Config{
+			Client: redisClient,
+			Stream: "chatMessages",
+			MaxLen: 100,
+		})
+		storeKind = "redis"
+	default:
+		log.Printf("storage: unknown store %q, defaulting to redis", storeKind)
+		store = redisstore.New(redisstore.Config{
+			Client: redisClient,
+			Stream: "chatMessages",
+			MaxLen: 100,
+		})
+		storeKind = "redis"
+	}
+
+	if err := store.Init(baseCtx); err != nil {
+		log.Fatalf("storage: failed to initialize %s store: %v", storeKind, err)
+	}
+	defer func() {
+		if err := store.Close(context.Background()); err != nil {
+			log.Printf("storage: close error: %v", err)
+		}
+	}()
+
+	log.Printf("storage: using %s store", storeKind)
+
+	routes.InitRoutes(2*time.Second, redisClient, store)
 
 	r := mux.NewRouter()
 
@@ -109,9 +173,29 @@ func main() {
 	<-c
 
 	// Create a deadline to wait for.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+	srv.Shutdown(shutdownCtx)
 	log.Println("shutting down")
 	os.Exit(0)
+}
+
+func getEnvOrDefault(key, def string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return def
+}
+
+func getEnvAsInt(key string, def int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return def
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %d", key, value, def)
+		return def
+	}
+	return parsed
 }
