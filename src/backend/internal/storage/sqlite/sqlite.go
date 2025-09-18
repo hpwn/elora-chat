@@ -6,10 +6,13 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,8 +24,6 @@ import (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
-
-const initMigration = "migrations/0001_init.sql"
 
 // Config controls how the SQLite store is configured.
 type Config struct {
@@ -51,14 +52,45 @@ func New(cfg Config) *Store {
 // Init opens the database connection, applies pragmas, and runs migrations.
 func (s *Store) Init(ctx context.Context) error {
 	s.initOnce.Do(func() {
-		path, ephemeral := s.resolvePath()
+		path, ephemeral, err := s.resolvePath()
+		if err != nil {
+			s.initErr = err
+			return
+		}
+
 		s.path = path
 		s.ephemeral = ephemeral
 
-		if !ephemeral {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		dir := filepath.Dir(path)
+		var dirCreated bool
+		if ephemeral {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
 				s.initErr = fmt.Errorf("sqlite: create directory: %w", err)
 				return
+			}
+		} else {
+			if _, err := os.Stat(dir); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					if err := os.MkdirAll(dir, 0o755); err != nil {
+						s.initErr = fmt.Errorf("sqlite: create directory: %w", err)
+						return
+					}
+					dirCreated = true
+				} else {
+					s.initErr = fmt.Errorf("sqlite: inspect directory: %w", err)
+					return
+				}
+			} else {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					s.initErr = fmt.Errorf("sqlite: ensure directory: %w", err)
+					return
+				}
+			}
+
+			if dirCreated {
+				log.Printf("sqlite: persistent parent directory created: %s", dir)
+			} else {
+				log.Printf("sqlite: persistent parent directory already existed: %s", dir)
 			}
 		}
 
@@ -80,18 +112,36 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
+		journalModeRow := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL;")
+		var journalMode string
+		if err := journalModeRow.Scan(&journalMode); err != nil {
+			_ = db.Close()
+			s.initErr = fmt.Errorf("sqlite: set journal_mode: %w", err)
+			return
+		}
+
+		busy := s.cfg.BusyTimeoutMS
+		if busy <= 0 {
+			busy = 5000
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", busy)); err != nil {
+			_ = db.Close()
+			s.initErr = fmt.Errorf("sqlite: set busy_timeout: %w", err)
+			return
+		}
+		if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON;"); err != nil {
+			_ = db.Close()
+			s.initErr = fmt.Errorf("sqlite: enable foreign_keys: %w", err)
+			return
+		}
+
 		if err := s.applyMigrations(ctx, db); err != nil {
 			_ = db.Close()
 			s.initErr = err
 			return
 		}
 
-		journalMode := ""
-		if err := db.QueryRowContext(ctx, "PRAGMA journal_mode;").Scan(&journalMode); err != nil {
-			log.Printf("sqlite: failed to read journal_mode pragma: %v", err)
-		} else {
-			log.Printf("sqlite: opened database (mode=%s, path=%s, journal_mode=%s)", s.storageMode(), path, journalMode)
-		}
+		log.Printf("sqlite: opened database (mode=%s, path=%s, journal_mode=%s)", s.storageMode(), path, journalMode)
 
 		s.db = db
 	})
@@ -218,21 +268,28 @@ func (s *Store) Close(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) resolvePath() (string, bool) {
+func (s *Store) resolvePath() (string, bool, error) {
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.Mode))
-	if mode == "" || mode == "ephemeral" {
-		return filepath.Join(os.TempDir(), fmt.Sprintf("elora-chat-%d.db", os.Getpid())), true
+	if mode != "persistent" {
+		mode = "ephemeral"
 	}
 
-	path := s.cfg.Path
-	if path == "" {
-		path = "./data/elora-chat.db"
+	path := strings.TrimSpace(s.cfg.Path)
+	if mode == "ephemeral" {
+		if path == "" {
+			path = filepath.Join(os.TempDir(), fmt.Sprintf("elora-chat-%d.db", os.Getpid()))
+		}
+	} else {
+		if path == "" {
+			return "", false, errors.New("sqlite: persistent mode requires ELORA_DB_PATH")
+		}
 	}
+
 	abs, err := filepath.Abs(path)
-	if err == nil {
-		path = abs
+	if err != nil {
+		return "", mode == "ephemeral", fmt.Errorf("sqlite: resolve path: %w", err)
 	}
-	return path, false
+	return abs, mode == "ephemeral", nil
 }
 
 func (s *Store) storageMode() string {
@@ -243,21 +300,12 @@ func (s *Store) storageMode() string {
 }
 
 func (s *Store) buildDSN(path string) string {
-	busy := s.cfg.BusyTimeoutMS
-	if busy <= 0 {
-		busy = 5000
-	}
-	pragmas := []string{
-		"_pragma=journal_mode(WAL)",
-		"_pragma=synchronous(NORMAL)",
-		"_pragma=foreign_keys(ON)",
-		fmt.Sprintf("_pragma=busy_timeout(%d)", busy),
-	}
-	pragmas = append(pragmas, s.parseExtraPragmas()...)
+	params := []string{"cache=shared", "mode=rwc"}
+	params = append(params, s.parseExtraPragmas()...)
 
-	query := strings.Join(pragmas, "&")
+	query := strings.Join(params, "&")
 	escapedPath := url.PathEscape(path)
-	return fmt.Sprintf("file:%s?cache=shared&mode=rwc&%s", escapedPath, query)
+	return fmt.Sprintf("file:%s?%s", escapedPath, query)
 }
 
 func (s *Store) parseExtraPragmas() []string {
@@ -291,12 +339,74 @@ func (s *Store) parseExtraPragmas() []string {
 }
 
 func (s *Store) applyMigrations(ctx context.Context, db *sql.DB) error {
-	data, err := migrationsFS.ReadFile(initMigration)
-	if err != nil {
-		return fmt.Errorf("sqlite: read migration: %w", err)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		return fmt.Errorf("sqlite: ensure schema_migrations: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, string(data)); err != nil {
-		return fmt.Errorf("sqlite: apply migration: %w", err)
+
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("sqlite: read migrations: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: begin migrations: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+
+		version, err := parseMigrationVersion(entry.Name())
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+
+		var exists int
+		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&exists); {
+		case err == nil:
+			continue
+		case errors.Is(err, sql.ErrNoRows):
+			// not applied
+		default:
+			_ = tx.Rollback()
+			return fmt.Errorf("sqlite: check migration %s: %w", entry.Name(), err)
+		}
+
+		data, err := migrationsFS.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("sqlite: read migration %s: %w", entry.Name(), err)
+		}
+		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("sqlite: apply migration %s: %w", entry.Name(), err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (?)`, version); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("sqlite: record migration %s: %w", entry.Name(), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("sqlite: commit migrations: %w", err)
 	}
 	return nil
+}
+
+func parseMigrationVersion(name string) (int, error) {
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	parts := strings.SplitN(base, "_", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		return 0, fmt.Errorf("sqlite: invalid migration name %q", name)
+	}
+	version, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: invalid migration version in %q: %w", name, err)
+	}
+	return version, nil
 }
