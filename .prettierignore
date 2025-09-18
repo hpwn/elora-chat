@@ -1,0 +1,8 @@
+node_modules
+build
+dist
+.svelte-kit
+.vite
+public
+coverage
+**/*.min.js

@@ -11,6 +11,14 @@
   });
 </script>
 
+<h1
+  id="app-title-elora-chat"
+  class="visually-hidden"
+  style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0"
+>
+  Elora Chat
+</h1>
+
 <svelte:head>
   <title>Chat Display</title>
 </svelte:head>
