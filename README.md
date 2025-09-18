@@ -32,11 +32,21 @@ Inspired by pioneers like DougDoug, elora-chat aspires to revolutionize chat int
 
 - Ensure [Docker](https://docs.docker.com/get-started/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/linux/) are installed and configured.
 
-- Create environment variables: `echo "REDIS_ADDR=redis:6379\nREDIS_PASSWORD=\nTWITCH_CLIENT_ID=\nTWITCH_CLIENT_SECRET=\nTWITCH_REDIRECT_URL=\nYOUTUBE_API_KEY=\nPORT=8080\nDEPLOYED_URL=https://localhost:8080/" > .env`
+- Create environment variables: `echo "REDIS_ADDR=redis:6379\nREDIS_PASSWORD=\nTWITCH_CLIENT_ID=\nTWITCH_CLIENT_SECRET=\nTWITCH_REDIRECT_URL=\nYOUTUBE_API_KEY=\nPORT=8080\nDEPLOYED_URL=https://localhost:8080/\nELORA_STORE=redis\nELORA_DB_MODE=ephemeral\nELORA_DB_PATH=\nELORA_DB_MAX_CONNS=16\nELORA_DB_BUSY_TIMEOUT_MS=5000\nELORA_DB_PRAGMAS_EXTRA=mmap_size=268435456,cache_size=-100000,temp_store=MEMORY" > .env`
 
 - Start the server: `docker compose up`
 
 - Connect with your broswer to [http://localhost:8080/](http://localhost:8080/)!
+
+## SQLite storage (optional) 🗄️
+
+The backend stores chat history in Redis streams by default. To try the SQLite implementation instead:
+
+1. Set `ELORA_STORE=sqlite` in your `.env` file or deployment environment.
+2. (Optional) Adjust the database settings with `ELORA_DB_MODE`, `ELORA_DB_PATH`, `ELORA_DB_MAX_CONNS`, `ELORA_DB_BUSY_TIMEOUT_MS`, and `ELORA_DB_PRAGMAS_EXTRA`. Ephemeral mode (the default) leaves `ELORA_DB_PATH` empty and automatically creates a temp database such as `/tmp/elora-chat-<pid>.db`.
+3. Restart the backend. In `persistent` mode set `ELORA_DB_PATH` to a writable location (for example `./data/elora-chat.db` or `/data/elora-chat.db` when using a Docker volume like `-v elora_sqlite_data:/data`).
+
+Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
 
 ## Usage ⌨️
 

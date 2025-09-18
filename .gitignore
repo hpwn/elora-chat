@@ -30,6 +30,7 @@ Thumbs.db
 
 # Ignore local .env files
 .env*
+!.env.example
 
 # Miscellaneous
 *.tgz
@@ -41,3 +42,6 @@ python/venv
 
 # YouTube Token
 youtube-go.json
+.vscode/*
+!.vscode/settings.json
+env.local.smoke.*
