@@ -64,7 +64,7 @@ func main() {
 	case "sqlite":
 		sqliteCfg := sqlite.Config{
 			Mode:            getEnvOrDefault("ELORA_DB_MODE", "ephemeral"),
-			Path:            getEnvOrDefault("ELORA_DB_PATH", "./data/elora-chat.db"),
+			Path:          strings.TrimSpace(os.Getenv("ELORA_DB_PATH")),
 			MaxConns:        getEnvAsInt("ELORA_DB_MAX_CONNS", 16),
 			BusyTimeoutMS:   getEnvAsInt("ELORA_DB_BUSY_TIMEOUT_MS", 5000),
 			PragmasExtraCSV: getEnvOrDefault("ELORA_DB_PRAGMAS_EXTRA", "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY"),
