@@ -92,9 +92,6 @@ type Message struct {
 }
 
 func InitRoutes(timeout time.Duration, client *redis.Client, store storage.Store) {
-	if client == nil {
-		log.Fatalf("redis: client is nil")
-	}
 	if store == nil {
 		log.Fatalf("storage: store is nil")
 	}
@@ -107,22 +104,21 @@ func InitRoutes(timeout time.Duration, client *redis.Client, store storage.Store
 	}
 	subscribersMu.Unlock()
 
-	// Context for Redis operations
-	ctx := context.Background()
-
-	// Check the Redis connection
-	err := redisClient.Ping(ctx).Err()
-
-	// Retry until timeout reached
-	retryTicker := time.NewTicker(100 * time.Millisecond)
-	timeoutTimer := time.NewTimer(timeout)
-	for err != nil {
-		select {
-		case <-retryTicker.C:
-			err = redisClient.Ping(ctx).Err()
-		case <-timeoutTimer.C:
-			log.Fatalf("redis: Failed to connect to Redis: %v", err)
+	if redisClient != nil {
+		ctx := context.Background()
+		err := redisClient.Ping(ctx).Err()
+		retryTicker := time.NewTicker(100 * time.Millisecond)
+		timeoutTimer := time.NewTimer(timeout)
+		for err != nil {
+			select {
+			case <-retryTicker.C:
+				err = redisClient.Ping(ctx).Err()
+			case <-timeoutTimer.C:
+				log.Fatalf("redis: Failed to connect to Redis: %v", err)
+			}
 		}
+	} else {
+		log.Println("redis: no client configured; continuing without Redis")
 	}
 
 	// Initialize tokenizer

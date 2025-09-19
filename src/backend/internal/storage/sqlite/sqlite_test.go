@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -201,6 +203,107 @@ func TestSQLitePersistentMode(t *testing.T) {
 	}
 	if !strings.EqualFold(journalMode, "wal") {
 		t.Fatalf("expected journal mode WAL, got %s", journalMode)
+	}
+}
+
+func TestSessionsEphemeral(t *testing.T) {
+	ctx := context.Background()
+	store := New(Config{Mode: "ephemeral"})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	now := time.Now().UTC().Truncate(time.Second)
+	sess := &storage.Session{
+		Token:       "tok-ephemeral",
+		Service:     "twitch",
+		DataJSON:    `{"hello":"world"}`,
+		TokenExpiry: now.Add(30 * time.Minute),
+		UpdatedAt:   now,
+	}
+
+	if err := store.UpsertSession(ctx, sess); err != nil {
+		t.Fatalf("UpsertSession returned error: %v", err)
+	}
+
+	got, err := store.GetSession(ctx, "tok-ephemeral")
+	if err != nil {
+		t.Fatalf("GetSession returned error: %v", err)
+	}
+
+	if got.Token != sess.Token || got.Service != sess.Service || got.DataJSON != sess.DataJSON {
+		t.Fatalf("unexpected session data: %#v", got)
+	}
+	if !got.TokenExpiry.Equal(sess.TokenExpiry) {
+		t.Fatalf("expected TokenExpiry %v, got %v", sess.TokenExpiry, got.TokenExpiry)
+	}
+	if !got.UpdatedAt.Equal(sess.UpdatedAt) {
+		t.Fatalf("expected UpdatedAt %v, got %v", sess.UpdatedAt, got.UpdatedAt)
+	}
+
+	if err := store.DeleteSession(ctx, "tok-ephemeral"); err != nil {
+		t.Fatalf("DeleteSession returned error: %v", err)
+	}
+
+	if _, err := store.GetSession(ctx, "tok-ephemeral"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows after delete, got %v", err)
+	}
+}
+
+func TestSessionsPersistent(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sessions.db")
+
+	cfg := Config{Mode: "persistent", Path: dbPath}
+	store := New(cfg)
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	input := &storage.Session{
+		Token:       "tok-persistent",
+		Service:     "youtube",
+		DataJSON:    `{"foo":"bar"}`,
+		TokenExpiry: now.Add(time.Hour),
+		UpdatedAt:   now,
+	}
+	if err := store.UpsertSession(ctx, input); err != nil {
+		t.Fatalf("UpsertSession returned error: %v", err)
+	}
+	if err := store.Close(ctx); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	reopened := New(cfg)
+	if err := reopened.Init(ctx); err != nil {
+		t.Fatalf("reopen Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(ctx); err != nil {
+			t.Fatalf("reopen Close returned error: %v", err)
+		}
+	})
+
+	got, err := reopened.GetSession(ctx, "tok-persistent")
+	if err != nil {
+		t.Fatalf("GetSession after reopen returned error: %v", err)
+	}
+
+	if got.Token != input.Token || got.Service != input.Service || got.DataJSON != input.DataJSON {
+		t.Fatalf("unexpected persisted session: %#v", got)
+	}
+	if !got.TokenExpiry.Equal(input.TokenExpiry) {
+		t.Fatalf("expected TokenExpiry %v, got %v", input.TokenExpiry, got.TokenExpiry)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatalf("expected UpdatedAt to be set")
 	}
 }
 

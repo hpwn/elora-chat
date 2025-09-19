@@ -3,9 +3,11 @@ package routes
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +17,9 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/twitch"
 )
@@ -42,9 +47,9 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the state in Redis with an expiration time to validate it later
-	err = redisClient.Set(ctx, "oauth-state:"+state, "valid", 10*time.Minute).Err()
-	if err != nil {
+	// Store the state via the backing store with an expiration window.
+	if err := storeOAuthState(r.Context(), state); err != nil {
+		log.Printf("auth: failed to persist oauth state: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -155,24 +160,29 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func updateSessionDataForService(w http.ResponseWriter, userData map[string]any, service string, sessionToken string) {
-	// Initialize existing session data map
-	existingSessionData := make(map[string]any)
-
-	// Retrieve existing session data from Redis, if available
-	existingSessionDataJson, err := redisClient.Get(ctx, fmt.Sprintf("session:%s", sessionToken)).Result()
-	if err == nil && existingSessionDataJson != "" {
-		// Existing session data found, unmarshal into the map
-		err = json.Unmarshal([]byte(existingSessionDataJson), &existingSessionData)
-		if err != nil {
-			log.Printf("Error unmarshalling existing session data: %v", err)
-			// Handle error, for example, by initializing existingSessionData with default values
-		}
+	if chatStore == nil {
+		log.Println("auth: storage not configured; cannot persist session")
+		return
 	}
 
-	// Check if services key exists and is a slice, then update or add the current service
+	existingSessionData := make(map[string]any)
+	var currentExpiry time.Time
+
+	sess, err := chatStore.GetSession(ctx, sessionToken)
+	if err == nil && sess != nil {
+		if sess.DataJSON != "" {
+			if unmarshalErr := json.Unmarshal([]byte(sess.DataJSON), &existingSessionData); unmarshalErr != nil {
+				log.Printf("auth: error unmarshalling existing session data: %v", unmarshalErr)
+				existingSessionData = make(map[string]any)
+			}
+		}
+		currentExpiry = sess.TokenExpiry
+	} else if err != nil && !isSessionNotFound(err) {
+		log.Printf("auth: failed to load existing session data: %v", err)
+	}
+
 	services, ok := existingSessionData["services"].([]any)
 	if !ok {
-		// Services key does not exist or is not a slice, initialize it
 		services = []any{}
 	}
 	if !contains(services, service) {
@@ -180,31 +190,47 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 	}
 	existingSessionData["services"] = services
 
-	// Merge userData into existingSessionData, excluding the "services" slice to avoid duplication
 	for key, value := range userData {
 		if key != "services" {
 			existingSessionData[key] = value
 		}
 	}
 
-	// Marshal the updated session data back into JSON for storage in Redis
-	updatedSessionDataJson, err := json.Marshal(existingSessionData)
-	if err != nil {
-		log.Printf("Error marshalling updated session data: %v", err)
-		// Handle error appropriately
+	now := time.Now().UTC()
+	existingSessionData["updated_at"] = now.Unix()
+
+	expiry := now.Add(24 * time.Hour)
+	if ts, ok := toUnixSeconds(existingSessionData["token_expiry"]); ok {
+		expiry = time.Unix(ts, 0).UTC()
+	} else if !currentExpiry.IsZero() {
+		expiry = currentExpiry
+	}
+	if expiry.Before(now) {
+		expiry = now.Add(5 * time.Minute)
 	}
 
-	// Store the updated session data in Redis
-	err = redisClient.Set(ctx, fmt.Sprintf("session:%s", sessionToken), updatedSessionDataJson, 24*time.Hour).Err()
+	payload, err := json.Marshal(existingSessionData)
 	if err != nil {
-		log.Printf("Failed to store updated session data in Redis: %v", err)
-		// Handle error appropriately
-	} else {
-		log.Printf("Updated session data stored successfully for sessionToken: %s, Data: %s", sessionToken, string(updatedSessionDataJson))
+		log.Printf("auth: error marshalling updated session data: %v", err)
+		return
 	}
 
-	// Update the client's session cookie
-	setSessionCookie(w, sessionToken)
+	record := &storage.Session{
+		Token:       sessionToken,
+		Service:     service,
+		DataJSON:    string(payload),
+		TokenExpiry: expiry,
+		UpdatedAt:   now,
+	}
+
+	if err := chatStore.UpsertSession(ctx, record); err != nil {
+		log.Printf("auth: failed to store updated session data: %v", err)
+		return
+	}
+
+	if w != nil {
+		setSessionCookie(w, sessionToken)
+	}
 }
 
 // Helper function to check if a service is already in the services slice
@@ -243,17 +269,35 @@ func generateState() (string, error) {
 
 // validateState checks the provided state against the value stored in Redis.
 func validateState(state string) bool {
-	key := "oauth-state:" + state
-	storedState, err := redisClient.Get(ctx, key).Result()
-
-	// Delete the one-time-use state from Redis after validation
-	redisClient.Del(ctx, key)
-
-	// Check if the stored state value starts with "valid"
-	if err != nil || !strings.HasPrefix(storedState, "valid") {
+	if chatStore == nil {
 		return false
 	}
-	return true
+
+	key := oauthStateKey(state)
+	sess, err := chatStore.GetSession(ctx, key)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		if delErr := chatStore.DeleteSession(ctx, key); delErr != nil {
+			log.Printf("auth: failed to delete oauth state %s: %v", key, delErr)
+		}
+	}()
+
+	if sess.TokenExpiry.Before(time.Now().UTC()) {
+		return false
+	}
+
+	if sess.DataJSON == "" {
+		return true
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(sess.DataJSON), &payload); err != nil {
+		return false
+	}
+	value, _ := payload["state"].(string)
+	return strings.HasPrefix(value, "valid")
 }
 
 // generateSessionToken creates a new secure, random session token.
@@ -280,18 +324,14 @@ func SessionMiddleware(next http.Handler) http.Handler {
 
 		sessionToken := cookie.Value
 
-		// Retrieve session data from Redis
-		sessionDataJson, err := redisClient.Get(ctx, fmt.Sprintf("session:%s", sessionToken)).Result()
+		_, sessionData, err := loadSession(r.Context(), sessionToken)
 		if err != nil {
-			log.Printf("Session token not found in Redis or is invalid: %v\n", err)
-			http.Error(w, "Unauthorized: Invalid session token", http.StatusUnauthorized)
-			return
-		}
-
-		var sessionData map[string]any
-		err = json.Unmarshal([]byte(sessionDataJson), &sessionData)
-		if err != nil {
-			log.Printf("Error unmarshalling session data: %v\n", err)
+			if isSessionNotFound(err) {
+				log.Printf("Session token not found or expired: %v\n", err)
+				http.Error(w, "Unauthorized: Invalid session token", http.StatusUnauthorized)
+				return
+			}
+			log.Printf("Error retrieving session data: %v\n", err)
 			http.Error(w, "Error processing session data", http.StatusInternalServerError)
 			return
 		}
@@ -308,7 +348,7 @@ func SessionMiddleware(next http.Handler) http.Handler {
 			if serviceName, ok := service.(string); ok && serviceName == "twitch" {
 				hasTwitch = true
 				// Refresh Twitch token if necessary
-				if err := refreshToken("twitch", sessionToken); err != nil {
+				if err := refreshToken("twitch", sessionToken, sessionData); err != nil {
 					log.Printf("Error refreshing Twitch token: %v", err)
 				}
 				break // Since we're only interested in Twitch, we can break early
@@ -338,10 +378,9 @@ func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionToken := cookie.Value
-	sessionDataJson, err := redisClient.Get(ctx, fmt.Sprintf("session:%s", sessionToken)).Result()
+	sess, _, err := loadSession(r.Context(), sessionToken)
 	if err != nil {
-		// If session data is not found in Redis, it's likely the session has expired or is invalid.
-		// log.Println("Session data not found or expired:", err)
+		// If session data is not found in the store, it's likely the session has expired or is invalid.
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"services": []}`)) // Similarly, indicate no services are logged in.
 		return
@@ -350,19 +389,18 @@ func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
 	// If we reach this point, we have valid session data.
 	// Send the session data back to the client.
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(sessionDataJson))
+	w.Write([]byte(sess.DataJSON))
 }
 
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session_token")
 	if err == nil && cookie != nil {
-		// Delete the session token from Redis
+		// Delete the session token from the backing store
 		sessionToken := cookie.Value
-		_, err := redisClient.Del(ctx, fmt.Sprintf("session:%s", sessionToken)).Result()
-		if err != nil {
-			// Update this error handling with best practices
-			http.Error(w, "Error logging out", http.StatusBadRequest)
-			return
+		if chatStore != nil {
+			if err := chatStore.DeleteSession(ctx, sessionToken); err != nil {
+				log.Printf("auth: error deleting session during logout: %v", err)
+			}
 		}
 	}
 
@@ -380,31 +418,25 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-func refreshToken(service string, sessionToken string) error {
-	// Retrieve the session data from Redis
-	sessionDataJson, err := redisClient.Get(ctx, fmt.Sprintf("session:%s", sessionToken)).Result()
-	if err != nil {
-		return fmt.Errorf("failed to retrieve session data: %v", err)
+func refreshToken(service string, sessionToken string, sessionData map[string]any) error {
+	if sessionData == nil {
+		return errors.New("session data unavailable")
 	}
 
-	var sessionData map[string]any
-	err = json.Unmarshal([]byte(sessionDataJson), &sessionData)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal session data: %v", err)
+	expiryUnix, expiryOk := toUnixSeconds(sessionData["token_expiry"])
+	refreshTokenValue, refreshTokenOk := sessionData["refresh_token"].(string)
+	if !refreshTokenOk {
+		return nil
 	}
-
-	// Extract the necessary data for token refresh
-	expiry, expiryOk := sessionData["token_expiry"].(int64)
-	refreshToken, refreshTokenOk := sessionData["refresh_token"].(string)
-	if !expiryOk || !refreshTokenOk || time.Now().Unix() < expiry {
-		// Token hasn't expired or necessary data is not available, no refresh needed
+	if expiryOk && time.Now().Unix() < expiryUnix {
+		// Token hasn't expired yet; nothing to do.
 		return nil
 	}
 
 	var oauthConfig *oauth2.Config = twitchOAuthConfig
 
 	token := &oauth2.Token{
-		RefreshToken: refreshToken,
+		RefreshToken: refreshTokenValue,
 	}
 	ts := oauthConfig.TokenSource(context.Background(), token)
 	newToken, err := ts.Token() // This refreshes the token
@@ -412,18 +444,92 @@ func refreshToken(service string, sessionToken string) error {
 		return fmt.Errorf("failed to refresh token: %v", err)
 	}
 
-	// Prepare userData with the new token information
 	userData := map[string]any{
 		fmt.Sprintf("%s_token", service): newToken.AccessToken,
 		"refresh_token":                  newToken.RefreshToken,
 		"token_expiry":                   newToken.Expiry.Unix(),
 	}
 
-	// Use the existing function to update the session data
-	// Note: This function already handles Redis update and session cookie reset
-	updateSessionDataForService(nil, userData, service, sessionToken) // Assuming w http.ResponseWriter is not required for Redis update
+	// Use the existing function to update the session data without resetting cookies.
+	updateSessionDataForService(nil, userData, service, sessionToken)
 
 	return nil
+}
+
+func storeOAuthState(c context.Context, state string) error {
+	if chatStore == nil {
+		return errors.New("storage not configured")
+	}
+	if c == nil {
+		c = context.Background()
+	}
+
+	payload, err := json.Marshal(map[string]any{"state": "valid"})
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	return chatStore.UpsertSession(c, &storage.Session{
+		Token:       oauthStateKey(state),
+		Service:     "oauth",
+		DataJSON:    string(payload),
+		TokenExpiry: now.Add(10 * time.Minute),
+		UpdatedAt:   now,
+	})
+}
+
+func oauthStateKey(state string) string {
+	return "oauth-state:" + state
+}
+
+func loadSession(c context.Context, token string) (*storage.Session, map[string]any, error) {
+	if chatStore == nil {
+		return nil, nil, errors.New("storage not configured")
+	}
+	if c == nil {
+		c = context.Background()
+	}
+
+	sess, err := chatStore.GetSession(c, token)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if sess.DataJSON == "" {
+		return sess, map[string]any{}, nil
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(sess.DataJSON), &data); err != nil {
+		return sess, nil, err
+	}
+	return sess, data, nil
+}
+
+func isSessionNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, redis.Nil)
+}
+
+func toUnixSeconds(value any) (int64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 func SetupAuthRoutes(router *mux.Router) {

@@ -2,6 +2,7 @@ package redisstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -24,6 +25,10 @@ type Store struct {
 	client *redis.Client
 	stream string
 	maxLen int64
+}
+
+func sessionKey(token string) string {
+	return "session:" + token
 }
 
 // New creates a new Redis-backed store.
@@ -138,6 +143,100 @@ func (s *Store) PurgeAll(ctx context.Context) error {
 		return fmt.Errorf("redis: del stream: %w", err)
 	}
 	return nil
+}
+
+// GetSession fetches a session record using the legacy JSON payload layout.
+func (s *Store) GetSession(ctx context.Context, token string) (*storage.Session, error) {
+	if s.client == nil {
+		return nil, errors.New("redis: client is nil")
+	}
+
+	raw, err := s.client.Get(ctx, sessionKey(token)).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	sess := &storage.Session{Token: token, DataJSON: raw}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err == nil {
+		if svc, ok := payload["service"].(string); ok {
+			sess.Service = svc
+		}
+		if exp, ok := toUnix(payload["token_expiry"]); ok {
+			sess.TokenExpiry = time.Unix(exp, 0).UTC()
+		}
+		if upd, ok := toUnix(payload["updated_at"]); ok {
+			sess.UpdatedAt = time.Unix(upd, 0).UTC()
+		}
+	}
+
+	if sess.TokenExpiry.IsZero() {
+		sess.TokenExpiry = time.Now().UTC()
+	}
+	if sess.UpdatedAt.IsZero() {
+		sess.UpdatedAt = time.Now().UTC()
+	}
+
+	return sess, nil
+}
+
+// UpsertSession writes the session JSON blob using the legacy key layout.
+func (s *Store) UpsertSession(ctx context.Context, sess *storage.Session) error {
+	if s.client == nil {
+		return errors.New("redis: client is nil")
+	}
+	if sess == nil {
+		return errors.New("redis: session is nil")
+	}
+	ttl := 24 * time.Hour
+	if sess.UpdatedAt.IsZero() {
+		sess.UpdatedAt = time.Now().UTC()
+	}
+
+	// Ensure the JSON payload carries updated_at for downstream consumers when possible.
+	if sess.DataJSON != "" {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(sess.DataJSON), &payload); err == nil {
+			payload["updated_at"] = sess.UpdatedAt.UTC().Unix()
+			if payloadSvc, ok := payload["service"].(string); !ok || payloadSvc == "" {
+				payload["service"] = sess.Service
+			}
+			if _, ok := payload["token_expiry"]; !ok && !sess.TokenExpiry.IsZero() {
+				payload["token_expiry"] = sess.TokenExpiry.UTC().Unix()
+			}
+			if encoded, err := json.Marshal(payload); err == nil {
+				sess.DataJSON = string(encoded)
+			}
+		}
+	}
+
+	return s.client.Set(ctx, sessionKey(sess.Token), sess.DataJSON, ttl).Err()
+}
+
+// DeleteSession removes a stored session key.
+func (s *Store) DeleteSession(ctx context.Context, token string) error {
+	if s.client == nil {
+		return errors.New("redis: client is nil")
+	}
+	return s.client.Del(ctx, sessionKey(token)).Err()
+}
+
+func toUnix(value any) (int64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 // Close is a no-op for the Redis store since the client is managed externally.

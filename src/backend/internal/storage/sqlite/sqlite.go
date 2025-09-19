@@ -248,6 +248,82 @@ func (s *Store) PurgeAll(ctx context.Context) error {
 	return nil
 }
 
+// GetSession retrieves a stored session by token.
+func (s *Store) GetSession(ctx context.Context, token string) (*storage.Session, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT token, service, data_json, token_expiry, updated_at FROM sessions WHERE token = ?`, token)
+	var (
+		tok, service, data string
+		expiry, updated    int64
+	)
+	if err := row.Scan(&tok, &service, &data, &expiry, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("sqlite: get session: %w", err)
+	}
+
+	return &storage.Session{
+		Token:       tok,
+		Service:     service,
+		DataJSON:    data,
+		TokenExpiry: time.Unix(expiry, 0).UTC(),
+		UpdatedAt:   time.Unix(updated, 0).UTC(),
+	}, nil
+}
+
+// UpsertSession creates or updates a stored session record.
+func (s *Store) UpsertSession(ctx context.Context, sess *storage.Session) error {
+	if s.db == nil {
+		return errors.New("sqlite: store not initialized")
+	}
+	if sess == nil {
+		return errors.New("sqlite: session is nil")
+	}
+	if strings.TrimSpace(sess.Token) == "" {
+		return errors.New("sqlite: session token is empty")
+	}
+
+	expiry := sess.TokenExpiry.UTC().Unix()
+	updated := sess.UpdatedAt.UTC().Unix()
+	if updated == 0 {
+		updated = time.Now().UTC().Unix()
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions(token, service, data_json, token_expiry, updated_at)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(token) DO UPDATE SET
+           service=excluded.service,
+           data_json=excluded.data_json,
+           token_expiry=excluded.token_expiry,
+           updated_at=excluded.updated_at`,
+		sess.Token,
+		sess.Service,
+		sess.DataJSON,
+		expiry,
+		updated,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: upsert session: %w", err)
+	}
+	return nil
+}
+
+// DeleteSession removes a stored session by token.
+func (s *Store) DeleteSession(ctx context.Context, token string) error {
+	if s.db == nil {
+		return errors.New("sqlite: store not initialized")
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token = ?`, token); err != nil {
+		return fmt.Errorf("sqlite: delete session: %w", err)
+	}
+	return nil
+}
+
 // Close terminates the database connection and cleans up any ephemeral files.
 func (s *Store) Close(ctx context.Context) error {
 	var errs []error
