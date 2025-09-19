@@ -14,7 +14,7 @@ import (
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 )
 
-func TestSQLiteInsertAndQuery(t *testing.T) {
+func TestSQLiteGetRecentEphemeral(t *testing.T) {
 	store := New(Config{})
 	ctx := context.Background()
 
@@ -27,52 +27,58 @@ func TestSQLiteInsertAndQuery(t *testing.T) {
 		}
 	})
 
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	msg := &storage.Message{
-		ID:         "msg-1",
-		Timestamp:  now,
-		Username:   "tester",
-		Platform:   "twitch",
-		Text:       "hello world",
-		EmotesJSON: "[]",
-		RawJSON:    `{"message":"hello world"}`,
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	const total = 5
+	want := make([]*storage.Message, 0, total)
+	for i := 0; i < total; i++ {
+		msg := &storage.Message{
+			ID:         fmt.Sprintf("msg-%d", i),
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			Username:   "tester",
+			Platform:   "twitch",
+			Text:       fmt.Sprintf("hello world %d", i),
+			EmotesJSON: "[]",
+			RawJSON:    fmt.Sprintf(`{"message":"hello world %d"}`, i),
+		}
+		want = append(want, msg)
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage %d returned error: %v", i, err)
+		}
 	}
 
-	if err := store.InsertMessage(ctx, msg); err != nil {
-		t.Fatalf("InsertMessage returned error: %v", err)
-	}
-
-	got, err := store.GetRecent(ctx, storage.QueryOpts{Limit: 10})
+	got, err := store.GetRecent(ctx, storage.QueryOpts{Limit: total})
 	if err != nil {
 		t.Fatalf("GetRecent returned error: %v", err)
 	}
 
-	if len(got) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(got))
+	if len(got) != total {
+		t.Fatalf("expected %d messages, got %d", total, len(got))
 	}
 
-	result := got[0]
-	if result.ID != msg.ID {
-		t.Fatalf("expected ID %s, got %s", msg.ID, result.ID)
-	}
-	if result.Username != msg.Username {
-		t.Fatalf("expected Username %s, got %s", msg.Username, result.Username)
-	}
-	if result.Platform != msg.Platform {
-		t.Fatalf("expected Platform %s, got %s", msg.Platform, result.Platform)
-	}
-	if result.Text != msg.Text {
-		t.Fatalf("expected Text %s, got %s", msg.Text, result.Text)
-	}
-	if result.EmotesJSON != msg.EmotesJSON {
-		t.Fatalf("expected EmotesJSON %s, got %s", msg.EmotesJSON, result.EmotesJSON)
-	}
-	if result.RawJSON != msg.RawJSON {
-		t.Fatalf("expected RawJSON %s, got %s", msg.RawJSON, result.RawJSON)
-	}
-
-	if delta := result.Timestamp.Sub(msg.Timestamp); delta > time.Millisecond || delta < -time.Millisecond {
-		t.Fatalf("expected Timestamp near %v, got %v", msg.Timestamp, result.Timestamp)
+	for i := 0; i < total; i++ {
+		expected := want[total-1-i]
+		result := got[i]
+		if result.ID != expected.ID {
+			t.Fatalf("result[%d] expected ID %s, got %s", i, expected.ID, result.ID)
+		}
+		if result.Username != expected.Username {
+			t.Fatalf("result[%d] expected Username %s, got %s", i, expected.Username, result.Username)
+		}
+		if result.Platform != expected.Platform {
+			t.Fatalf("result[%d] expected Platform %s, got %s", i, expected.Platform, result.Platform)
+		}
+		if result.Text != expected.Text {
+			t.Fatalf("result[%d] expected Text %s, got %s", i, expected.Text, result.Text)
+		}
+		if result.EmotesJSON != expected.EmotesJSON {
+			t.Fatalf("result[%d] expected EmotesJSON %s, got %s", i, expected.EmotesJSON, result.EmotesJSON)
+		}
+		if result.RawJSON != expected.RawJSON {
+			t.Fatalf("result[%d] expected RawJSON %s, got %s", i, expected.RawJSON, result.RawJSON)
+		}
+		if delta := result.Timestamp.Sub(expected.Timestamp); delta > time.Millisecond || delta < -time.Millisecond {
+			t.Fatalf("result[%d] expected Timestamp near %v, got %v", i, expected.Timestamp, result.Timestamp)
+		}
 	}
 }
 
@@ -116,6 +122,86 @@ func TestSQLitePurge(t *testing.T) {
 
 	if len(got) != 0 {
 		t.Fatalf("expected 0 messages after purge, got %d", len(got))
+	}
+}
+
+func TestSQLiteGetRecentPersistent(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "chat.db")
+
+	cfg := Config{Mode: "persistent", Path: dbPath}
+	store := New(cfg)
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	const total = 4
+	want := make([]*storage.Message, 0, total)
+	for i := 0; i < total; i++ {
+		msg := &storage.Message{
+			ID:         fmt.Sprintf("persist-%d", i),
+			Timestamp:  base.Add(time.Duration(i) * time.Minute),
+			Username:   "persistent-user",
+			Platform:   "youtube",
+			Text:       fmt.Sprintf("persistent message %d", i),
+			EmotesJSON: "[]",
+			RawJSON:    fmt.Sprintf(`{"message":"persistent message %d"}`, i),
+		}
+		want = append(want, msg)
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage %d returned error: %v", i, err)
+		}
+	}
+
+	if err := store.Close(ctx); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	reopened := New(cfg)
+	if err := reopened.Init(ctx); err != nil {
+		t.Fatalf("reopen Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(ctx); err != nil {
+			t.Fatalf("reopen Close returned error: %v", err)
+		}
+	})
+
+	got, err := reopened.GetRecent(ctx, storage.QueryOpts{Limit: total})
+	if err != nil {
+		t.Fatalf("GetRecent returned error: %v", err)
+	}
+
+	if len(got) != total {
+		t.Fatalf("expected %d messages, got %d", total, len(got))
+	}
+
+	for i := 0; i < total; i++ {
+		expected := want[total-1-i]
+		result := got[i]
+		if result.ID != expected.ID {
+			t.Fatalf("result[%d] expected ID %s, got %s", i, expected.ID, result.ID)
+		}
+		if result.Username != expected.Username {
+			t.Fatalf("result[%d] expected Username %s, got %s", i, expected.Username, result.Username)
+		}
+		if result.Platform != expected.Platform {
+			t.Fatalf("result[%d] expected Platform %s, got %s", i, expected.Platform, result.Platform)
+		}
+		if result.Text != expected.Text {
+			t.Fatalf("result[%d] expected Text %s, got %s", i, expected.Text, result.Text)
+		}
+		if result.EmotesJSON != expected.EmotesJSON {
+			t.Fatalf("result[%d] expected EmotesJSON %s, got %s", i, expected.EmotesJSON, result.EmotesJSON)
+		}
+		if result.RawJSON != expected.RawJSON {
+			t.Fatalf("result[%d] expected RawJSON %s, got %s", i, expected.RawJSON, result.RawJSON)
+		}
+		if delta := result.Timestamp.Sub(expected.Timestamp); delta > time.Millisecond || delta < -time.Millisecond {
+			t.Fatalf("result[%d] expected Timestamp near %v, got %v", i, expected.Timestamp, result.Timestamp)
+		}
 	}
 }
 
