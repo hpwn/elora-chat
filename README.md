@@ -46,6 +46,8 @@ The backend stores chat history in Redis streams by default. To try the SQLite i
 2. (Optional) Adjust the database settings with `ELORA_DB_MODE`, `ELORA_DB_PATH`, `ELORA_DB_MAX_CONNS`, `ELORA_DB_BUSY_TIMEOUT_MS`, and `ELORA_DB_PRAGMAS_EXTRA`. Ephemeral mode (the default) leaves `ELORA_DB_PATH` empty and automatically creates a temp database such as `/tmp/elora-chat-<pid>.db`.
 3. Restart the backend. In `persistent` mode set `ELORA_DB_PATH` to a writable location (for example `./data/elora-chat.db` or `/data/elora-chat.db` when using a Docker volume like `-v elora_sqlite_data:/data`).
 
+When SQLite is selected, authentication sessions are also stored there, so Redis is optional for the backend.
+
 Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
 
 ## Usage ⌨️
