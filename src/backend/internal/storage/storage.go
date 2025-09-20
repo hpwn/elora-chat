@@ -27,10 +27,8 @@ type Session struct {
 
 // QueryOpts defines filters for retrieving stored messages.
 type QueryOpts struct {
-	Limit    int
-	Since    *time.Time
-	Platform *string
-	Username *string
+	Limit   int
+	SinceTS *time.Time
 }
 
 // Store describes a backend capable of persisting chat messages and sessions.

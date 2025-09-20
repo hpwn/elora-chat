@@ -109,8 +109,8 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 
 	var results []storage.Message
 	sinceTS := int64(0)
-	if q.Since != nil {
-		sinceTS = q.Since.UTC().UnixMilli()
+	if q.SinceTS != nil {
+		sinceTS = q.SinceTS.UTC().UnixMilli()
 	}
 
 	for _, entry := range entries {
@@ -120,12 +120,6 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 			continue
 		}
 		if sinceTS > 0 && msg.Timestamp.UTC().UnixMilli() < sinceTS {
-			continue
-		}
-		if q.Platform != nil && msg.Platform != *q.Platform {
-			continue
-		}
-		if q.Username != nil && msg.Username != *q.Username {
 			continue
 		}
 		results = append(results, msg)

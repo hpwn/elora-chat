@@ -43,7 +43,7 @@ func main() {
 
 	baseCtx := context.Background()
 
-	storeKind := strings.ToLower(strings.TrimSpace(getEnvOrDefault("ELORA_STORE", "redis")))
+	storeKind := strings.ToLower(strings.TrimSpace(getEnvOrDefault("ELORA_STORE", "sqlite")))
 	var (
 		store       storage.Store
 		redisClient *redis.Client
@@ -119,6 +119,7 @@ func main() {
 	routes.SetupChatRoutes(r)
 	routes.SetupAuthRoutes(r)
 	routes.SetupSendRoutes(r)
+	routes.SetupMessageRoutes(r)
 
 	// Serve static files from the "public" directory
 	fs := http.FileServer(http.Dir("public"))
