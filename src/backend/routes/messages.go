@@ -41,7 +41,7 @@ func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {
 
 	messages, err := chatStore.GetRecent(r.Context(), storage.QueryOpts{
 		Limit: limit,
-		Since: since,
+		SinceTS: since,
 	})
 	if err != nil {
 		http.Error(w, "failed to fetch messages", http.StatusInternalServerError)
