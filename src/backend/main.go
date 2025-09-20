@@ -119,6 +119,7 @@ func main() {
 	routes.SetupChatRoutes(r)
 	routes.SetupAuthRoutes(r)
 	routes.SetupSendRoutes(r)
+	routes.SetupMessageRoutes(r)
 
 	// Serve static files from the "public" directory
 	fs := http.FileServer(http.Dir("public"))
