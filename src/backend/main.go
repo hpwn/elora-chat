@@ -43,7 +43,7 @@ func main() {
 
 	baseCtx := context.Background()
 
-	storeKind := strings.ToLower(strings.TrimSpace(getEnvOrDefault("ELORA_STORE", "redis")))
+	storeKind := strings.ToLower(strings.TrimSpace(getEnvOrDefault("ELORA_STORE", "sqlite")))
 	var (
 		store       storage.Store
 		redisClient *redis.Client

@@ -181,26 +181,11 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	}
 
 	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(raw_json, '') FROM messages`
-	var conditions []string
 	var args []any
-
-	if q.Since != nil {
-		conditions = append(conditions, "ts >= ?")
-		args = append(args, q.Since.UTC().UnixMilli())
+	if q.SinceTS != nil {
+		query += " WHERE ts >= ?"
+		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
-	if q.Platform != nil {
-		conditions = append(conditions, "platform = ?")
-		args = append(args, *q.Platform)
-	}
-	if q.Username != nil {
-		conditions = append(conditions, "username = ?")
-		args = append(args, *q.Username)
-	}
-
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-
 	query += " ORDER BY ts DESC"
 	if q.Limit > 0 {
 		query += " LIMIT ?"
