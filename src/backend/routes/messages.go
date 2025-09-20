@@ -3,6 +3,7 @@ package routes
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,9 +14,24 @@ import (
 )
 
 const (
-	defaultMessagesLimit = 100
-	maxMessagesLimit     = 500
+	defaultMessagesLimit = 50
+	maxMessagesLimit     = 100
 )
+
+type messageResponse struct {
+	ID         string `json:"id"`
+	Timestamp  string `json:"ts"`
+	Username   string `json:"username"`
+	Platform   string `json:"platform"`
+	Text       string `json:"text"`
+	EmotesJSON string `json:"emotes_json"`
+	RawJSON    string `json:"raw_json"`
+}
+
+type messagesEnvelope struct {
+	Items        []messageResponse `json:"items"`
+	NextBeforeTS *int64            `json:"next_before_ts,omitempty"`
+}
 
 func SetupMessageRoutes(r *mux.Router) {
 	r.HandleFunc("/api/messages", handleGetRecentMessages).Methods(http.MethodGet)
@@ -39,23 +55,37 @@ func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	before, err := parseCursor(r.URL.Query().Get("before_ts"), "before_ts")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if since != nil && before != nil {
+		http.Error(w, "since_ts and before_ts are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+
+	fetchLimit := limit
+	if fetchLimit > 0 {
+		fetchLimit++
+	}
+
 	messages, err := chatStore.GetRecent(r.Context(), storage.QueryOpts{
-		Limit: limit,
-		SinceTS: since,
+		Limit:    fetchLimit,
+		SinceTS:  since,
+		BeforeTS: before,
 	})
 	if err != nil {
 		http.Error(w, "failed to fetch messages", http.StatusInternalServerError)
 		return
 	}
 
-	type messageResponse struct {
-		ID         string `json:"id"`
-		Timestamp  string `json:"ts"`
-		Username   string `json:"username"`
-		Platform   string `json:"platform"`
-		Text       string `json:"text"`
-		EmotesJSON string `json:"emotes_json"`
-		RawJSON    string `json:"raw_json"`
+	var nextBefore *int64
+	if limit > 0 && len(messages) > limit {
+		messages = messages[:limit]
+		oldest := messages[len(messages)-1].Timestamp.UTC().UnixMilli() - 1
+		nextBefore = &oldest
 	}
 
 	resp := make([]messageResponse, 0, len(messages))
@@ -71,10 +101,12 @@ func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	payload := messagesEnvelope{Items: resp, NextBeforeTS: nextBefore}
+
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(resp); err != nil {
+	if err := enc.Encode(payload); err != nil {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -99,26 +131,21 @@ func parseLimit(raw string) (int, error) {
 }
 
 func parseSince(raw string) (*time.Time, error) {
+	return parseCursor(raw, "since_ts")
+}
+
+func parseCursor(raw, param string) (*time.Time, error) {
 	if raw == "" {
 		return nil, nil
 	}
 
-	if ms, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		if ms <= 0 {
-			return nil, errors.New("invalid since_ts")
-		}
-		t := time.UnixMilli(ms).UTC()
-		return &t, nil
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s", param)
 	}
-
-	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		t := ts.UTC()
-		return &t, nil
+	if ms < 0 {
+		return nil, fmt.Errorf("invalid %s", param)
 	}
-	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
-		t := ts.UTC()
-		return &t, nil
-	}
-
-	return nil, errors.New("invalid since_ts")
+	t := time.UnixMilli(ms).UTC()
+	return &t, nil
 }

@@ -82,6 +82,102 @@ func TestSQLiteGetRecentEphemeral(t *testing.T) {
 	}
 }
 
+func TestSQLiteGetRecentBeforeTS(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	msgs := make([]*storage.Message, 0, 5)
+	for i := 0; i < 5; i++ {
+		msg := &storage.Message{
+			ID:        fmt.Sprintf("msg-%d", i),
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			Username:  "tester",
+			Platform:  "twitch",
+			Text:      fmt.Sprintf("body-%d", i),
+		}
+		msgs = append(msgs, msg)
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage %d returned error: %v", i, err)
+		}
+	}
+
+	before := msgs[len(msgs)-1].Timestamp
+	got, err := store.GetRecent(ctx, storage.QueryOpts{Limit: 2, BeforeTS: &before})
+	if err != nil {
+		t.Fatalf("GetRecent returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	if got[0].ID != "msg-3" || got[1].ID != "msg-2" {
+		t.Fatalf("unexpected IDs: %#v", got)
+	}
+}
+
+func TestSQLiteGetRecentStableOrdering(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	ids := []string{"msg-a", "msg-b", "msg-c"}
+	for _, id := range ids {
+		msg := &storage.Message{ID: id, Timestamp: ts, Username: "tester", Platform: "twitch", Text: id}
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage returned error: %v", err)
+		}
+	}
+
+	got, err := store.GetRecent(ctx, storage.QueryOpts{Limit: len(ids)})
+	if err != nil {
+		t.Fatalf("GetRecent returned error: %v", err)
+	}
+	wantOrder := []string{"msg-c", "msg-b", "msg-a"}
+	for i, want := range wantOrder {
+		if got[i].ID != want {
+			t.Fatalf("expected ID %q at index %d, got %q", want, i, got[i].ID)
+		}
+	}
+}
+
+func TestSQLiteGetRecentConflictingCursors(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	now := time.Now().UTC()
+	opts := storage.QueryOpts{Limit: 1, SinceTS: &now, BeforeTS: &now}
+	if _, err := store.GetRecent(ctx, opts); err == nil {
+		t.Fatalf("expected error when both since_ts and before_ts set")
+	}
+}
+
 func TestSQLitePurge(t *testing.T) {
 	store := New(Config{})
 	ctx := context.Background()

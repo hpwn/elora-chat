@@ -69,6 +69,21 @@ curl "http://localhost:8080/api/messages?since_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 elora-chat is easy to use. Simply start the server and connect your streaming platforms. The chat will be unified and available in your dashboard for a seamless streaming experience.
 
+### Fetch recent messages with pagination
+
+```bash
+# Fetch the newest messages (default limit = 50)
+curl -s "http://localhost:8080/api/messages" | jq "."
+
+# Request a smaller page size
+curl -s "http://localhost:8080/api/messages?limit=25" | jq "."
+
+# Walk backwards using the returned next_before_ts cursor
+resp=$(curl -s "http://localhost:8080/api/messages?limit=25")
+next=$(echo "$resp" | jq -r ".next_before_ts // empty")
+curl -s "http://localhost:8080/api/messages?limit=25&before_ts=$next" | jq "."
+```
+
 ## Contributing 🧑🏼‍💻
 
 If you have ideas for improvement or want to contribute to elora-chat, feel free to create a pull request or contact Hayden for collaboration.

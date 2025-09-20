@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -24,6 +24,11 @@ type recentMessageResponse struct {
 	Text       string `json:"text"`
 	EmotesJSON string `json:"emotes_json"`
 	RawJSON    string `json:"raw_json"`
+}
+
+type messagesAPIPayload struct {
+	Items        []recentMessageResponse `json:"items"`
+	NextBeforeTS *int64                  `json:"next_before_ts"`
 }
 
 func withSQLiteStore(t *testing.T) func() {
@@ -106,21 +111,25 @@ func TestHandleGetRecentMessages_DefaultLimit(t *testing.T) {
 		t.Fatalf("unexpected status: %d", rr.Code)
 	}
 
-	var payload []recentMessageResponse
+	var payload messagesAPIPayload
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(payload) != len(msgs) {
-		t.Fatalf("expected %d messages, got %d", len(msgs), len(payload))
+	if len(payload.Items) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(payload.Items))
 	}
 
-	if payload[0].ID != msgs[2].ID {
-		t.Fatalf("expected most recent message id %q, got %q", msgs[2].ID, payload[0].ID)
+	if payload.Items[0].ID != msgs[2].ID {
+		t.Fatalf("expected most recent message id %q, got %q", msgs[2].ID, payload.Items[0].ID)
 	}
 
-	if _, err := time.Parse(time.RFC3339Nano, payload[0].Timestamp); err != nil {
+	if _, err := time.Parse(time.RFC3339Nano, payload.Items[0].Timestamp); err != nil {
 		t.Fatalf("timestamp is not RFC3339: %v", err)
+	}
+
+	if payload.NextBeforeTS != nil {
+		t.Fatalf("expected next_before_ts to be nil when results < limit")
 	}
 }
 
@@ -130,8 +139,8 @@ func TestHandleGetRecentMessages_SinceAndLimit(t *testing.T) {
 
 	msgs := seedRecentMessages(t)
 
-	since := msgs[1].Timestamp.UTC().Format(time.RFC3339Nano)
-	rawURL := fmt.Sprintf("/api/messages?since_ts=%s&limit=1", url.QueryEscape(since))
+	since := fmt.Sprintf("%d", msgs[1].Timestamp.UTC().UnixMilli())
+	rawURL := fmt.Sprintf("/api/messages?since_ts=%s&limit=1", since)
 
 	req := httptest.NewRequest(http.MethodGet, rawURL, nil)
 	rr := httptest.NewRecorder()
@@ -143,21 +152,25 @@ func TestHandleGetRecentMessages_SinceAndLimit(t *testing.T) {
 		t.Fatalf("unexpected status: %d", rr.Code)
 	}
 
-	var payload []recentMessageResponse
+	var payload messagesAPIPayload
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(payload) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(payload))
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(payload.Items))
 	}
 
-	if payload[0].ID != msgs[2].ID {
-		t.Fatalf("expected message id %q, got %q", msgs[2].ID, payload[0].ID)
+	if payload.Items[0].ID != msgs[2].ID {
+		t.Fatalf("expected message id %q, got %q", msgs[2].ID, payload.Items[0].ID)
 	}
 
-	if _, err := time.Parse(time.RFC3339Nano, payload[0].Timestamp); err != nil {
+	if _, err := time.Parse(time.RFC3339Nano, payload.Items[0].Timestamp); err != nil {
 		t.Fatalf("timestamp is not RFC3339: %v", err)
+	}
+
+	if payload.NextBeforeTS == nil {
+		t.Fatalf("expected next_before_ts when more messages available")
 	}
 }
 
@@ -180,12 +193,89 @@ func TestHandleGetRecentMessages_SinceUnixMillis(t *testing.T) {
 		t.Fatalf("unexpected status: %d", rr.Code)
 	}
 
-	var payload []recentMessageResponse
+	var payload messagesAPIPayload
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(payload) != len(msgs) {
-		t.Fatalf("expected %d messages, got %d", len(msgs), len(payload))
+	if len(payload.Items) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(payload.Items))
+	}
+
+	if payload.NextBeforeTS != nil {
+		t.Fatalf("expected next_before_ts to be nil when full history returned")
+	}
+}
+
+func TestHandleGetRecentMessages_BeforeTS(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	msgs := seedRecentMessages(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?limit=2", nil)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rr.Code)
+	}
+
+	var first messagesAPIPayload
+	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(first.Items) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(first.Items))
+	}
+	if first.NextBeforeTS == nil {
+		t.Fatalf("expected next_before_ts on first page")
+	}
+	if first.Items[0].ID != msgs[2].ID {
+		t.Fatalf("expected most recent message, got %q", first.Items[0].ID)
+	}
+
+	nextURL := fmt.Sprintf("/api/messages?limit=2&before_ts=%s", strconv.FormatInt(*first.NextBeforeTS, 10))
+	req2 := httptest.NewRequest(http.MethodGet, nextURL, nil)
+	rr2 := httptest.NewRecorder()
+	router.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rr2.Code)
+	}
+
+	var second messagesAPIPayload
+	if err := json.Unmarshal(rr2.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+
+	if len(second.Items) != 1 {
+		t.Fatalf("expected 1 message on second page, got %d", len(second.Items))
+	}
+	if second.Items[0].ID != msgs[0].ID {
+		t.Fatalf("expected oldest message, got %q", second.Items[0].ID)
+	}
+	if second.NextBeforeTS != nil {
+		t.Fatalf("expected no next_before_ts when no more pages")
+	}
+}
+
+func TestHandleGetRecentMessages_ConflictingCursors(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	_ = seedRecentMessages(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?since_ts=100&before_ts=50", nil)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rr.Code)
 	}
 }
