@@ -50,6 +50,22 @@ When SQLite is selected, authentication sessions are also stored there, so Redis
 
 Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
 
+### HTTP: recent messages
+
+Recent chat history can be fetched directly from the backend with `GET /api/messages`.
+
+Query parameters:
+
+- `limit` (optional, default 100, maximum 500)
+- `since_ts` (optional, RFC3339 timestamp or Unix epoch milliseconds)
+
+Examples:
+
+```bash
+curl "http://localhost:8080/api/messages?limit=20"
+curl "http://localhost:8080/api/messages?since_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)&limit=50"
+```
+
 ## Usage ⌨️
 
 elora-chat is easy to use. Simply start the server and connect your streaming platforms. The chat will be unified and available in your dashboard for a seamless streaming experience.
