@@ -13,10 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/redis/go-redis/v9"
 
-	"github.com/hpwn/EloraChat/src/backend/internal/storage"
-	redisstore "github.com/hpwn/EloraChat/src/backend/internal/storage/redis"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
 	"github.com/hpwn/EloraChat/src/backend/routes" // Ensure this is the correct path to your routes package
 )
@@ -43,62 +40,18 @@ func main() {
 
 	baseCtx := context.Background()
 
-	storeKind := strings.ToLower(strings.TrimSpace(getEnvOrDefault("ELORA_STORE", "sqlite")))
-	var (
-		store       storage.Store
-		redisClient *redis.Client
-	)
-
-	newRedisClient := func() *redis.Client {
-		return redis.NewClient(&redis.Options{
-			Addr:            os.Getenv("REDIS_ADDR"),
-			Password:        os.Getenv("REDIS_PASSWORD"),
-			DB:              0,
-			PoolSize:        200,
-			MinIdleConns:    10,
-			ConnMaxIdleTime: 5 * time.Minute,
-			ConnMaxLifetime: 30 * time.Minute,
-		})
-	}
-	switch storeKind {
-	case "sqlite":
-		sqliteCfg := sqlite.Config{
-			Mode:            getEnvOrDefault("ELORA_DB_MODE", "ephemeral"),
-			Path:            strings.TrimSpace(os.Getenv("ELORA_DB_PATH")),
-			MaxConns:        getEnvAsInt("ELORA_DB_MAX_CONNS", 16),
-			BusyTimeoutMS:   getEnvAsInt("ELORA_DB_BUSY_TIMEOUT_MS", 5000),
-			PragmasExtraCSV: getEnvOrDefault("ELORA_DB_PRAGMAS_EXTRA", "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY"),
-		}
-		store = sqlite.New(sqliteCfg)
-	case "redis", "":
-		redisClient = newRedisClient()
-		store = redisstore.New(redisstore.Config{
-			Client: redisClient,
-			Stream: "chatMessages",
-			MaxLen: 100,
-		})
-		storeKind = "redis"
-	default:
-		log.Printf("storage: unknown store %q, defaulting to redis", storeKind)
-		redisClient = newRedisClient()
-		store = redisstore.New(redisstore.Config{
-			Client: redisClient,
-			Stream: "chatMessages",
-			MaxLen: 100,
-		})
-		storeKind = "redis"
+	sqliteCfg := sqlite.Config{
+		Mode:            getEnvOrDefault("ELORA_DB_MODE", "ephemeral"),
+		Path:            strings.TrimSpace(os.Getenv("ELORA_DB_PATH")),
+		MaxConns:        getEnvAsInt("ELORA_DB_MAX_CONNS", 16),
+		BusyTimeoutMS:   getEnvAsInt("ELORA_DB_BUSY_TIMEOUT_MS", 5000),
+		PragmasExtraCSV: getEnvOrDefault("ELORA_DB_PRAGMAS_EXTRA", "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY"),
 	}
 
-	if redisClient != nil {
-		defer func() {
-			if err := redisClient.Close(); err != nil {
-				log.Printf("redis: close error: %v", err)
-			}
-		}()
-	}
+	store := sqlite.New(sqliteCfg)
 
 	if err := store.Init(baseCtx); err != nil {
-		log.Fatalf("storage: failed to initialize %s store: %v", storeKind, err)
+		log.Fatalf("storage: failed to initialize sqlite store: %v", err)
 	}
 	defer func() {
 		if err := store.Close(context.Background()); err != nil {
@@ -106,9 +59,9 @@ func main() {
 		}
 	}()
 
-	log.Printf("storage: using %s store", storeKind)
+	log.Printf("storage: using sqlite store (mode=%s)", sqliteCfg.Mode)
 
-	routes.InitRoutes(2*time.Second, redisClient, store)
+	routes.InitRoutes(store)
 
 	r := mux.NewRouter()
 
