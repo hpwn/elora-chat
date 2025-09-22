@@ -49,12 +49,10 @@ import (
 
 // 	// Initialize bot with current live stream URL
 // 	if err := cacheLiveStreamURL(apiKey, channelID); err == nil {
-// 		liveURL, _ := redisClient.Get(ctx, "youtube:live:url").Result()
 // 		startChatBot(liveURL)
 // 	}
 // 	// Initialize bot with current live stream URL
 // 	if err := cacheLiveStreamURL(apiKey, channelID); err == nil {
-// 		liveURL, _ := redisClient.Get(ctx, "youtube:live:url").Result()
 // 		startChatBot(liveURL)
 // 	}
 
@@ -215,18 +213,12 @@ import (
 // 		return err
 // 	}
 
-// 	// Store the URL in Redis
-// 	err = redisClient.Set(ctx, "youtube:live:url", url, 0).Err() // No expiration
 // 	if err != nil {
-// 		log.Printf("Error caching YouTube live stream URL in Redis: %v", err)
 // 		return err
 // 	}
 // 	return nil
 // }
-// 	// Store the URL in Redis
-// 	err = redisClient.Set(ctx, "youtube:live:url", url, 0).Err() // No expiration
 // 	if err != nil {
-// 		log.Printf("Error caching YouTube live stream URL in Redis: %v", err)
 // 		return err
 // 	}
 // 	return nil
@@ -314,7 +306,6 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	// Attempt to send message to YouTube
 	// TODO: uncomment this later once we have the secret(s)
 	// if err := cacheLiveStreamURL(apiKey, channelID); err == nil {
-	// 	liveURL, err := redisClient.Get(ctx, "youtube:live:url").Result()
 	// 	if err == nil && liveURL != "" {
 	// 		startChatBot(liveURL)
 	// 	} else {

@@ -17,14 +17,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"github.com/jdavasligil/emodl"
 )
 
-// Initialize a Redis client as a global variable.
-var redisClient *redis.Client
 var chatStore storage.Store
 var ctx = context.Background()
 var subscribersMu sync.Mutex
@@ -91,35 +88,17 @@ type Message struct {
 	Colour  string  `json:"colour"`
 }
 
-func InitRoutes(timeout time.Duration, client *redis.Client, store storage.Store) {
+func InitRoutes(store storage.Store) {
 	if store == nil {
 		log.Fatalf("storage: store is nil")
 	}
 
-	redisClient = client
 	chatStore = store
 	subscribersMu.Lock()
 	if subscribers == nil {
 		subscribers = make(map[chan []byte]struct{})
 	}
 	subscribersMu.Unlock()
-
-	if redisClient != nil {
-		ctx := context.Background()
-		err := redisClient.Ping(ctx).Err()
-		retryTicker := time.NewTicker(100 * time.Millisecond)
-		timeoutTimer := time.NewTimer(timeout)
-		for err != nil {
-			select {
-			case <-retryTicker.C:
-				err = redisClient.Ping(ctx).Err()
-			case <-timeoutTimer.C:
-				log.Fatalf("redis: Failed to connect to Redis: %v", err)
-			}
-		}
-	} else {
-		log.Println("redis: no client configured; continuing without Redis")
-	}
 
 	// Initialize tokenizer
 	tokenizer.TextEffectSep = ':'

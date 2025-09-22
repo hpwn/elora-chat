@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"golang.org/x/oauth2"
@@ -267,7 +266,7 @@ func generateState() (string, error) {
 	return state, nil
 }
 
-// validateState checks the provided state against the value stored in Redis.
+// validateState checks the provided state against the persisted session store.
 func validateState(state string) bool {
 	if chatStore == nil {
 		return false
@@ -511,7 +510,7 @@ func isSessionNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, redis.Nil)
+	return errors.Is(err, sql.ErrNoRows)
 }
 
 func toUnixSeconds(value any) (int64, bool) {
