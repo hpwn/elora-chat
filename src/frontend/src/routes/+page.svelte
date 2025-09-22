@@ -1,6 +1,6 @@
 <script>
   import { checkLoginStatus } from '$lib/api/auth.svelte';
-  import { Chat, Header, Footer } from '$lib/components';
+  import { Chat, Header, Footer, ExportPanel } from '$lib/components';
   import { onMount } from 'svelte';
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -25,6 +25,9 @@
 
 {#if !isPopout}
   <Header />
+  <div class="export-wrapper">
+    <ExportPanel />
+  </div>
 {/if}
 <Chat />
 <Footer />
@@ -171,5 +174,11 @@
     50% {
       transform: translateX(0.5rem) translateY(0.25rem);
     }
+  }
+
+  .export-wrapper {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0 16px;
   }
 </style>
