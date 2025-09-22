@@ -1,12 +1,15 @@
 package routes
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +57,7 @@ func withSQLiteStore(t *testing.T) func() {
 func seedRecentMessages(t *testing.T) []storage.Message {
 	t.Helper()
 
-	base := time.Now().UTC().Add(-2 * time.Minute)
+	base := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Millisecond)
 	msgs := []storage.Message{
 		{
 			ID:        "msg-1",
@@ -86,6 +89,29 @@ func seedRecentMessages(t *testing.T) []storage.Message {
 		}
 	}
 
+	return msgs
+}
+
+func seedMessagesCount(t *testing.T, count int) []storage.Message {
+	t.Helper()
+
+	base := time.Now().UTC().Add(-time.Duration(count) * time.Second).Truncate(time.Millisecond)
+	msgs := make([]storage.Message, 0, count)
+	for i := 0; i < count; i++ {
+		msg := storage.Message{
+			ID:         fmt.Sprintf("bulk-%d", i),
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			Username:   fmt.Sprintf("user-%d", i),
+			Platform:   "twitch",
+			Text:       fmt.Sprintf("text-%d", i),
+			EmotesJSON: "[]",
+			RawJSON:    fmt.Sprintf("{\"message\":%d}", i),
+		}
+		msgs = append(msgs, msg)
+		if err := chatStore.InsertMessage(context.Background(), &msg); err != nil {
+			t.Fatalf("insert bulk message %d: %v", i, err)
+		}
+	}
 	return msgs
 }
 
@@ -277,5 +303,144 @@ func TestHandleGetRecentMessages_ConflictingCursors(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleExportMessagesNDJSON(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	seedMessagesCount(t, 20)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages/export?format=ndjson&limit=5", nil)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/x-ndjson") {
+		t.Fatalf("unexpected content type: %s", ct)
+	}
+
+	lines := strings.Split(strings.TrimSpace(rr.Body.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines, got %d", len(lines))
+	}
+
+	var record exportRecord
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("failed to unmarshal first line: %v", err)
+	}
+	if record.ID == "" || record.Timestamp == "" {
+		t.Fatalf("export record missing fields: %+v", record)
+	}
+}
+
+func TestHandleExportMessagesCSV(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	seedMessagesCount(t, 12)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages/export?format=csv&limit=4", nil)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/csv") {
+		t.Fatalf("unexpected content type: %s", ct)
+	}
+
+	reader := csv.NewReader(strings.NewReader(rr.Body.String()))
+	records, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("failed to read csv: %v", err)
+	}
+	if len(records) != 5 { // header + 4 rows
+		t.Fatalf("expected 5 csv rows, got %d", len(records))
+	}
+	if records[0][0] != "id" {
+		t.Fatalf("unexpected header: %v", records[0])
+	}
+}
+
+func TestHandleExportMessagesConflictingCursors(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	msgs := seedMessagesCount(t, 2)
+	ts := msgs[0].Timestamp.UTC().UnixMilli()
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/messages/export?since_ts=%d&before_ts=%d", ts, ts), nil)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandlePurgeMessages(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	msgs := seedMessagesCount(t, 6)
+	cutoff := msgs[3].Timestamp
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"before_ts":%d}`, cutoff.UTC().UnixMilli()))
+	req := httptest.NewRequest(http.MethodPost, "/api/messages/purge", body)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rr.Code)
+	}
+
+	var resp struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+	if resp.Deleted != 3 {
+		t.Fatalf("expected 3 deleted rows, got %d", resp.Deleted)
+	}
+
+	reqExport := httptest.NewRequest(http.MethodGet, "/api/messages/export?format=ndjson&limit=10", nil)
+	rrExport := httptest.NewRecorder()
+	router.ServeHTTP(rrExport, reqExport)
+
+	if rrExport.Code != http.StatusOK {
+		t.Fatalf("unexpected export status: %d", rrExport.Code)
+	}
+
+	lines := strings.Split(strings.TrimSpace(rrExport.Body.String()), "\n")
+	if len(lines) != len(msgs)-resp.Deleted {
+		t.Fatalf("expected %d remaining lines, got %d", len(msgs)-resp.Deleted, len(lines))
+	}
+
+	for i, line := range lines {
+		var record exportRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal export line %d: %v", i, err)
+		}
+		ts, err := time.Parse(time.RFC3339Nano, record.Timestamp)
+		if err != nil {
+			t.Fatalf("parse timestamp: %v", err)
+		}
+		if ts.Before(cutoff) {
+			t.Fatalf("found purged timestamp %v in export", ts)
+		}
 	}
 }

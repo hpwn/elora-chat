@@ -35,6 +35,8 @@ type messagesEnvelope struct {
 
 func SetupMessageRoutes(r *mux.Router) {
 	r.HandleFunc("/api/messages", handleGetRecentMessages).Methods(http.MethodGet)
+	r.HandleFunc("/api/messages/export", handleExportMessages).Methods(http.MethodGet)
+	r.HandleFunc("/api/messages/purge", handlePurgeMessages).Methods(http.MethodPost)
 }
 
 func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {

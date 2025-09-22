@@ -37,6 +37,8 @@ type Store interface {
 	Init(ctx context.Context) error
 	InsertMessage(ctx context.Context, m *Message) error
 	GetRecent(ctx context.Context, q QueryOpts) ([]Message, error)
+	// PurgeBefore deletes messages with timestamps strictly before the cutoff.
+	PurgeBefore(ctx context.Context, cutoff time.Time) (int, error)
 	PurgeAll(ctx context.Context) error
 	GetSession(ctx context.Context, token string) (*Session, error)
 	UpsertSession(ctx context.Context, s *Session) error
