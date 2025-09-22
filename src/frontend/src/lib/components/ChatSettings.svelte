@@ -1,7 +1,12 @@
 <script lang="ts">
+  import { createEventDispatcher } from 'svelte';
   import SettingsIcon from './icons/SettingsIcon.svelte';
 
-  function toggleChatSettings() {}
+  const dispatch = createEventDispatcher();
+
+  function toggleChatSettings() {
+    dispatch('open-settings');
+  }
 </script>
 
 <button type="button" id="chat-settings-button" title="Chat Settings" on:click={toggleChatSettings}>

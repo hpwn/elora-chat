@@ -1,15 +1,26 @@
 <script>
   import { checkLoginStatus } from '$lib/api/auth.svelte';
-  import { Chat, Header, Footer } from '$lib/components';
+  import { Chat, Header, Footer, ExportPanel } from '$lib/components';
+  import SettingsModal from '$lib/components/SettingsModal.svelte';
+  import { settings } from '$lib/stores/settings';
   import { onMount } from 'svelte';
 
   const urlParams = new URLSearchParams(window.location.search);
   let isPopout = urlParams.has('popout');
+  let settingsOpen = false;
 
   onMount(() => {
     checkLoginStatus();
   });
 </script>
+
+<h1
+  id="app-title-elora-chat"
+  class="visually-hidden"
+  style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0"
+>
+  Elora Chat
+</h1>
 
 <svelte:head>
   <title>Chat Display</title>
@@ -17,9 +28,16 @@
 
 {#if !isPopout}
   <Header />
+  {#if $settings.showExportPanel}
+    <div class="export-wrapper">
+      <ExportPanel />
+    </div>
+  {/if}
 {/if}
 <Chat />
-<Footer />
+<Footer on:open-settings={() => (settingsOpen = true)} />
+
+<SettingsModal bind:open={settingsOpen} />
 
 <style lang="scss">
   :global(:root) {
@@ -163,5 +181,11 @@
     50% {
       transform: translateX(0.5rem) translateY(0.25rem);
     }
+  }
+
+  .export-wrapper {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0 16px;
   }
 </style>

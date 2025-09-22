@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
+
+	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
 	"github.com/hpwn/EloraChat/src/backend/routes" // Ensure this is the correct path to your routes package
 )
 
@@ -29,12 +33,35 @@ func serveConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	port := os.Getenv("PORT")
+	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = "8080" // Default to port 8080 if not specified
 	}
 
-	routes.InitRoutes(2 * time.Second)
+	baseCtx := context.Background()
+
+	sqliteCfg := sqlite.Config{
+		Mode:            getEnvOrDefault("ELORA_DB_MODE", "ephemeral"),
+		Path:            strings.TrimSpace(os.Getenv("ELORA_DB_PATH")),
+		MaxConns:        getEnvAsInt("ELORA_DB_MAX_CONNS", 16),
+		BusyTimeoutMS:   getEnvAsInt("ELORA_DB_BUSY_TIMEOUT_MS", 5000),
+		PragmasExtraCSV: getEnvOrDefault("ELORA_DB_PRAGMAS_EXTRA", "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY"),
+	}
+
+	store := sqlite.New(sqliteCfg)
+
+	if err := store.Init(baseCtx); err != nil {
+		log.Fatalf("storage: failed to initialize sqlite store: %v", err)
+	}
+	defer func() {
+		if err := store.Close(context.Background()); err != nil {
+			log.Printf("storage: close error: %v", err)
+		}
+	}()
+
+	log.Printf("storage: using sqlite store (mode=%s)", sqliteCfg.Mode)
+
+	routes.InitRoutes(store)
 
 	r := mux.NewRouter()
 
@@ -45,6 +72,7 @@ func main() {
 	routes.SetupChatRoutes(r)
 	routes.SetupAuthRoutes(r)
 	routes.SetupSendRoutes(r)
+	routes.SetupMessageRoutes(r)
 
 	// Serve static files from the "public" directory
 	fs := http.FileServer(http.Dir("public"))
@@ -109,9 +137,29 @@ func main() {
 	<-c
 
 	// Create a deadline to wait for.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+	srv.Shutdown(shutdownCtx)
 	log.Println("shutting down")
 	os.Exit(0)
+}
+
+func getEnvOrDefault(key, def string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return def
+}
+
+func getEnvAsInt(key string, def int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return def
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %d", key, value, def)
+		return def
+	}
+	return parsed
 }
