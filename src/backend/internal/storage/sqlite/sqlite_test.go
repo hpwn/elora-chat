@@ -221,6 +221,58 @@ func TestSQLitePurge(t *testing.T) {
 	}
 }
 
+func TestSQLitePurgeBefore(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	msgs := make([]*storage.Message, 0, 5)
+	for i := 0; i < 5; i++ {
+		msg := &storage.Message{
+			ID:         fmt.Sprintf("purge-before-%d", i),
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			Username:   "tester",
+			Platform:   "twitch",
+			Text:       fmt.Sprintf("message %d", i),
+			EmotesJSON: "[]",
+			RawJSON:    fmt.Sprintf(`{"message":"message %d"}`, i),
+		}
+		msgs = append(msgs, msg)
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage returned error: %v", err)
+		}
+	}
+
+	cutoff := msgs[3].Timestamp
+	deleted, err := store.PurgeBefore(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PurgeBefore returned error: %v", err)
+	}
+	if deleted != 3 {
+		t.Fatalf("expected 3 deleted rows, got %d", deleted)
+	}
+
+	got, err := store.GetRecent(ctx, storage.QueryOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("GetRecent returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 remaining messages, got %d", len(got))
+	}
+	if got[0].ID != msgs[4].ID || got[1].ID != msgs[3].ID {
+		t.Fatalf("unexpected remaining IDs: %v", []string{got[0].ID, got[1].ID})
+	}
+}
+
 func TestSQLiteGetRecentPersistent(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

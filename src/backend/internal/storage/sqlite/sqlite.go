@@ -232,6 +232,25 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	return results, nil
 }
 
+// PurgeBefore deletes chat messages with timestamps strictly less than the provided cutoff.
+func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	if s.db == nil {
+		return 0, errors.New("sqlite: store not initialized")
+	}
+
+	res, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE ts < ?`, cutoff.UTC().UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: purge before: %w", err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: rows affected: %w", err)
+	}
+
+	return int(affected), nil
+}
+
 // PurgeAll removes all stored chat messages and compacts the database.
 func (s *Store) PurgeAll(ctx context.Context) error {
 	if s.db == nil {

@@ -65,6 +65,33 @@ curl "http://localhost:8080/api/messages?limit=20"
 curl "http://localhost:8080/api/messages?since_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)&limit=50"
 ```
 
+### Export & Purge
+
+Admins (or curious humans) can export chat history and purge old rows without touching the database directly.
+
+Export messages (default format is NDJSON):
+
+```bash
+# Stream the latest 1,000 messages as NDJSON
+curl -s "http://localhost:8080/api/messages/export?limit=1000" > messages.ndjson
+
+# CSV export
+curl -s "http://localhost:8080/api/messages/export?format=csv&limit=500" > messages.csv
+
+# Time filters (Unix epoch millis); since_ts and before_ts are mutually exclusive
+since=$(date -u +%s%3N)
+curl -s "http://localhost:8080/api/messages/export?since_ts=$since&limit=200" > recent.ndjson
+```
+
+Purge old messages (timestamps are Unix epoch millis, rows strictly older than the cutoff are removed):
+
+```bash
+cutoff=$(date -u -d '30 days ago' +%s%3N)
+curl -s -X POST http://localhost:8080/api/messages/purge \
+  -H "Content-Type: application/json" \
+  -d "{\"before_ts\":$cutoff}"
+```
+
 ## Usage ⌨️
 
 elora-chat is easy to use. Simply start the server and connect your streaming platforms. The chat will be unified and available in your dashboard for a seamless streaming experience.
