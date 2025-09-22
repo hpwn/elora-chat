@@ -180,13 +180,27 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		return nil, errors.New("sqlite: store not initialized")
 	}
 
+	if q.SinceTS != nil && q.BeforeTS != nil {
+		return nil, errors.New("sqlite: since_ts and before_ts are mutually exclusive")
+	}
+
 	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(raw_json, '') FROM messages`
-	var args []any
+	var (
+		clauses []string
+		args    []any
+	)
 	if q.SinceTS != nil {
-		query += " WHERE ts >= ?"
+		clauses = append(clauses, "ts >= ?")
 		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
-	query += " ORDER BY ts DESC"
+	if q.BeforeTS != nil {
+		clauses = append(clauses, "ts < ?")
+		args = append(args, q.BeforeTS.UTC().UnixMilli())
+	}
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY ts DESC, id DESC"
 	if q.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, q.Limit)

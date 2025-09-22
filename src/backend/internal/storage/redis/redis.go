@@ -97,6 +97,10 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		return nil, errors.New("redis: client is nil")
 	}
 
+	if q.SinceTS != nil && q.BeforeTS != nil {
+		return nil, errors.New("redis: since_ts and before_ts are mutually exclusive")
+	}
+
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 100
@@ -112,6 +116,10 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	if q.SinceTS != nil {
 		sinceTS = q.SinceTS.UTC().UnixMilli()
 	}
+	beforeTS := int64(0)
+	if q.BeforeTS != nil {
+		beforeTS = q.BeforeTS.UTC().UnixMilli()
+	}
 
 	for _, entry := range entries {
 		msg, err := s.entryToMessage(entry)
@@ -120,6 +128,9 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 			continue
 		}
 		if sinceTS > 0 && msg.Timestamp.UTC().UnixMilli() < sinceTS {
+			continue
+		}
+		if beforeTS > 0 && msg.Timestamp.UTC().UnixMilli() >= beforeTS {
 			continue
 		}
 		results = append(results, msg)
