@@ -71,7 +71,7 @@ Admins (or curious humans) can export chat history and purge old rows without to
 
 #### Export via UI
 
-After opening the web app (default http://localhost:8080) you'll see an **Export chat** panel near the top of the page. Use it to:
+After opening the web app (default http://localhost:8080), open **Settings → Show export panel** (gear icon near the input) to reveal the **Export chat** panel near the top of the page. Use it to:
 
 - Choose the output **format** (NDJSON by default, CSV optional)
 - Set a **limit** (defaults to 1,000 messages)

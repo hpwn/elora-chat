@@ -1,10 +1,13 @@
 <script>
   import { checkLoginStatus } from '$lib/api/auth.svelte';
   import { Chat, Header, Footer, ExportPanel } from '$lib/components';
+  import SettingsModal from '$lib/components/SettingsModal.svelte';
+  import { settings } from '$lib/stores/settings';
   import { onMount } from 'svelte';
 
   const urlParams = new URLSearchParams(window.location.search);
   let isPopout = urlParams.has('popout');
+  let settingsOpen = false;
 
   onMount(() => {
     checkLoginStatus();
@@ -25,12 +28,16 @@
 
 {#if !isPopout}
   <Header />
-  <div class="export-wrapper">
-    <ExportPanel />
-  </div>
+  {#if $settings.showExportPanel}
+    <div class="export-wrapper">
+      <ExportPanel />
+    </div>
+  {/if}
 {/if}
 <Chat />
-<Footer />
+<Footer on:open-settings={() => (settingsOpen = true)} />
+
+<SettingsModal bind:open={settingsOpen} />
 
 <style lang="scss">
   :global(:root) {
