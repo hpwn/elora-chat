@@ -5,6 +5,7 @@
   import PauseOverlay from './PauseOverlay.svelte';
 
   import { deployedUrl, useDeployedApi } from '$lib/config';
+  import { parseWsMessages } from '$lib/messages';
   import { SvelteSet } from 'svelte/reactivity';
 
   let container: HTMLDivElement;
@@ -124,20 +125,14 @@
     };
 
     ws.onmessage = (event) => {
-      // console.log("Message received: ", event.data);
-      const msg = event.data;
-      if (msg === '__keepalive__') {
+      const incomingMessages = parseWsMessages(event.data);
+      if (incomingMessages.length === 0) {
         return;
       }
 
-      try {
-        const parsedMsg = JSON.parse(msg);
-        messageQueue.push(parsedMsg);
-        if (!processing) {
-          processMessageQueue();
-        }
-      } catch (e) {
-        console.error('Error parsing message:', msg, e);
+      messageQueue.push(...incomingMessages);
+      if (!processing) {
+        processMessageQueue();
       }
     };
 

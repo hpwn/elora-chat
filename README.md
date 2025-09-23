@@ -69,6 +69,17 @@ curl "http://localhost:8080/api/messages?since_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 Admins (or curious humans) can export chat history and purge old rows without touching the database directly.
 
+#### Export via UI
+
+After opening the web app (default http://localhost:8080), open **Settings → Show export panel** (gear icon near the input) to reveal the **Export chat** panel near the top of the page. Use it to:
+
+- Choose the output **format** (NDJSON by default, CSV optional)
+- Set a **limit** (defaults to 1,000 messages)
+- Provide either **since_ts** or **before_ts** in Unix epoch milliseconds — the fields are mutually exclusive
+- Click **Open export** to download immediately, or **Copy curl** to grab a ready-to-run CLI command
+
+#### Export via curl
+
 Export messages (default format is NDJSON):
 
 ```bash
