@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { buildApiUrl } from '$lib/utils';
   import { onMount } from 'svelte';
 
   let format: 'ndjson' | 'csv' = 'ndjson';
@@ -14,7 +15,7 @@
       return '';
     }
 
-    const url = new URL('/api/messages/export', window.location.origin);
+    const url = new URL(buildApiUrl('/api/messages/export'), window.location.origin);
     if (format !== 'ndjson') {
       url.searchParams.set('format', format);
     }
