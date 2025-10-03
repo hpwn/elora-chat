@@ -78,43 +78,23 @@ func main() {
 	fs := http.FileServer(http.Dir("public"))
 	r.PathPrefix("/").Handler(http.StripPrefix("/", fs))
 
-	// Start fetching chat messages
-	chatURLs := []string{
-		// "https://www.twitch.tv/hp_az",
-		// "https://www.youtube.com/channel/UCHToAogHtFnv2uksbDzKsYA/live", // my channel link
-		// "https://www.youtube.com/@hp_az/live", // crude live link
-		// "https://www.youtube.com/watch?v=_oMKOh8skrM", // viewer link
-		// "https://youtube.com/live/7NA555IYE24?feature=share",
-		// "https://youtube.com/live/7455sVTXUPU?feature=share",
-		// "https://www.youtube.com/watch?v=jfKfPfyJRdk", // lofi girl live
-		// "http://youtube.com/channel/UCSJ4gkVC6NrvII8umztf0Ow/live",
-		// "https://www.twitch.tv/rifftrax",
-		// "https://www.youtube.com/watch?v=39VeO9p7Vn0", // dayo live test stream
-		// "https://www.youtube.com/live/6sjf7R0o-ss?si=WkdXIOu83_7Sglk2&t=7500", // ludwig live test stream
-		// "https://www.twitch.tv/Johnstone",
-		// "https://www.twitch.tv/Hypnoshark",
-		// "https://www.twitch.tv/QTCinderella",
-		// "https://www.twitch.tv/Quin69",
-		// "https://www.twitch.tv/jakenbakeLIVE",
-		// "https://www.twitch.tv/Knut",
-		// "https://www.youtube.com/@dayoman/live",
-		"http://youtube.com/channel/UC2c4NxvHnbXs3NLpCm641ew/live",
-		"http://youtube.com/channel/UC20nA0vpbiKZ1DwX2sFR9dQ/live",
-		"https://www.twitch.tv/dayoman",
-		// "https://www.youtube.com/watch?v=4xDzrJKXOOY",
-		// "https://www.twitch.tv/forsen", // basically a hard code for constant chats
-		// "https://www.twitch.tv/jynxzi", // basically a hard code for constant chats
-		// "https://www.youtube.com/watch?v=Gtqw9b8g2wk",
-		// "https://www.twitch.tv/abel",
-		// "https://www.youtube.com/watch?v=VebOqD00Zj8",
-		// "https://www.youtube.com/watch?v=pCTxDYFdEOk",
-		// "https://youtube.com/live/JHqR9hq70No?feature=share",
-		// "https://www.twitch.tv/papaplatte",
-		// "https://www.youtube.com/watch?v=REmPV-EPwPc", // ninja yt
-		// "https://www.twitch.tv/nutty",
-		// "https://www.youtube.com/@nuttylmao/live",
+	// Start fetching chat messages from env (comma-separated)
+	rawChat := os.Getenv("CHAT_URLS")
+	chatURLs := []string{}
+	if rawChat != "" {
+		for _, u := range strings.Split(rawChat, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				chatURLs = append(chatURLs, u)
+			}
+		}
 	}
-	routes.StartChatFetch(chatURLs)
+	log.Printf("Starting chat fetch for %d URLs: %v", len(chatURLs), chatURLs)
+	if len(chatURLs) > 0 {
+		routes.StartChatFetch(chatURLs)
+	} else {
+		log.Printf("No CHAT_URLS provided; skipping chat fetch")
+	}
 
 	// Create server
 	srv := &http.Server{
