@@ -495,6 +495,15 @@ func loadSession(c context.Context, token string) (*storage.Session, map[string]
 		return nil, nil, err
 	}
 
+	if sess == nil {
+		return nil, nil, nil
+	}
+
+	now := time.Now().UTC()
+	if !sess.TokenExpiry.IsZero() && !sess.TokenExpiry.After(now) {
+		return nil, nil, nil
+	}
+
 	if sess.DataJSON == "" {
 		return sess, map[string]any{}, nil
 	}

@@ -1,1 +1,20 @@
-@import './lib/styles/visually-hidden.css';
+/* Minimal global: reset + tokens only */
+:root {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --color-bg: #0b0b0b;
+  --color-fg: #eaeaea;
+  --emote-size: 1.15rem;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  overflow: hidden; /* chat overlay assumes no page scroll */
+}
+
+/* All other styles must be component-scoped */

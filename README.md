@@ -136,3 +136,8 @@ This project is licensed under the **Business Source License 1.1 (BUSL-1.1)**.
 - On April 25, 2028, the license will convert to Apache 2.0 automatically.
 
 See [LICENSE](./LICENSE) and [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) for more details.
+
+## Global CSS Policy
+- Use `src/frontend/src/app.css` only for reset + `:root` tokens (fonts/colors/shared sizes).
+- All layout/visual rules must live in component `.svelte` files (scoped).
+- Import remains via `+layout.svelte` global style import.
