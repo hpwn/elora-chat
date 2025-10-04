@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -50,12 +49,10 @@ import (
 
 // 	// Initialize bot with current live stream URL
 // 	if err := cacheLiveStreamURL(apiKey, channelID); err == nil {
-// 		liveURL, _ := redisClient.Get(ctx, "youtube:live:url").Result()
 // 		startChatBot(liveURL)
 // 	}
 // 	// Initialize bot with current live stream URL
 // 	if err := cacheLiveStreamURL(apiKey, channelID); err == nil {
-// 		liveURL, _ := redisClient.Get(ctx, "youtube:live:url").Result()
 // 		startChatBot(liveURL)
 // 	}
 
@@ -216,18 +213,12 @@ import (
 // 		return err
 // 	}
 
-// 	// Store the URL in Redis
-// 	err = redisClient.Set(ctx, "youtube:live:url", url, 0).Err() // No expiration
 // 	if err != nil {
-// 		log.Printf("Error caching YouTube live stream URL in Redis: %v", err)
 // 		return err
 // 	}
 // 	return nil
 // }
-// 	// Store the URL in Redis
-// 	err = redisClient.Set(ctx, "youtube:live:url", url, 0).Err() // No expiration
 // 	if err != nil {
-// 		log.Printf("Error caching YouTube live stream URL in Redis: %v", err)
 // 		return err
 // 	}
 // 	return nil
@@ -292,7 +283,11 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	// Retrieve the username associated with this session
 	username, err := getUsernameFromSession(sessionToken)
 	if err != nil {
-		http.Error(w, "Failed to get username from session", http.StatusInternalServerError)
+		if isSessionNotFound(err) {
+			http.Error(w, "Unauthorized: Invalid session token", http.StatusUnauthorized)
+		} else {
+			http.Error(w, "Failed to get username from session", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -311,7 +306,6 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	// Attempt to send message to YouTube
 	// TODO: uncomment this later once we have the secret(s)
 	// if err := cacheLiveStreamURL(apiKey, channelID); err == nil {
-	// 	liveURL, err := redisClient.Get(ctx, "youtube:live:url").Result()
 	// 	if err == nil && liveURL != "" {
 	// 		startChatBot(liveURL)
 	// 	} else {
@@ -341,14 +335,9 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 
 // Helper function to retrieve the username from session data
 func getUsernameFromSession(sessionToken string) (string, error) {
-	sessionDataJson, err := redisClient.Get(context.Background(), fmt.Sprintf("session:%s", sessionToken)).Result()
+	_, sessionData, err := loadSession(ctx, sessionToken)
 	if err != nil {
-		return "", fmt.Errorf("error retrieving session data from Redis: %v", err)
-	}
-
-	var sessionData map[string]any
-	if err := json.Unmarshal([]byte(sessionDataJson), &sessionData); err != nil {
-		return "", fmt.Errorf("error unmarshalling session data: %v", err)
+		return "", fmt.Errorf("load session: %w", err)
 	}
 
 	// Assuming the username is nested under "data" which is an array of user information
@@ -372,16 +361,9 @@ func getUsernameFromSession(sessionToken string) (string, error) {
 
 // getTwitchOAuthToken retrieves the OAuth token for Twitch from the session data.
 func getTwitchOAuthToken(sessionToken string) (string, error) {
-	// Retrieve session data from Redis (or your storage solution)
-	sessionDataJson, err := redisClient.Get(context.Background(), fmt.Sprintf("session:%s", sessionToken)).Result()
+	_, sessionData, err := loadSession(ctx, sessionToken)
 	if err != nil {
-		return "", fmt.Errorf("error retrieving session data from Redis: %v", err)
-	}
-
-	// Parse session data to extract the Twitch OAuth token
-	var sessionData map[string]any
-	if err := json.Unmarshal([]byte(sessionDataJson), &sessionData); err != nil {
-		return "", fmt.Errorf("error unmarshalling session data: %v", err)
+		return "", fmt.Errorf("load session: %w", err)
 	}
 
 	// Assuming the token is stored under a "twitch_token" key
@@ -398,6 +380,9 @@ func sendMessageToTwitch(sessionToken string, channel string, message string) er
 	// Retrieve the OAuth token for Twitch using the session token
 	oauthToken, err := getTwitchOAuthToken(sessionToken)
 	if err != nil {
+		if isSessionNotFound(err) {
+			return fmt.Errorf("unauthorized: %w", err)
+		}
 		return fmt.Errorf("error retrieving Twitch OAuth token: %v", err)
 	}
 

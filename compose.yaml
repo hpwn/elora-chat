@@ -4,8 +4,6 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - REDIS_ADDR=${REDIS_ADDR}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
       - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
       - TWITCH_REDIRECT_URL=${TWITCH_REDIRECT_URL}
@@ -24,7 +22,3 @@ services:
           path: ./src/backend
           target: /app
           include: "**/*.go"
-  redis:
-    image: "redis:alpine"
-    ports:
-      - "6379:6379"
