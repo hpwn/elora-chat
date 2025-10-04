@@ -378,7 +378,7 @@ func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
 
 	sessionToken := cookie.Value
 	sess, _, err := loadSession(r.Context(), sessionToken)
-	if err != nil {
+	if err != nil || sess == nil {
 		// If session data is not found in the store, it's likely the session has expired or is invalid.
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"services": []}`)) // Similarly, indicate no services are logged in.
