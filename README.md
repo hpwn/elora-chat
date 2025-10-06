@@ -141,3 +141,12 @@ See [LICENSE](./LICENSE) and [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) fo
 - Use `src/frontend/src/app.css` only for reset + `:root` tokens (fonts/colors/shared sizes).
 - All layout/visual rules must live in component `.svelte` files (scoped).
 - Import remains via `+layout.svelte` global style import.
+
+### Ingestion driver
+
+The backend supports a pluggable ingestion driver via `ELORA_INGEST_DRIVER`:
+
+- `chatdownloader` *(default)* — current implementation; reads from `CHAT_URLS`.
+- `gnasty` *(stub)* — placeholder for upcoming gnasty-chat integration.
+
+Set `CHAT_URLS` to a comma-separated list of Twitch/YouTube live URLs.
