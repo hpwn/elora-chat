@@ -38,6 +38,38 @@ Inspired by pioneers like DougDoug, elora-chat aspires to revolutionize chat int
 
 - Connect with your broswer to [http://localhost:8080/](http://localhost:8080/)!
 
+## Running with gnasty
+
+Prefer the external [gnasty](https://github.com/hpwn/gnasty) chat fetcher instead of the bundled `chat_downloader` script? Configure the backend to spawn the gnasty binary and stream NDJSON:
+
+1. Update your `.env` with the gnasty settings:
+
+   ```env
+   ELORA_INGEST_DRIVER=gnasty
+   CHAT_URLS=https://www.twitch.tv/rifftrax,https://www.youtube.com/watch?v=jfKfPfyJRdk
+   GNASTY_BIN=/usr/local/bin/gnasty-chat
+   GNASTY_ARGS=--stdout,--format,ndjson
+   ```
+
+2. If you run via Docker, mount the gnasty binary into the container path you configured in `GNASTY_BIN`:
+
+   ```bash
+   docker run --name elora-chat-instance \
+     -p 8080:8080 \
+     --env-file .env \
+     -v elora_sqlite_data:/data \
+     -v /host/path/gnasty-chat:/usr/local/bin/gnasty-chat:ro \
+     -d elora-chat
+   ```
+
+3. Tail the logs to confirm gnasty ingest activity:
+
+   ```bash
+   docker logs -f elora-chat-instance | grep -i 'ingest[gnasty]'
+   ```
+
+> In this slice, gnasty lines are validated and logged. The insert hook will be wired up in the next slice so messages land in SQLite.
+
 ## SQLite storage (default) 🗄️
 
 The backend now persists chat history to SQLite by default. Ephemeral mode keeps everything in a temp file so you can run without any extra setup. To customize the database:
