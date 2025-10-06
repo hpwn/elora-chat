@@ -1,54 +1,78 @@
 package ingest
 
 import (
-	"context"
-	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
-
-	"github.com/hpwn/EloraChat/src/backend/routes"
+	"time"
 )
 
-// Ingestor abstracts a chat ingestion implementation (Start may spawn goroutines).
-type Ingestor interface {
-	Start(ctx context.Context, urls []string) error
-	Name() string
+const (
+	DriverChatDownloader = "chatdownloader"
+	DriverGnasty         = "gnasty"
+)
+
+type Env struct {
+	Driver        string
+	GnastyBin     string
+	GnastyArgs    []string
+	BackoffBaseMS int
+	BackoffMaxMS  int
 }
 
-// ChatDownloaderIngestor delegates to the existing routes.StartChatFetch.
-type ChatDownloaderIngestor struct{}
+func FromEnv() Env {
+	return Env{
+		Driver:        getEnvTrim("ELORA_INGEST_DRIVER", DriverChatDownloader),
+		GnastyBin:     getEnvTrim("GNASTY_BIN", ""),
+		GnastyArgs:    splitCSV(getEnvTrim("GNASTY_ARGS", "")),
+		BackoffBaseMS: getEnvInt("GNASTY_BACKOFF_BASE_MS", 1000),
+		BackoffMaxMS:  getEnvInt("GNASTY_BACKOFF_MAX_MS", 30000),
+	}
+}
 
-func (c *ChatDownloaderIngestor) Start(ctx context.Context, urls []string) error {
-	if len(urls) == 0 {
-		log.Printf("ingest[%s]: no URLs provided; skipping", c.Name())
+func (e Env) BuildGnasty(insert InsertFn, urls []string, logger *log.Logger) (*GnastyProcess, error) {
+	cfg := GnastyConfig{
+		Bin:         e.GnastyBin,
+		Args:        e.GnastyArgs,
+		BackoffBase: time.Duration(e.BackoffBaseMS) * time.Millisecond,
+		BackoffMax:  time.Duration(e.BackoffMaxMS) * time.Millisecond,
+		Logger:      logger,
+		Insert:      insert,
+	}
+	return NewGnasty(cfg, urls)
+}
+
+func getEnvTrim(key, def string) string {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return def
+	}
+	return val
+}
+
+func getEnvInt(key string, def int) int {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return def
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
 		return nil
 	}
-	routes.StartChatFetch(urls)
-	return nil
-}
-
-func (c *ChatDownloaderIngestor) Name() string { return "chatdownloader" }
-
-// GnastyIngestor is a stub placeholder for future work.
-type GnastyIngestor struct{}
-
-func (g *GnastyIngestor) Start(ctx context.Context, urls []string) error {
-	log.Printf("ingest[%s]: stub enabled with %d URLs (%s); no-op for now",
-		g.Name(), len(urls), strings.Join(urls, ", "))
-	return nil
-}
-
-func (g *GnastyIngestor) Name() string { return "gnasty" }
-
-// New returns an Ingestor by driver name.
-func New(driver string) (Ingestor, error) {
-	drv := strings.ToLower(strings.TrimSpace(driver))
-	switch drv {
-	case "", "chatdownloader", "chat_downloader":
-		return &ChatDownloaderIngestor{}, nil
-	case "gnasty", "gnastychat", "gnasty-chat":
-		return &GnastyIngestor{}, nil
-	default:
-		return nil, fmt.Errorf("unknown ELORA_INGEST_DRIVER=%q", driver)
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
+	return out
 }
