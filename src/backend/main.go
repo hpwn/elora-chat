@@ -14,8 +14,9 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
-	"github.com/hpwn/EloraChat/src/backend/routes" // Ensure this is the correct path to your routes package
+	"github.com/hpwn/EloraChat/src/backend/routes"
 )
 
 // Config holds the structure for the configuration JSON
@@ -26,16 +27,16 @@ type Config struct {
 // serveConfig sends the application configuration as JSON
 func serveConfig(w http.ResponseWriter, r *http.Request) {
 	config := Config{
-		DeployedUrl: os.Getenv("DEPLOYED_URL"), // Make sure DEPLOYED_URL is set in your environment
+		DeployedUrl: os.Getenv("DEPLOYED_URL"),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(config)
+	_ = json.NewEncoder(w).Encode(config)
 }
 
 func main() {
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
-		port = "8080" // Default to port 8080 if not specified
+		port = "8080"
 	}
 
 	baseCtx := context.Background()
@@ -80,20 +81,24 @@ func main() {
 
 	// Start fetching chat messages from env (comma-separated)
 	rawChat := os.Getenv("CHAT_URLS")
-	chatURLs := []string{}
+	var chatURLs []string
 	if rawChat != "" {
 		for _, u := range strings.Split(rawChat, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				chatURLs = append(chatURLs, u)
+			if v := strings.TrimSpace(u); v != "" {
+				chatURLs = append(chatURLs, v)
 			}
 		}
 	}
-	log.Printf("Starting chat fetch for %d URLs: %v", len(chatURLs), chatURLs)
-	if len(chatURLs) > 0 {
-		routes.StartChatFetch(chatURLs)
-	} else {
-		log.Printf("No CHAT_URLS provided; skipping chat fetch")
+	log.Printf("chat seed URLs: %d", len(chatURLs))
+
+	driverName := getEnvOrDefault("ELORA_INGEST_DRIVER", "chatdownloader")
+	ing, err := ingest.New(driverName)
+	if err != nil {
+		log.Fatalf("ingest: %v", err)
+	}
+	log.Printf("ingest: selected driver=%q", ing.Name())
+	if err := ing.Start(baseCtx, chatURLs); err != nil {
+		log.Fatalf("ingest: start error: %v", err)
 	}
 
 	// Create server
@@ -112,14 +117,14 @@ func main() {
 
 	// Graceful shutdown
 	c := make(chan os.Signal, 1)
-	// Accept graceful shutdowns when quit via SIGINT (Ctrl+C) or SIGTERM (Kubernetes pod shutdown)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	<-c
 
-	// Create a deadline to wait for.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("server shutdown error: %v", err)
+	}
 	log.Println("shutting down")
 	os.Exit(0)
 }
