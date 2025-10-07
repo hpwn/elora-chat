@@ -81,6 +81,21 @@ SQLite is the only storage backend. All chat history and authentication sessions
 
 Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
 
+### Live WS from external ingest (DB tailer)
+If another process such as **gnasty-chat** writes directly to the same SQLite file, Elora can broadcast those rows live without
+running the Python fetcher. Set the tailer env vars alongside your persistent database configuration:
+
+```
+ELORA_DB_MODE=persistent
+ELORA_DB_PATH=/data/elora.db
+ELORA_DB_TAIL_ENABLED=true
+ELORA_DB_TAIL_INTERVAL_MS=200
+ELORA_DB_TAIL_BATCH=500
+```
+
+Run gnasty so it ingests into `/data/elora.db` (for example via a shared Docker volume) and start Elora with the same volume
+mounted to enable real-time updates.
+
 ### HTTP: recent messages
 
 Recent chat history can be fetched directly from the backend with `GET /api/messages`.

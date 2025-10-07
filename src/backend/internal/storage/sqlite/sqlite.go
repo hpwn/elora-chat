@@ -232,6 +232,68 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	return results, nil
 }
 
+// TailHead returns the maximum timestamp and rowid currently present in the messages table.
+func (s *Store) TailHead(ctx context.Context) (storage.TailPosition, error) {
+	if s.db == nil {
+		return storage.TailPosition{}, errors.New("sqlite: store not initialized")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(ts), 0), COALESCE(MAX(rowid), 0) FROM messages`)
+
+	var pos storage.TailPosition
+	if err := row.Scan(&pos.TS, &pos.RowID); err != nil {
+		return storage.TailPosition{}, fmt.Errorf("sqlite: tail head: %w", err)
+	}
+
+	return pos, nil
+}
+
+// TailNext returns up to limit messages strictly after the provided position ordered by timestamp then rowid.
+func (s *Store) TailNext(ctx context.Context, after storage.TailPosition, limit int) ([]storage.Message, storage.TailPosition, error) {
+	if s.db == nil {
+		return nil, after, errors.New("sqlite: store not initialized")
+	}
+
+	if limit <= 0 {
+		limit = 500
+	}
+
+	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(raw_json, ''), rowid
+FROM messages
+WHERE ts > ? OR (ts = ? AND rowid > ?)
+ORDER BY ts ASC, rowid ASC
+LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, after.TS, after.TS, after.RowID, limit)
+	if err != nil {
+		return nil, after, fmt.Errorf("sqlite: tail next query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]storage.Message, 0, limit)
+	last := after
+
+	for rows.Next() {
+		var (
+			msg   storage.Message
+			ts    int64
+			rowID int64
+		)
+		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.RawJSON, &rowID); err != nil {
+			return nil, after, fmt.Errorf("sqlite: tail next scan: %w", err)
+		}
+		msg.Timestamp = time.UnixMilli(ts).UTC()
+		results = append(results, msg)
+		last = storage.TailPosition{TS: ts, RowID: rowID}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, after, fmt.Errorf("sqlite: tail next rows: %w", err)
+	}
+
+	return results, last, nil
+}
+
 // PurgeBefore deletes chat messages with timestamps strictly less than the provided cutoff.
 func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (int, error) {
 	if s.db == nil {

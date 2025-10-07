@@ -295,6 +295,29 @@ func broadcastChatMessage(msg []byte) {
 	}
 }
 
+// BroadcastFromTailer enqueues a stored message onto the WebSocket broadcast loop.
+func BroadcastFromTailer(m storage.Message) {
+	payload := []byte(m.RawJSON)
+	if len(payload) == 0 {
+		fallback := Message{
+			Author:  m.Username,
+			Message: m.Text,
+			Source:  m.Platform,
+			Tokens:  []Token{},
+			Emotes:  []Emote{},
+			Badges:  []Badge{},
+		}
+		data, err := json.Marshal(fallback)
+		if err != nil {
+			log.Printf("dbtailer: failed to marshal fallback message: %v", err)
+			return
+		}
+		payload = data
+	}
+
+	broadcastChatMessage(payload)
+}
+
 func addSubscriber() chan []byte {
 	ch := make(chan []byte, 64)
 	subscribersMu.Lock()

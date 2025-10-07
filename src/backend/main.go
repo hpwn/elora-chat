@@ -16,6 +16,7 @@ import (
 
 	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
+	"github.com/hpwn/EloraChat/src/backend/internal/tailer"
 	"github.com/hpwn/EloraChat/src/backend/routes" // Ensure this is the correct path to your routes package
 )
 
@@ -74,6 +75,17 @@ func main() {
 	routes.SetupAuthRoutes(r)
 	routes.SetupSendRoutes(r)
 	routes.SetupMessageRoutes(r)
+
+	tailerCfg := tailer.Config{
+		Enabled:  getEnvAsBool("ELORA_DB_TAIL_ENABLED", false),
+		Interval: time.Duration(getEnvAsInt("ELORA_DB_TAIL_INTERVAL_MS", 200)) * time.Millisecond,
+		Batch:    getEnvAsInt("ELORA_DB_TAIL_BATCH", 500),
+	}
+	dbTailer := tailer.New(tailerCfg, store)
+	if err := dbTailer.Start(baseCtx); err != nil {
+		log.Printf("dbtailer: error: %v", err)
+	}
+	defer dbTailer.Stop()
 
 	// Serve static files from the "public" directory
 	fs := http.FileServer(http.Dir("public"))
@@ -145,6 +157,19 @@ func getEnvOrDefault(key, def string) string {
 		return value
 	}
 	return def
+}
+
+func getEnvAsBool(key string, def bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return def
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %t", key, value, def)
+		return def
+	}
+	return parsed
 }
 
 func getEnvAsInt(key string, def int) int {
