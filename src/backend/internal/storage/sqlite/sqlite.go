@@ -232,16 +232,27 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	return results, nil
 }
 
-// TailHead returns the maximum timestamp and rowid currently present in the messages table.
+// TailHead returns the most recent (ts,rowid) pair from the same row.
+// This avoids the inconsistent MAX(ts)/MAX(rowid) pair that can skip rows.
 func (s *Store) TailHead(ctx context.Context) (storage.TailPosition, error) {
 	if s.db == nil {
 		return storage.TailPosition{}, errors.New("sqlite: store not initialized")
 	}
 
-	row := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(ts), 0), COALESCE(MAX(rowid), 0) FROM messages`)
-
 	var pos storage.TailPosition
-	if err := row.Scan(&pos.TS, &pos.RowID); err != nil {
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT ts, rowid
+		FROM messages
+		ORDER BY ts DESC, rowid DESC
+		LIMIT 1
+	`).Scan(&pos.TS, &pos.RowID)
+
+	// Empty table -> start at zero position
+	if err == sql.ErrNoRows {
+		return storage.TailPosition{}, nil
+	}
+	if err != nil {
 		return storage.TailPosition{}, fmt.Errorf("sqlite: tail head: %w", err)
 	}
 
