@@ -81,20 +81,30 @@ SQLite is the only storage backend. All chat history and authentication sessions
 
 Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
 
-### Live WS from external ingest (DB tailer)
+### Live from SQLite (DB tailer)
 If another process such as **gnasty-chat** writes directly to the same SQLite file, Elora can broadcast those rows live without
-running the Python fetcher. Set the tailer env vars alongside your persistent database configuration:
+running the Python fetcher. Enable the tailer alongside your persistent database configuration:
 
 ```
 ELORA_DB_MODE=persistent
 ELORA_DB_PATH=/data/elora.db
 ELORA_DB_TAIL_ENABLED=true
-ELORA_DB_TAIL_INTERVAL_MS=200
+ELORA_DB_TAIL_INTERVAL_MS=200  # aka ELORA_DB_TAIL_POLL_MS
 ELORA_DB_TAIL_BATCH=500
 ```
 
+`ELORA_DB_TAIL_INTERVAL_MS` controls how frequently the poller checks for new rows (lower = more responsive, higher = less DB
+churn) and `ELORA_DB_TAIL_BATCH` caps how many messages are streamed per poll.
+
+The WebSocket payload shape can be wrapped for debugging or compatibility by exporting `ELORA_WS_ENVELOPE=true`, which sends
+frames like `{ "type": "chat", "data": "<chat-json>" }`. The default remains plain chat JSON strings so existing clients keep
+working.
+
 Run gnasty so it ingests into `/data/elora.db` (for example via a shared Docker volume) and start Elora with the same volume
 mounted to enable real-time updates.
+
+> Heads-up: Twitch / YouTube login flows require valid OAuth secrets. If you leave those blank the auth endpoints will return
+500s — that's expected while running locally without real credentials.
 
 ### HTTP: recent messages
 

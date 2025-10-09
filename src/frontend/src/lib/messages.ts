@@ -4,6 +4,30 @@ type MaybeEnvelope<T> = T | { items: T[] } | T[];
 
 const KEEPALIVE_TOKENS = new Set(['__keepalive__', 'ping', 'pong']);
 
+export function unwrapWsPayload(raw: string): string | null {
+  if (!raw || KEEPALIVE_TOKENS.has(raw)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      'type' in parsed &&
+      (parsed as { type?: unknown }).type === 'chat' &&
+      'data' in parsed &&
+      typeof (parsed as { data?: unknown }).data === 'string'
+    ) {
+      return (parsed as { data: string }).data;
+    }
+  } catch {
+    // Payload is not JSON — treat it as plain chat JSON
+  }
+
+  return raw;
+}
+
 function normalizePayload<T>(payload: MaybeEnvelope<T>): T[] {
   if (Array.isArray(payload)) {
     return payload;
