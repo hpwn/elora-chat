@@ -16,6 +16,12 @@ type Message struct {
 	RawJSON    string
 }
 
+// TailPosition represents a cursor for iterating over messages in timestamp/rowid order.
+type TailPosition struct {
+	TS    int64
+	RowID int64
+}
+
 // Session represents auth/session state persisted by the backend.
 type Session struct {
 	Token       string
