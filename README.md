@@ -108,7 +108,7 @@ The server can optionally wrap WS frames in an envelope:
 `{ "type":"chat", "data": "<raw JSON object | JSON array | NDJSON>" }`.
 Keepalive frames are `__keepalive__` and are ignored by the client.
 
-The client now tolerates all of the above formats.
+The client now tolerates all of the above formats and fills in any missing arrays/fields so the UI never crashes on sparse payloads.
 
 **Local testing (no OAuth):**
 - OAuth buttons will 500 if the related envs aren’t set; this is expected.

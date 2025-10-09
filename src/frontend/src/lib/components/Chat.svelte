@@ -5,7 +5,7 @@
   import PauseOverlay from './PauseOverlay.svelte';
 
   import { deployedUrl, useDeployedApi } from '$lib/config';
-  import { unwrapWsPayload, parseWsMessages } from '$lib/messages';
+  import { parseWsEvent } from '$lib/messages';
   import { SvelteSet } from 'svelte/reactivity';
 
   const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
@@ -120,23 +120,12 @@
 
     if (CHAT_DEBUG) console.log('[chat] url:', wsUrl);
     ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
 
-    ws.onmessage = (event) => {
-      let raw: string | null = null;
-      if (typeof event.data === 'string') {
-        raw = event.data;
-      } else if (event.data instanceof ArrayBuffer) {
-        raw = new TextDecoder().decode(event.data);
-      } else if (event.data != null) {
-        raw = String(event.data);
-      }
-
-      const unwrapped = raw != null ? unwrapWsPayload(raw) : null;
-      if (unwrapped == null) return;
-
-      const incoming = parseWsMessages(unwrapped);
+    ws.onmessage = async (event) => {
+      const incoming = await parseWsEvent(event);
       if (incoming.length === 0) return;
 
       messageQueue.push(...incoming);

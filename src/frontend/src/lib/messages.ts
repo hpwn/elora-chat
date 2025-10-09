@@ -1,58 +1,140 @@
 import type { Message } from '$lib/types/messages';
 
-// Add a tolerant WS payload pipeline that returns Message[]
-// and exports helpers for reuse in Chat.svelte.
-// Types: reuse existing Message type from $lib/types/messages.
+const KEEPALIVE_VALUES = ['__keepalive__', '__KEEPALIVE__', 'keepalive', 'KEEPALIVE'] as const;
 
-export function unwrapWsPayload(raw: string): string | null {
-  if (!raw) return null;
-  if (raw === '__keepalive__') return null;
-  try {
-    const env = JSON.parse(raw);
-    // Envelope: { type: "chat", data: "<string or array or object>" }
-    if (env && typeof env === 'object' && env.type === 'chat' && 'data' in env) {
-      // If data is a string, return that; otherwise re-stringify it.
-      if (typeof env.data === 'string') return env.data;
-      return JSON.stringify(env.data);
-    }
-  } catch {
-    // not JSON, fall through (could be NDJSON)
-  }
-  return raw;
+export const KEEPALIVE_TOKENS = new Set<string>(KEEPALIVE_VALUES);
+
+const DEFAULT_COLOUR = '#ffffff';
+const DEFAULT_SOURCE: Message['source'] = 'YouTube';
+
+const textDecoder = new TextDecoder();
+
+const DEBUG = typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_CHAT_DEBUG === '1';
+
+function debugLog(...args: unknown[]) {
+  if (DEBUG) console.debug('[chat:parser]', ...args);
 }
 
-// Accepts: JSON object, JSON array, or NDJSON
-export function parseWsMessagesFlexible(payload: string): Message[] {
-  const out: Message[] = [];
-  if (!payload) return out;
+type Envelope = {
+  type?: string;
+  data?: unknown;
+};
 
-  // Try JSON first
-  try {
-    const val = JSON.parse(payload);
-    if (Array.isArray(val)) {
-      for (const v of val) if (v && typeof v === 'object') out.push(v as Message);
-      return out;
-    }
-    if (val && typeof val === 'object') {
-      out.push(val as Message);
-      return out;
-    }
-  } catch {
-    // Not a single JSON value; might be NDJSON
+export async function parseWsEvent(event: MessageEvent): Promise<Message[]> {
+  const { data } = event;
+
+  if (typeof data === 'string') {
+    return parseWsString(data);
   }
 
-  // NDJSON fallback
-  const lines = payload.split('\n').filter((l) => l.trim().length > 0);
-  for (const line of lines) {
+  if (data instanceof ArrayBuffer) {
+    return parseWsString(textDecoder.decode(data));
+  }
+
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
     try {
-      const v = JSON.parse(line);
-      if (v && typeof v === 'object') out.push(v as Message);
-    } catch {
-      // skip bad line
+      const text = await data.text();
+      return parseWsString(text);
+    } catch (error) {
+      debugLog('failed to read Blob payload', error);
+      return [];
     }
   }
-  return out;
+
+  if (data == null) {
+    return [];
+  }
+
+  if ((data as { toString?: () => string }).toString) {
+    return parseWsString(String(data));
+  }
+
+  debugLog('unhandled WS payload type', typeof data);
+  return [];
 }
 
-// Back-compat export: keep the original name but point to flexible parser.
-export { parseWsMessagesFlexible as parseWsMessages };
+export function parseWsString(payload: string): Message[] {
+  if (!payload) return [];
+
+  const trimmed = payload.trim();
+  if (!trimmed) return [];
+  if (KEEPALIVE_TOKENS.has(trimmed)) return [];
+
+  const parsed = tryParseJson(trimmed);
+  if (parsed.success) {
+    return normalizeParsedValue(parsed.value);
+  }
+
+  const messages: Message[] = [];
+  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    if (KEEPALIVE_TOKENS.has(line)) continue;
+    const lineParsed = tryParseJson(line);
+    if (!lineParsed.success) {
+      debugLog('skipping unparsable NDJSON line', lineParsed.error);
+      continue;
+    }
+    messages.push(...normalizeParsedValue(lineParsed.value));
+  }
+
+  return messages;
+}
+
+function tryParseJson(input: string): { success: true; value: unknown } | { success: false; error: unknown } {
+  try {
+    return { success: true, value: JSON.parse(input) };
+  } catch (error) {
+    return { success: false, error };
+  }
+}
+
+function normalizeParsedValue(value: unknown): Message[] {
+  if (value == null) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => normalizeParsedValue(entry));
+  }
+
+  if (typeof value === 'string') {
+    return parseWsString(value);
+  }
+
+  if (typeof value === 'object') {
+    const envelope = value as Envelope;
+    if (envelope.type === 'chat' && 'data' in envelope) {
+      if (typeof envelope.data === 'string') {
+        return parseWsString(envelope.data);
+      }
+      return normalizeParsedValue(envelope.data);
+    }
+
+    const message = coerceMessage(value as Record<string, unknown>);
+    return message ? [message] : [];
+  }
+
+  return [];
+}
+
+function coerceMessage(raw: Record<string, unknown>): Message | null {
+  const author = typeof raw.author === 'string' && raw.author.trim().length > 0 ? raw.author : 'Unknown';
+  const message = typeof raw.message === 'string' ? raw.message : '';
+  const colour = typeof raw.colour === 'string' && raw.colour.trim().length > 0 ? raw.colour : DEFAULT_COLOUR;
+  const source = raw.source === 'Twitch' ? 'Twitch' : DEFAULT_SOURCE;
+
+  const fragments = Array.isArray(raw.fragments) ? raw.fragments : [];
+  const emotes = Array.isArray(raw.emotes) ? raw.emotes : [];
+  const badges = Array.isArray(raw.badges) ? raw.badges : [];
+
+  return {
+    author,
+    message,
+    colour,
+    source,
+    fragments,
+    emotes,
+    badges
+  } satisfies Message;
+}
