@@ -5,8 +5,10 @@
   import PauseOverlay from './PauseOverlay.svelte';
 
   import { deployedUrl, useDeployedApi } from '$lib/config';
-  import { parseWsMessages, unwrapWsPayload } from '$lib/messages';
+  import { unwrapWsPayload, parseWsMessages } from '$lib/messages';
   import { SvelteSet } from 'svelte/reactivity';
+
+  const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
 
   let container: HTMLDivElement;
 
@@ -106,54 +108,44 @@
   }
 
   function initializeWebSocket() {
-    console.log('Initializing WebSocket');
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
 
     const localUrl = `${wsProtocol}://${window.location.host}`;
     const wsUrl = `${useDeployedApi ? deployedUrl : localUrl}/ws/chat`;
 
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      console.log('WebSocket is already connected or connecting. No action taken.');
+      if (CHAT_DEBUG) console.log('[chat] ws already connected/connecting');
       return;
     }
 
-    console.log('WebSocket URL:', wsUrl);
+    if (CHAT_DEBUG) console.log('[chat] url:', wsUrl);
     ws = new WebSocket(wsUrl);
 
-    ws.onopen = () => {
-      console.log('WebSocket Connection established');
-    };
+    ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
 
     ws.onmessage = (event) => {
-      let payload: unknown = event.data;
+      let raw: string | null = null;
       if (typeof event.data === 'string') {
-        payload = unwrapWsPayload(event.data);
+        raw = event.data;
+      } else if (event.data instanceof ArrayBuffer) {
+        raw = new TextDecoder().decode(event.data);
+      } else if (event.data != null) {
+        raw = String(event.data);
       }
 
-      if (payload == null) {
-        return;
-      }
+      const unwrapped = raw != null ? unwrapWsPayload(raw) : null;
+      if (unwrapped == null) return;
 
-      const incomingMessages = parseWsMessages(payload);
-      if (incomingMessages.length === 0) {
-        return;
-      }
+      const incoming = parseWsMessages(unwrapped);
+      if (incoming.length === 0) return;
 
-      messageQueue.push(...incomingMessages);
-      if (!processing) {
-        processMessageQueue();
-      }
+      messageQueue.push(...incoming);
+      if (!processing) processMessageQueue();
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket Error:', error);
-    };
+    ws.onerror = (error) => CHAT_DEBUG && console.error('[chat] error:', error);
 
-    ws.onclose = () => {
-      console.log('WebSocket Connection closed. Attempting to reconnect...');
-      // Removed the setTimeout here to avoid automatic reconnection.
-      // The reconnection attempt will be managed by the visibility change or manual triggers.
-    };
+    ws.onclose = () => CHAT_DEBUG && console.log('[chat] close');
   }
 
   onMount(() => {

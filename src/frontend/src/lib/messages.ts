@@ -1,111 +1,58 @@
 import type { Message } from '$lib/types/messages';
 
-type MaybeEnvelope<T> = T | { items: T[] } | T[];
-
-const KEEPALIVE_TOKENS = new Set(['__keepalive__', 'ping', 'pong']);
+// Add a tolerant WS payload pipeline that returns Message[]
+// and exports helpers for reuse in Chat.svelte.
+// Types: reuse existing Message type from $lib/types/messages.
 
 export function unwrapWsPayload(raw: string): string | null {
-  if (!raw || KEEPALIVE_TOKENS.has(raw)) {
-    return null;
-  }
-
+  if (!raw) return null;
+  if (raw === '__keepalive__') return null;
   try {
-    const parsed = JSON.parse(raw);
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      'type' in parsed &&
-      (parsed as { type?: unknown }).type === 'chat' &&
-      'data' in parsed &&
-      typeof (parsed as { data?: unknown }).data === 'string'
-    ) {
-      return (parsed as { data: string }).data;
+    const env = JSON.parse(raw);
+    // Envelope: { type: "chat", data: "<string or array or object>" }
+    if (env && typeof env === 'object' && env.type === 'chat' && 'data' in env) {
+      // If data is a string, return that; otherwise re-stringify it.
+      if (typeof env.data === 'string') return env.data;
+      return JSON.stringify(env.data);
     }
   } catch {
-    // Payload is not JSON — treat it as plain chat JSON
+    // not JSON, fall through (could be NDJSON)
   }
-
   return raw;
 }
 
-function normalizePayload<T>(payload: MaybeEnvelope<T>): T[] {
-  if (Array.isArray(payload)) {
-    return payload;
-  }
+// Accepts: JSON object, JSON array, or NDJSON
+export function parseWsMessagesFlexible(payload: string): Message[] {
+  const out: Message[] = [];
+  if (!payload) return out;
 
-  if (payload && typeof payload === 'object' && 'items' in payload) {
-    const items = (payload as { items?: unknown }).items;
-    if (Array.isArray(items)) {
-      return items as T[];
+  // Try JSON first
+  try {
+    const val = JSON.parse(payload);
+    if (Array.isArray(val)) {
+      for (const v of val) if (v && typeof v === 'object') out.push(v as Message);
+      return out;
     }
-  }
-
-  if (payload && typeof payload === 'object') {
-    return [payload as T];
-  }
-
-  return [];
-}
-
-function coerceMessage(raw: unknown): Message | null {
-  if (!raw || typeof raw !== 'object') {
-    return null;
-  }
-
-  const candidate = raw as Record<string, unknown>;
-  const author = typeof candidate.author === 'string' ? candidate.author : 'Unknown';
-  const message = typeof candidate.message === 'string' ? candidate.message : '';
-  const colour = typeof candidate.colour === 'string' ? candidate.colour : '#ffffff';
-  const badges = Array.isArray(candidate.badges) ? (candidate.badges as Message['badges']) : [];
-  const fragments = Array.isArray(candidate.fragments)
-    ? (candidate.fragments as Message['fragments'])
-    : [];
-  const emotes = Array.isArray(candidate.emotes) ? (candidate.emotes as Message['emotes']) : [];
-  const source = candidate.source === 'Twitch' || candidate.source === 'YouTube' ? candidate.source : 'YouTube';
-
-  return {
-    author,
-    badges,
-    colour,
-    message,
-    fragments,
-    emotes,
-    source
-  } as Message;
-}
-
-export function parseWsMessages(eventData: unknown): Message[] {
-  if (typeof eventData === 'string') {
-    if (KEEPALIVE_TOKENS.has(eventData)) {
-      return [];
+    if (val && typeof val === 'object') {
+      out.push(val as Message);
+      return out;
     }
+  } catch {
+    // Not a single JSON value; might be NDJSON
+  }
 
+  // NDJSON fallback
+  const lines = payload.split('\n').filter((l) => l.trim().length > 0);
+  for (const line of lines) {
     try {
-      const parsed = JSON.parse(eventData) as MaybeEnvelope<unknown>;
-      return normalizePayload(parsed)
-        .map((item) => coerceMessage(item))
-        .filter((item): item is Message => item !== null);
-    } catch (error) {
-      console.warn('Unable to parse websocket payload', error, eventData);
-      return [];
+      const v = JSON.parse(line);
+      if (v && typeof v === 'object') out.push(v as Message);
+    } catch {
+      // skip bad line
     }
   }
-
-  if (eventData instanceof ArrayBuffer) {
-    try {
-      const decoded = new TextDecoder().decode(eventData);
-      return parseWsMessages(decoded);
-    } catch (error) {
-      console.warn('Unable to decode websocket ArrayBuffer payload', error);
-      return [];
-    }
-  }
-
-  if (KEEPALIVE_TOKENS.has(String(eventData))) {
-    return [];
-  }
-
-  return normalizePayload(eventData as MaybeEnvelope<unknown>)
-    .map((item) => coerceMessage(item))
-    .filter((item): item is Message => item !== null);
+  return out;
 }
+
+// Back-compat export: keep the original name but point to flexible parser.
+export { parseWsMessagesFlexible as parseWsMessages };

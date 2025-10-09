@@ -103,6 +103,17 @@ working.
 Run gnasty so it ingests into `/data/elora.db` (for example via a shared Docker volume) and start Elora with the same volume
 mounted to enable real-time updates.
 
+### DB tailer + WebSocket payloads
+The server can optionally wrap WS frames in an envelope:
+`{ "type":"chat", "data": "<raw JSON object | JSON array | NDJSON>" }`.
+Keepalive frames are `__keepalive__` and are ignored by the client.
+
+The client now tolerates all of the above formats.
+
+**Local testing (no OAuth):**
+- OAuth buttons will 500 if the related envs aren’t set; this is expected.
+- DB tailer + gnasty harvester is sufficient to see live messages.
+
 > Heads-up: Twitch / YouTube login flows require valid OAuth secrets. If you leave those blank the auth endpoints will return
 500s — that's expected while running locally without real credentials.
 
