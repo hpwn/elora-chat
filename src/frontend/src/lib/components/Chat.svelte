@@ -5,7 +5,7 @@
   import PauseOverlay from './PauseOverlay.svelte';
 
   import { deployedUrl, useDeployedApi } from '$lib/config';
-  import { parseWsMessages } from '$lib/messages';
+  import { parseWsMessages, unwrapWsPayload } from '$lib/messages';
   import { SvelteSet } from 'svelte/reactivity';
 
   let container: HTMLDivElement;
@@ -125,7 +125,16 @@
     };
 
     ws.onmessage = (event) => {
-      const incomingMessages = parseWsMessages(event.data);
+      let payload: unknown = event.data;
+      if (typeof event.data === 'string') {
+        payload = unwrapWsPayload(event.data);
+      }
+
+      if (payload == null) {
+        return;
+      }
+
+      const incomingMessages = parseWsMessages(payload);
       if (incomingMessages.length === 0) {
         return;
       }

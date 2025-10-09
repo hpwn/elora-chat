@@ -88,6 +88,73 @@ type Message struct {
 	Colour  string  `json:"colour"`
 }
 
+func wsEnvelopeEnabled() bool {
+	return strings.EqualFold(os.Getenv("ELORA_WS_ENVELOPE"), "true")
+}
+
+func maybeEnvelope(b []byte) []byte {
+	if !wsEnvelopeEnabled() {
+		return b
+	}
+
+	env := struct {
+		Type string `json:"type"`
+		Data string `json:"data"`
+	}{
+		Type: "chat",
+		Data: string(b),
+	}
+
+	out, err := json.Marshal(env)
+	if err != nil {
+		log.Printf("ws: failed to marshal envelope: %v", err)
+		return b
+	}
+
+	return out
+}
+
+func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
+	if strings.TrimSpace(m.RawJSON) != "" {
+		return []byte(m.RawJSON), nil
+	}
+
+	fallback := Message{
+		Author:  m.Username,
+		Message: m.Text,
+		Tokens:  []Token{},
+		Emotes:  []Emote{},
+		Badges:  []Badge{},
+		Source:  m.Platform,
+		Colour:  userColorMap[m.Username],
+	}
+
+	data, err := json.Marshal(fallback)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+func sanitizeMessagePayload(payload []byte) ([]byte, error) {
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return nil, err
+	}
+	if msg.Tokens == nil {
+		msg.Tokens = []Token{}
+	}
+	if msg.Emotes == nil {
+		msg.Emotes = []Emote{}
+	}
+	if msg.Badges == nil {
+		msg.Badges = []Badge{}
+	}
+
+	return json.Marshal(msg)
+}
+
 func InitRoutes(store storage.Store) {
 	if store == nil {
 		log.Fatalf("storage: store is nil")
@@ -297,22 +364,10 @@ func broadcastChatMessage(msg []byte) {
 
 // BroadcastFromTailer enqueues a stored message onto the WebSocket broadcast loop.
 func BroadcastFromTailer(m storage.Message) {
-	payload := []byte(m.RawJSON)
-	if len(payload) == 0 {
-		fallback := Message{
-			Author:  m.Username,
-			Message: m.Text,
-			Source:  m.Platform,
-			Tokens:  []Token{},
-			Emotes:  []Emote{},
-			Badges:  []Badge{},
-		}
-		data, err := json.Marshal(fallback)
-		if err != nil {
-			log.Printf("dbtailer: failed to marshal fallback message: %v", err)
-			return
-		}
-		payload = data
+	payload, err := messagePayloadFromStorage(m)
+	if err != nil {
+		log.Printf("dbtailer: failed to marshal fallback message: %v", err)
+		return
 	}
 
 	broadcastChatMessage(payload)
@@ -361,25 +416,17 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("storage: Failed to read messages from store: %v\n", err)
 		} else {
 			for i := len(history) - 1; i >= 0; i-- {
-				payload := history[i].RawJSON
-				if payload == "" {
-					fallback := Message{
-						Author:  history[i].Username,
-						Message: history[i].Text,
-						Tokens:  []Token{},
-						Emotes:  []Emote{},
-						Badges:  []Badge{},
-						Source:  history[i].Platform,
-						Colour:  userColorMap[history[i].Username],
-					}
-					raw, marshalErr := json.Marshal(fallback)
-					if marshalErr != nil {
-						log.Printf("chat: Failed to marshal fallback history message: %v\n", marshalErr)
-						continue
-					}
-					payload = string(raw)
+				payload, marshalErr := messagePayloadFromStorage(history[i])
+				if marshalErr != nil {
+					log.Printf("chat: Failed to marshal history message: %v\n", marshalErr)
+					continue
 				}
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+				sanitized, marshalErr := sanitizeMessagePayload(payload)
+				if marshalErr != nil {
+					log.Printf("chat: Failed to sanitize history message: %v\n", marshalErr)
+					continue
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, maybeEnvelope(sanitized)); err != nil {
 					log.Println("ws: WebSocket write error:", err)
 					return
 				}
@@ -399,25 +446,12 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				var msg Message
-				err := json.Unmarshal(m, &msg)
+				sanitized, err := sanitizeMessagePayload(m)
 				if err != nil {
 					log.Println("json: ", err)
+					continue
 				}
-				if msg.Tokens == nil {
-					msg.Tokens = []Token{}
-				}
-				if msg.Emotes == nil {
-					msg.Emotes = []Emote{}
-				}
-				if msg.Badges == nil {
-					msg.Badges = []Badge{}
-				}
-				m, err = json.Marshal(msg)
-				if err != nil {
-					log.Println("json: ", err)
-				}
-				if err := conn.WriteMessage(websocket.TextMessage, m); err != nil {
+				if err := conn.WriteMessage(websocket.TextMessage, maybeEnvelope(sanitized)); err != nil {
 					log.Println("ws: WebSocket write error:", err)
 					return
 				}
