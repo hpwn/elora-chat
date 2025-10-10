@@ -20,8 +20,8 @@ type Envelope = {
   data?: unknown;
 };
 
-export async function parseWsEvent(event: MessageEvent): Promise<Message[]> {
-  const { data } = event;
+export async function parseWsEvent(ev: MessageEvent): Promise<Message[]> {
+  const { data } = ev;
 
   if (typeof data === 'string') {
     return parseWsString(data);
@@ -122,11 +122,14 @@ function coerceMessage(raw: Record<string, unknown>): Message | null {
   const author = typeof raw.author === 'string' && raw.author.trim().length > 0 ? raw.author : 'Unknown';
   const message = typeof raw.message === 'string' ? raw.message : '';
   const colour = typeof raw.colour === 'string' && raw.colour.trim().length > 0 ? raw.colour : DEFAULT_COLOUR;
-  const source = raw.source === 'Twitch' ? 'Twitch' : DEFAULT_SOURCE;
 
-  const fragments = Array.isArray(raw.fragments) ? raw.fragments : [];
-  const emotes = Array.isArray(raw.emotes) ? raw.emotes : [];
-  const badges = Array.isArray(raw.badges) ? raw.badges : [];
+  const allowedSources: Message['source'][] = ['YouTube', 'Twitch', 'Test'];
+  const rawSource = typeof raw.source === 'string' ? (raw.source as Message['source']) : undefined;
+  const source = rawSource && allowedSources.includes(rawSource) ? rawSource : DEFAULT_SOURCE;
+
+  const fragments = Array.isArray(raw.fragments) ? (raw.fragments as Message['fragments']) : [];
+  const emotes = Array.isArray(raw.emotes) ? (raw.emotes as Message['emotes']) : [];
+  const badges = Array.isArray(raw.badges) ? (raw.badges as Message['badges']) : [];
 
   return {
     author,

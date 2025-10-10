@@ -41,7 +41,7 @@ export interface Message {
   message: string;
   fragments: Fragment[];
   emotes: Emote[];
-  source: 'YouTube' | 'Twitch';
+  source: 'YouTube' | 'Twitch' | 'Test';
 }
 
 export interface Keymods {

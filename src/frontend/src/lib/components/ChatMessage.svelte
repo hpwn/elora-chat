@@ -55,6 +55,8 @@
     onkeypress={keyHandler}
     onclick={handleClickMessage}
     class="chat-message"
+    data-platform={message.source}
+    data-author={message.author}
   >
     <span class="sender">
       {#if message.source === 'Twitch'}

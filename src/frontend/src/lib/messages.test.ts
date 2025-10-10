@@ -79,6 +79,12 @@ test('coerces missing fields safely', () => {
   expect(Array.isArray(message.badges)).toBe(true);
 });
 
+test('preserves supported source values', () => {
+  const payload = JSON.stringify({ ...base, source: 'Test' });
+  const [message] = parseWsString(payload);
+  expect(message.source).toBe('Test');
+});
+
 test('binary array buffer payload', async () => {
   const buffer = new TextEncoder().encode(JSON.stringify(base)).buffer;
   const event = new MessageEvent('message', { data: buffer });
@@ -93,4 +99,10 @@ test('blob payload', async () => {
   const messages = await parseWsEvent(event);
   expect(messages).toHaveLength(1);
   assertMessageShape(messages[0]);
+});
+
+test('parseWsEvent ignores keepalive string frames', async () => {
+  const event = new MessageEvent('message', { data: '__keepalive__' });
+  const messages = await parseWsEvent(event);
+  expect(messages).toHaveLength(0);
 });
