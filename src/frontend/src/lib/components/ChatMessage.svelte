@@ -2,7 +2,7 @@
   import type { Message, Keymods } from '$lib/types/messages';
   import type { SvelteSet } from 'svelte/reactivity';
   import { getContext } from 'svelte';
-  import { loadImage, formatMessageFragments, validNameColors } from '$lib/utils';
+  import { loadImage, formatMessageFragments, validNameColors, sanitizeMessage } from '$lib/utils';
   import { TwitchIcon, YoutubeIcon } from './icons';
 
   let { message }: { message: Message } = $props();
@@ -12,6 +12,12 @@
   const keymods: Keymods = getContext('keymods');
 
   const { messageWithHTML, effects } = formatMessageFragments(message.fragments);
+  const fallbackMessage = sanitizeMessage(message.message ?? '');
+  const hasFragmentHtml = messageWithHTML.trim().length > 0;
+  const hasFallbackHtml = fallbackMessage.trim().length > 0;
+  const shouldRender = hasFragmentHtml || hasFallbackHtml;
+  const displayHtml = hasFragmentHtml ? messageWithHTML : fallbackMessage;
+  const messageClasses = ['message-text', hasFragmentHtml ? effects : ''].filter(Boolean).join(' ');
 
   const hexColour = validNameColors.get(message.colour);
   if (hexColour != undefined) {
@@ -47,7 +53,7 @@
   }
 </script>
 
-{#if messageWithHTML !== ''}
+{#if shouldRender}
   <div
     role="button"
     aria-pressed="false"
@@ -85,8 +91,8 @@
     </span>
 
     {#if visible}
-      <span class={['message-text', effects].filter(Boolean).join(' ')}>
-        {@html messageWithHTML}
+      <span class={messageClasses}>
+        {@html displayHtml}
       </span>
     {/if}
   </div>
