@@ -1,8 +1,6 @@
 import type { Message } from '$lib/types/messages';
 
-const KEEPALIVE_VALUES = ['__keepalive__', '__KEEPALIVE__', 'keepalive', 'KEEPALIVE'] as const;
-
-export const KEEPALIVE_TOKENS = new Set<string>(KEEPALIVE_VALUES);
+export const KEEPALIVE_TOKENS = new Set<string>(['__keepalive__']);
 
 const DEFAULT_COLOUR = '#ffffff';
 const DEFAULT_SOURCE: Message['source'] = 'YouTube';
@@ -25,6 +23,12 @@ export async function parseWsEvent(ev: MessageEvent): Promise<Message[]> {
 
   if (typeof data === 'string') {
     return parseWsString(data);
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    const { buffer, byteOffset, byteLength } = data;
+    const sliced = buffer.slice(byteOffset, byteOffset + byteLength);
+    return parseWsString(textDecoder.decode(sliced));
   }
 
   if (data instanceof ArrayBuffer) {

@@ -93,6 +93,14 @@ test('binary array buffer payload', async () => {
   assertMessageShape(messages[0]);
 });
 
+test('typed array payload', async () => {
+  const view = new Uint8Array(new TextEncoder().encode(JSON.stringify(base)));
+  const event = new MessageEvent('message', { data: view });
+  const messages = await parseWsEvent(event);
+  expect(messages).toHaveLength(1);
+  assertMessageShape(messages[0]);
+});
+
 test('blob payload', async () => {
   const blob = new Blob([JSON.stringify(base)], { type: 'application/json' });
   const event = new MessageEvent('message', { data: blob });
