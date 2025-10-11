@@ -78,3 +78,81 @@ func TestMaybeEnvelope(t *testing.T) {
 		t.Fatalf("expected raw payload when envelope disabled, got %s", string(raw))
 	}
 }
+
+func TestEnrichTailerMessage(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	raw := `{"author":"TailerUser","message":"hello Pog"}`
+	msg := enrichTailerMessage(storage.Message{
+		Username:   "TailerUser",
+		Platform:   "YouTube",
+		RawJSON:    raw,
+		EmotesJSON: "[]",
+	})
+
+	if msg.Author != "TailerUser" {
+		t.Fatalf("expected author TailerUser, got %q", msg.Author)
+	}
+	if msg.Message != "hello Pog" {
+		t.Fatalf("expected message 'hello Pog', got %q", msg.Message)
+	}
+	if msg.Source != "YouTube" {
+		t.Fatalf("expected source YouTube, got %q", msg.Source)
+	}
+	if msg.Colour == "" {
+		t.Fatalf("expected colour to be populated")
+	}
+	if msg.Tokens == nil {
+		t.Fatalf("expected tokens slice to be initialized")
+	}
+	if msg.Badges == nil {
+		t.Fatalf("expected badges slice to be initialized")
+	}
+	if msg.Emotes == nil {
+		t.Fatalf("expected emotes slice to be initialized")
+	}
+}
+
+func TestBroadcastFromTailerEnrichesPayload(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	subscribersMu.Lock()
+	subscribers = nil
+	subscribersMu.Unlock()
+
+	ch := addSubscriber()
+	defer removeSubscriber(ch)
+
+	BroadcastFromTailer(storage.Message{
+		Username: "SampleUser",
+		Platform: "Twitch",
+		RawJSON:  `{"author":"SampleUser","message":"hi"}`,
+	})
+
+	select {
+	case payload := <-ch:
+		var msg Message
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			t.Fatalf("failed to unmarshal broadcast payload: %v", err)
+		}
+
+		if msg.Colour == "" {
+			t.Fatalf("expected colour to be populated")
+		}
+		if msg.Emotes == nil {
+			t.Fatalf("expected emotes slice to be initialized")
+		}
+		if msg.Badges == nil {
+			t.Fatalf("expected badges slice to be initialized")
+		}
+		if msg.Tokens == nil {
+			t.Fatalf("expected tokens slice to be initialized")
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}
