@@ -109,6 +109,7 @@ The server can optionally wrap WS frames in an envelope:
 Keepalive frames are `__keepalive__` and are ignored by the client.
 
 The client now tolerates all of the above formats and fills in any missing arrays/fields so the UI never crashes on sparse payloads.
+When rows stream out of the DB tailer they are retokenized (fragments/emotes) and tinted with the same deterministic colour palette as the live Python ingest path, so both sources look identical in the UI. Badge data still depends on the upstream payload; if the harvester or row omits it, the client will display an empty list.
 
 **Local testing (no OAuth):**
 - OAuth buttons will 500 if the related envs aren’t set; this is expected.
