@@ -70,6 +70,61 @@ Prefer the external [gnasty](https://github.com/hpwn/gnasty) chat fetcher instea
 
 > In this slice, gnasty lines are validated and logged. The insert hook will be wired up in the next slice so messages land in SQLite.
 
+## Twitch integration (gnasty-chat token handoff)
+
+When `ELORA_TWITCH_TOKEN_FILE` is set, the backend writes the current Twitch IRC token to that file (atomically, mode `0600`).
+Run `gnasty-chat` with `-twitch-token-file` pointing at the same path (use a shared volume).
+
+**Environment**
+
+```bash
+ELORA_TWITCH_TOKEN_FILE=/shared/twitch_token   # empty disables export
+ELORA_TWITCH_TOKEN_DIR=/shared                 # optional; defaults to the file's parent
+```
+
+**Local smoke test**
+
+1. Create a shared Docker volume:
+
+   ```bash
+   docker volume create chat_shared
+   ```
+
+2. Start elora-chat with the shared mount:
+
+   ```bash
+   docker run --name elora-chat-instance -d \
+     -p 8080:8080 \
+     -e ELORA_DB_MODE=persistent \
+     -e ELORA_DB_PATH=/data/elora.db \
+     -e ELORA_DB_TAIL_ENABLED=true \
+     -e ELORA_TWITCH_TOKEN_FILE=/shared/twitch_token \
+     -v elora_sqlite_data:/data \
+     -v chat_shared:/shared \
+     elora-chat:latest
+   ```
+
+3. Launch gnasty-chat with the same volume:
+
+   ```bash
+   docker run --name gnasty-harvester -d \
+     --user 1000:1000 \
+     -p 9876:8765 \
+     -v elora_sqlite_data:/data \
+     -v chat_shared:/shared \
+     gnasty-chat:latest \
+     -sqlite /data/elora.db \
+     -twitch-channel <channel> -twitch-nick <nick> \
+     -twitch-token-file /shared/twitch_token \
+     -http-addr :8765 -http-access-log=true
+   ```
+
+4. Sign into Twitch via the Elora UI. After OAuth, `/shared/twitch_token` is written and gnasty will log a reload:
+
+   ```
+   twitch: token reload detected; reconnecting
+   ```
+
 ## SQLite storage (default) 🗄️
 
 The backend now persists chat history to SQLite by default. Ephemeral mode keeps everything in a temp file so you can run without any extra setup. To customize the database:

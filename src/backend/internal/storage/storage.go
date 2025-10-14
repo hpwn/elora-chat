@@ -49,5 +49,8 @@ type Store interface {
 	GetSession(ctx context.Context, token string) (*Session, error)
 	UpsertSession(ctx context.Context, s *Session) error
 	DeleteSession(ctx context.Context, token string) error
+	// LatestSessionByService returns the most recently updated session for the
+	// given service. If none exist, (nil, nil) is returned.
+	LatestSessionByService(ctx context.Context, service string) (*Session, error)
 	Close(ctx context.Context) error
 }

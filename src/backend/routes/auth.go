@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
+	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/twitch"
 )
@@ -225,6 +226,18 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 	if err := chatStore.UpsertSession(ctx, record); err != nil {
 		log.Printf("auth: failed to store updated session data: %v", err)
 		return
+	}
+
+	if service == "twitch" && tokenfile.PathFromEnv() != "" {
+		if tok, _ := existingSessionData["twitch_token"].(string); strings.TrimSpace(tok) != "" {
+			if err := tokenfile.Save(tok); err != nil {
+				if !errors.Is(err, tokenfile.ErrEmptyToken) {
+					log.Printf("auth: twitch token export skipped (%v)", err)
+				}
+			} else {
+				log.Printf("auth: twitch token exported to file")
+			}
+		}
 	}
 
 	if w != nil {

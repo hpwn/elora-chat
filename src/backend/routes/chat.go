@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
+	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
 	"github.com/jdavasligil/emodl"
 )
 
@@ -185,6 +187,7 @@ func InitRoutes(store storage.Store) {
 	}
 
 	chatStore = store
+	maybeExportStoredTwitchToken(store)
 	subscribersMu.Lock()
 	if subscribers == nil {
 		subscribers = make(map[chan []byte]struct{})
@@ -236,6 +239,42 @@ func InitRoutes(store storage.Store) {
 	// for _, e := range tokenizer.EmoteCache {
 	// 	log.Println(e.Name)
 	// }
+}
+
+func maybeExportStoredTwitchToken(store storage.Store) {
+	if store == nil {
+		return
+	}
+	if tokenfile.PathFromEnv() == "" {
+		return
+	}
+
+	sess, err := store.LatestSessionByService(ctx, "twitch")
+	if err != nil {
+		log.Printf("auth: twitch token preload failed: %v", err)
+		return
+	}
+	if sess == nil || strings.TrimSpace(sess.DataJSON) == "" {
+		return
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(sess.DataJSON), &payload); err != nil {
+		log.Printf("auth: twitch token preload decode failed: %v", err)
+		return
+	}
+	raw, _ := payload["twitch_token"].(string)
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+
+	if err := tokenfile.Save(raw); err != nil {
+		if !errors.Is(err, tokenfile.ErrEmptyToken) {
+			log.Printf("auth: twitch token export skipped (%v)", err)
+		}
+		return
+	}
+	log.Printf("auth: twitch token exported to file")
 }
 
 func StartChatFetch(urls []string) {

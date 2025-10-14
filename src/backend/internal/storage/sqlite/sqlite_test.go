@@ -541,6 +541,65 @@ func TestSessionsPersistent(t *testing.T) {
 	}
 }
 
+func TestLatestSessionByService(t *testing.T) {
+	ctx := context.Background()
+	store := New(Config{Mode: "ephemeral"})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	now := time.Now().UTC().Truncate(time.Second)
+	older := &storage.Session{
+		Token:       "tok-old",
+		Service:     "twitch",
+		DataJSON:    `{"twitch_token":"old"}`,
+		TokenExpiry: now.Add(10 * time.Minute),
+		UpdatedAt:   now.Add(-time.Hour),
+	}
+	newer := &storage.Session{
+		Token:       "tok-new",
+		Service:     "twitch",
+		DataJSON:    `{"twitch_token":"new"}`,
+		TokenExpiry: now.Add(2 * time.Hour),
+		UpdatedAt:   now,
+	}
+
+	if err := store.UpsertSession(ctx, older); err != nil {
+		t.Fatalf("Upsert older returned error: %v", err)
+	}
+	if err := store.UpsertSession(ctx, newer); err != nil {
+		t.Fatalf("Upsert newer returned error: %v", err)
+	}
+
+	got, err := store.LatestSessionByService(ctx, "twitch")
+	if err != nil {
+		t.Fatalf("LatestSessionByService returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected session, got nil")
+	}
+	if got.Token != newer.Token {
+		t.Fatalf("expected token %q, got %q", newer.Token, got.Token)
+	}
+
+	none, err := store.LatestSessionByService(ctx, "youtube")
+	if err != nil {
+		t.Fatalf("LatestSessionByService youtube error: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("expected nil for missing service, got %#v", none)
+	}
+
+	if _, err := store.LatestSessionByService(ctx, " "); err == nil {
+		t.Fatalf("expected error for empty service")
+	}
+}
+
 func TestSQLiteMigrationsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
