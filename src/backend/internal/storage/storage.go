@@ -52,5 +52,8 @@ type Store interface {
 	// LatestSessionByService returns the most recently updated session for the
 	// given service. If none exist, (nil, nil) is returned.
 	LatestSessionByService(ctx context.Context, service string) (*Session, error)
+	// LatestSession returns the most recently updated session regardless of
+	// service. If no sessions exist, (nil, nil) is returned.
+	LatestSession(ctx context.Context) (*Session, error)
 	Close(ctx context.Context) error
 }

@@ -396,6 +396,33 @@ func (s *Store) LatestSessionByService(ctx context.Context, service string) (*st
 	}, nil
 }
 
+// LatestSession returns the most recently updated session regardless of service.
+func (s *Store) LatestSession(ctx context.Context) (*storage.Session, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT token, service, data_json, token_expiry, updated_at FROM sessions ORDER BY updated_at DESC, token_expiry DESC, rowid DESC LIMIT 1`)
+	var (
+		tok, svc, data  string
+		expiry, updated int64
+	)
+	if err := row.Scan(&tok, &svc, &data, &expiry, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlite: latest session: %w", err)
+	}
+
+	return &storage.Session{
+		Token:       tok,
+		Service:     svc,
+		DataJSON:    data,
+		TokenExpiry: time.Unix(expiry, 0).UTC(),
+		UpdatedAt:   time.Unix(updated, 0).UTC(),
+	}, nil
+}
+
 // UpsertSession creates or updates a stored session record.
 func (s *Store) UpsertSession(ctx context.Context, sess *storage.Session) error {
 	if s.db == nil {

@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/authutil"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
 	"github.com/jdavasligil/emodl"
@@ -242,39 +243,40 @@ func InitRoutes(store storage.Store) {
 }
 
 func maybeExportStoredTwitchToken(store storage.Store) {
-	if store == nil {
-		return
-	}
-	if tokenfile.PathFromEnv() == "" {
+	if store == nil || tokenfile.PathFromEnv() == "" {
 		return
 	}
 
-	sess, err := store.LatestSessionByService(ctx, "twitch")
-	if err != nil {
-		log.Printf("auth: twitch token preload failed: %v", err)
-		return
-	}
-	if sess == nil || strings.TrimSpace(sess.DataJSON) == "" {
-		return
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(sess.DataJSON), &payload); err != nil {
-		log.Printf("auth: twitch token preload decode failed: %v", err)
-		return
-	}
-	raw, _ := payload["twitch_token"].(string)
-	if strings.TrimSpace(raw) == "" {
-		return
-	}
-
-	if err := tokenfile.Save(raw); err != nil {
-		if !errors.Is(err, tokenfile.ErrEmptyToken) {
-			log.Printf("auth: twitch token export skipped (%v)", err)
+	export := func(sess *storage.Session) bool {
+		if sess == nil || strings.TrimSpace(sess.DataJSON) == "" {
+			return false
 		}
+		token := strings.TrimSpace(authutil.ExtractTwitchToken([]byte(sess.DataJSON)))
+		if token == "" {
+			return false
+		}
+		if err := tokenfile.Save(token); err != nil {
+			if !errors.Is(err, tokenfile.ErrEmptyToken) {
+				log.Printf("auth: twitch token export skipped (%v)", err)
+			}
+			return true
+		}
+		log.Printf("auth: twitch token exported to file")
+		return true
+	}
+
+	if sess, err := store.LatestSessionByService(ctx, "twitch"); err != nil {
+		log.Printf("auth: twitch token preload failed: %v", err)
+	} else if export(sess) {
 		return
 	}
-	log.Printf("auth: twitch token exported to file")
+
+	if sess, err := store.LatestSession(ctx); err != nil {
+		log.Printf("auth: twitch token preload fallback failed: %v", err)
+		return
+	} else {
+		_ = export(sess)
+	}
 }
 
 func StartChatFetch(urls []string) {
