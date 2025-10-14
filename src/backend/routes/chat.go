@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -86,6 +87,29 @@ type Message struct {
 	Badges  []Badge `json:"badges"`
 	Source  string  `json:"source"`
 	Colour  string  `json:"colour"`
+}
+
+var fallbackColourPalette = []string{
+	"#f97316",
+	"#22d3ee",
+	"#c084fc",
+	"#34d399",
+	"#facc15",
+	"#38bdf8",
+	"#f472b6",
+	"#a3e635",
+}
+
+func colorFromName(name string) string {
+	if name == "" {
+		return "#94a3b8"
+	}
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(name)))
+	sum := h.Sum32()
+	idx := int(sum % uint32(len(fallbackColourPalette)))
+	return fallbackColourPalette[idx]
 }
 
 func wsEnvelopeEnabled() bool {
@@ -362,11 +386,81 @@ func broadcastChatMessage(msg []byte) {
 	}
 }
 
+func enrichTailerMessage(m storage.Message) Message {
+	var msg Message
+	raw := strings.TrimSpace(m.RawJSON)
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			log.Printf("dbtailer: failed to unmarshal raw JSON: %v", err)
+			msg = Message{}
+		}
+	}
+
+	if msg.Author == "" {
+		msg.Author = m.Username
+	}
+	if msg.Message == "" {
+		msg.Message = m.Text
+	}
+	if msg.Source == "" {
+		msg.Source = m.Platform
+	}
+
+	if msg.Emotes == nil {
+		if strings.TrimSpace(m.EmotesJSON) != "" {
+			var emotes []Emote
+			if err := json.Unmarshal([]byte(m.EmotesJSON), &emotes); err == nil {
+				msg.Emotes = emotes
+			}
+		}
+	}
+	if msg.Emotes == nil {
+		msg.Emotes = []Emote{}
+	}
+
+	if tokenizer.EmoteCache == nil {
+		tokenizer.EmoteCache = make(map[string]Emote)
+	}
+	for _, e := range msg.Emotes {
+		if e.Name != "" {
+			tokenizer.EmoteCache[e.Name] = e
+		}
+	}
+
+	if msg.Badges == nil {
+		msg.Badges = []Badge{}
+	}
+
+	if msg.Tokens == nil {
+		msg.Tokens = make([]Token, 0, 8)
+	} else {
+		msg.Tokens = msg.Tokens[:0]
+	}
+	for token := range tokenizer.Iter(msg.Message) {
+		msg.Tokens = append(msg.Tokens, token)
+	}
+
+	if msg.Colour == "" {
+		if colour, ok := userColorMap[msg.Author]; ok && colour != "" {
+			msg.Colour = colour
+		} else {
+			msg.Colour = colorFromName(msg.Author)
+		}
+	}
+
+	if msg.Source == "" {
+		msg.Source = m.Platform
+	}
+
+	return msg
+}
+
 // BroadcastFromTailer enqueues a stored message onto the WebSocket broadcast loop.
 func BroadcastFromTailer(m storage.Message) {
-	payload, err := messagePayloadFromStorage(m)
+	msg := enrichTailerMessage(m)
+	payload, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("dbtailer: failed to marshal fallback message: %v", err)
+		log.Printf("dbtailer: failed to marshal enriched message: %v", err)
 		return
 	}
 
