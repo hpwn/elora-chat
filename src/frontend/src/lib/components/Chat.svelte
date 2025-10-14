@@ -5,10 +5,13 @@
   import PauseOverlay from './PauseOverlay.svelte';
 
   import { deployedUrl, useDeployedApi } from '$lib/config';
-  import { parseWsEvent } from '$lib/messages';
+  import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { SvelteSet } from 'svelte/reactivity';
 
   const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
+  const DEFAULT_COLOUR = '#ffffff';
+  const DEFAULT_SOURCE: Message['source'] = 'YouTube';
+  const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test']);
 
   let container: HTMLDivElement;
 
@@ -32,6 +35,105 @@
 
   setContext('blacklist', blacklist);
   setContext('keymods', keymods);
+
+  function convertIncomingMessage(message: WsChatMessage): Message | null {
+    const author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
+    const text = typeof message.text === 'string' ? message.text : '';
+    if (!text && (!Array.isArray(message.emotes) || message.emotes.length === 0)) {
+      return null;
+    }
+
+    const rawColour = typeof message.colour === 'string' ? message.colour : '';
+    const colour = rawColour && rawColour.trim().length > 0 ? rawColour : DEFAULT_COLOUR;
+
+    const sourceCandidate = typeof message.platform === 'string' ? (message.platform as Message['source']) : DEFAULT_SOURCE;
+    const source = ALLOWED_SOURCES.has(sourceCandidate) ? sourceCandidate : DEFAULT_SOURCE;
+
+    const emotes = coerceEmotes(message.emotes);
+    const badges = coerceBadges(message.badges);
+
+    return {
+      author,
+      message: text,
+      colour,
+      source,
+      fragments: [],
+      emotes,
+      badges
+    } satisfies Message;
+  }
+
+  function coerceEmotes(emotes: WsChatMessage['emotes']): Message['emotes'] {
+    if (!Array.isArray(emotes)) return [];
+    const out: Message['emotes'] = [];
+    for (const emote of emotes) {
+      if (!emote || typeof emote !== 'object') continue;
+      const record = emote as Record<string, unknown>;
+      const name = typeof record.name === 'string' && record.name.trim().length > 0 ? record.name : undefined;
+      if (!name) continue;
+      const id = typeof record.id === 'string' && record.id.trim().length > 0 ? record.id : name;
+      const imagesRaw = Array.isArray(record.images) ? record.images : [];
+      const images = imagesRaw.flatMap((img) => {
+        if (!img || typeof img !== 'object') return [] as Message['emotes'][number]['images'];
+        const imageRecord = img as Record<string, unknown>;
+        const url = typeof imageRecord.url === 'string' ? imageRecord.url : undefined;
+        if (!url) return [] as Message['emotes'][number]['images'];
+        return [
+          {
+            id: typeof imageRecord.id === 'string' ? imageRecord.id : `${id}-${url}`,
+            url,
+            width: typeof imageRecord.width === 'number' ? imageRecord.width : 0,
+            height: typeof imageRecord.height === 'number' ? imageRecord.height : 0
+          }
+        ];
+      });
+
+      out.push({
+        id,
+        name,
+        images,
+        locations: record.locations ?? []
+      });
+    }
+    return out;
+  }
+
+  function coerceBadges(badges: WsChatMessage['badges']): Message['badges'] {
+    if (!Array.isArray(badges)) return [];
+    const out: Message['badges'] = [];
+    for (const badge of badges) {
+      if (!badge || typeof badge !== 'object') continue;
+      const record = badge as Record<string, unknown>;
+      const nameCandidate = typeof record.name === 'string' && record.name.trim().length > 0 ? record.name : undefined;
+      const titleCandidate = typeof record.title === 'string' && record.title.trim().length > 0 ? record.title : undefined;
+      const name = nameCandidate ?? titleCandidate ?? 'badge';
+      const title = titleCandidate ?? name;
+      const iconsRaw = Array.isArray(record.icons) ? record.icons : [];
+      const icons = iconsRaw.flatMap((icon) => {
+        if (!icon || typeof icon !== 'object') return [] as Message['badges'][number]['icons'];
+        const iconRecord = icon as Record<string, unknown>;
+        const url = typeof iconRecord.url === 'string' ? iconRecord.url : undefined;
+        if (!url) return [] as Message['badges'][number]['icons'];
+        return [
+          {
+            id: typeof iconRecord.id === 'string' ? iconRecord.id : `${name}-${url}`,
+            url,
+            width: typeof iconRecord.width === 'number' ? iconRecord.width : 0,
+            height: typeof iconRecord.height === 'number' ? iconRecord.height : 0
+          }
+        ];
+      });
+
+      out.push({
+        name,
+        title,
+        icons,
+        clickAction: typeof record.clickAction === 'string' ? record.clickAction : '',
+        clickURL: typeof record.clickURL === 'string' ? record.clickURL : ''
+      });
+    }
+    return out;
+  }
 
   function loadBlacklist(): SvelteSet<string> {
     const list = window.localStorage.getItem('blacklist');
@@ -119,24 +221,15 @@
     }
 
     if (CHAT_DEBUG) console.log('[chat] url:', wsUrl);
-    ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
+    ws = connectChat((incoming) => {
+      const normalized = convertIncomingMessage(incoming);
+      if (!normalized) return;
+
+      messageQueue = [...messageQueue, normalized];
+      if (!processing) processMessageQueue();
+    }, wsUrl);
 
     ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
-
-    ws.onmessage = async (event) => {
-      try {
-        const incoming = await parseWsEvent(event);
-        if (!incoming.length) return;
-
-        messageQueue = [...messageQueue, ...incoming];
-        if (!processing) processMessageQueue();
-      } catch (error) {
-        if (import.meta?.env?.VITE_CHAT_DEBUG) {
-          console.warn('WS parse error', error);
-        }
-      }
-    };
 
     ws.onerror = (error) => CHAT_DEBUG && console.error('[chat] error:', error);
 
