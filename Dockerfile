@@ -54,10 +54,10 @@ COPY python/requirements.txt /app/python/
 RUN pip install --no-cache-dir -r /app/python/requirements.txt && \
     rm -rf /app/python/requirements.txt
 
-# Create a non-root user and set up the .credentials directory
+# Create a non-root user, credential directory, and shared token mount point
 RUN adduser -D myuser && \
-    mkdir -p /home/myuser/.credentials && \
-    chown -R myuser:myuser /home/myuser/.credentials
+    mkdir -p /home/myuser/.credentials /shared && \
+    chown -R myuser:myuser /home/myuser /shared
 
 USER myuser
 

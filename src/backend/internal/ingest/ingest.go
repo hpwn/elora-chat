@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -28,6 +29,22 @@ func FromEnv() Env {
 		GnastyArgs:    splitCSV(getEnvTrim("GNASTY_ARGS", "")),
 		BackoffBaseMS: getEnvInt("GNASTY_BACKOFF_BASE_MS", 1000),
 		BackoffMaxMS:  getEnvInt("GNASTY_BACKOFF_MAX_MS", 30000),
+	}
+}
+
+// New returns an Env configured for the requested driver.
+func New(driver string) (Env, error) {
+	trimmed := strings.TrimSpace(driver)
+	if trimmed == "" {
+		trimmed = DriverChatDownloader
+	}
+	switch trimmed {
+	case DriverChatDownloader:
+		return Env{Driver: DriverChatDownloader}, nil
+	case DriverGnasty:
+		return Env{Driver: DriverGnasty}, nil
+	default:
+		return Env{}, fmt.Errorf("ingest: unsupported driver %q", driver)
 	}
 }
 
