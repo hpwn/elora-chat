@@ -13,6 +13,7 @@ type Message struct {
 	Platform   string
 	Text       string
 	EmotesJSON string
+	BadgesJSON string
 	RawJSON    string
 }
 

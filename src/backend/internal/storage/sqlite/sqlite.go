@@ -159,13 +159,14 @@ func (s *Store) InsertMessage(ctx context.Context, m *storage.Message) error {
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, ts, username, platform, text, emotes_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (id, ts, username, platform, text, emotes_json, badges_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID,
 		m.Timestamp.UTC().UnixMilli(),
 		m.Username,
 		m.Platform,
 		m.Text,
 		m.EmotesJSON,
+		m.BadgesJSON,
 		m.RawJSON,
 	)
 	if err != nil {
@@ -184,7 +185,7 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		return nil, errors.New("sqlite: since_ts and before_ts are mutually exclusive")
 	}
 
-	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(raw_json, '') FROM messages`
+	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, '') FROM messages`
 	var (
 		clauses []string
 		args    []any
@@ -218,7 +219,7 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 			msg storage.Message
 			ts  int64
 		)
-		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.RawJSON); err != nil {
+		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.BadgesJSON, &msg.RawJSON); err != nil {
 			return nil, fmt.Errorf("sqlite: scan message: %w", err)
 		}
 		msg.Timestamp = time.UnixMilli(ts).UTC()
