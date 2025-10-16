@@ -2,6 +2,7 @@ package routes
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,6 +78,64 @@ type Emote struct {
 type Badge struct {
 	ID      string `json:"id"`
 	Version string `json:"version,omitempty"`
+}
+
+func (b *Badge) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*b = Badge{}
+		return nil
+	}
+
+	if trimmed[0] == '"' {
+		var entry string
+		if err := json.Unmarshal(trimmed, &entry); err != nil {
+			return err
+		}
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			*b = Badge{}
+			return nil
+		}
+		badge := Badge{ID: entry}
+		if idx := strings.Index(entry, "/"); idx >= 0 {
+			badge.ID = strings.TrimSpace(entry[:idx])
+			badge.Version = strings.TrimSpace(entry[idx+1:])
+		}
+		*b = badge
+		return nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil {
+		*b = Badge{}
+		return nil
+	}
+
+	get := func(keys ...string) string {
+		for _, key := range keys {
+			if v, ok := obj[key]; ok {
+				switch val := v.(type) {
+				case string:
+					if s := strings.TrimSpace(val); s != "" {
+						return s
+					}
+				case json.Number:
+					if s := strings.TrimSpace(val.String()); s != "" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	id := get("id", "badge_id", "name", "slug", "_id")
+	version := get("version", "badge_version")
+	*b = Badge{ID: id, Version: version}
+	return nil
 }
 
 type Message struct {

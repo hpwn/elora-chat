@@ -8,6 +8,38 @@ import (
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 )
 
+func TestBadgeUnmarshalJSONCompat(t *testing.T) {
+	var badges []Badge
+	payload := []byte(`[{"name":"moderator","badge_version":"2"},{"badge_id":"subscriber","version":"12"}]`)
+	if err := json.Unmarshal(payload, &badges); err != nil {
+		t.Fatalf("failed to unmarshal badges: %v", err)
+	}
+	if len(badges) != 2 {
+		t.Fatalf("expected 2 badges, got %d", len(badges))
+	}
+	if badges[0].ID != "moderator" || badges[0].Version != "2" {
+		t.Fatalf("unexpected first badge: %#v", badges[0])
+	}
+	if badges[1].ID != "subscriber" || badges[1].Version != "12" {
+		t.Fatalf("unexpected second badge: %#v", badges[1])
+	}
+
+	payload = []byte(`["vip/1","founder"]`)
+	badges = nil
+	if err := json.Unmarshal(payload, &badges); err != nil {
+		t.Fatalf("failed to unmarshal string badges: %v", err)
+	}
+	if len(badges) != 2 {
+		t.Fatalf("expected 2 string badges, got %d", len(badges))
+	}
+	if badges[0].ID != "vip" || badges[0].Version != "1" {
+		t.Fatalf("unexpected first string badge: %#v", badges[0])
+	}
+	if badges[1].ID != "founder" || badges[1].Version != "" {
+		t.Fatalf("unexpected second string badge: %#v", badges[1])
+	}
+}
+
 func TestMessagePayloadFromStorageFallback(t *testing.T) {
 	userColorMap["tester"] = "#112233"
 
