@@ -75,11 +75,8 @@ type Emote struct {
 }
 
 type Badge struct {
-	Name        string  `json:"name"`
-	Title       string  `json:"title"`
-	ClickAction string  `json:"clickAction"`
-	ClickURL    string  `json:"clickURL"`
-	Icons       []Image `json:"icons"`
+	ID      string `json:"id"`
+	Version string `json:"version,omitempty"`
 }
 
 type Message struct {
@@ -115,6 +112,69 @@ func colorFromName(name string) string {
 	return fallbackColourPalette[idx]
 }
 
+func parseStoredBadges(raw string) []Badge {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil
+	}
+	out := make([]Badge, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		badge := Badge{}
+		if idx := strings.Index(entry, "/"); idx >= 0 {
+			badge.ID = strings.TrimSpace(entry[:idx])
+			badge.Version = strings.TrimSpace(entry[idx+1:])
+		} else {
+			badge.ID = entry
+		}
+		if badge.ID == "" {
+			continue
+		}
+		if badge.Version == "" {
+			badge.Version = ""
+		}
+		out = append(out, badge)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func encodeStoredBadges(badges []Badge) string {
+	if len(badges) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(badges))
+	for _, badge := range badges {
+		id := strings.TrimSpace(badge.ID)
+		if id == "" {
+			continue
+		}
+		version := strings.TrimSpace(badge.Version)
+		if version != "" {
+			parts = append(parts, fmt.Sprintf("%s/%s", id, version))
+		} else {
+			parts = append(parts, id)
+		}
+	}
+	if len(parts) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(parts)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
 func wsEnvelopeEnabled() bool {
 	return strings.EqualFold(os.Getenv("ELORA_WS_ENVELOPE"), "true")
 }
@@ -146,12 +206,17 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 		return []byte(m.RawJSON), nil
 	}
 
+	badges := parseStoredBadges(m.BadgesJSON)
+	if badges == nil {
+		badges = []Badge{}
+	}
+
 	fallback := Message{
 		Author:  m.Username,
 		Message: m.Text,
 		Tokens:  []Token{},
 		Emotes:  []Emote{},
-		Badges:  []Badge{},
+		Badges:  badges,
 		Source:  m.Platform,
 		Colour:  userColorMap[m.Username],
 	}
@@ -391,6 +456,7 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 				Platform:   msg.Source,
 				Text:       msg.Message,
 				EmotesJSON: string(emotesJSON),
+				BadgesJSON: encodeStoredBadges(msg.Badges),
 				RawJSON:    string(modifiedMessage),
 			}
 			if err := chatStore.InsertMessage(ctx, storedMessage); err != nil {
@@ -468,6 +534,11 @@ func enrichTailerMessage(m storage.Message) Message {
 		}
 	}
 
+	if msg.Badges == nil {
+		if parsed := parseStoredBadges(m.BadgesJSON); parsed != nil {
+			msg.Badges = parsed
+		}
+	}
 	if msg.Badges == nil {
 		msg.Badges = []Badge{}
 	}

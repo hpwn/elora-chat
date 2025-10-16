@@ -5,7 +5,7 @@
 // - Coerces ts to ms epoch (handles seconds and ISO-8601 text)
 // - Drops completely empty messages
 export type Emote = { id?: string; name?: string; images?: any[]; [k: string]: any };
-export type Badge = Record<string, any>;
+export type Badge = { id: string; version?: string | null };
 
 export interface ChatMessage {
   id: string;
@@ -105,7 +105,8 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const colour = typeof colourRaw === 'string' && colourRaw.trim() ? colourRaw : undefined;
 
   const emotes = coerceArray(obj.emotes, obj.emotes_json);
-  const badges = coerceArray(obj.badges, obj.badges_json);
+  const badgesRaw = coerceArray(obj.badges, obj.badges_json);
+  const badges = normalizeBadges(badgesRaw);
 
   const ts = coerceTimestamp(obj.ts ?? obj.timestamp ?? obj.created_at ?? obj.time ?? null);
 
@@ -126,6 +127,33 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     colour,
     raw
   } satisfies ChatMessage;
+}
+
+function normalizeBadges(badges: unknown[]): Badge[] {
+  if (!Array.isArray(badges)) return [];
+  const out: Badge[] = [];
+  for (const badge of badges) {
+    if (typeof badge === 'string') {
+      const trimmed = badge.trim();
+      if (!trimmed) continue;
+      const [idPart, versionPart] = trimmed.split('/', 2);
+      const id = idPart.trim();
+      if (!id) continue;
+      const version = versionPart?.trim();
+      out.push(version ? { id, version } : { id });
+      continue;
+    }
+    if (!badge || typeof badge !== 'object') continue;
+    const record = badge as Record<string, unknown>;
+    const idRaw = record.id ?? record.badge_id ?? record.name ?? record.title;
+    if (typeof idRaw !== 'string') continue;
+    const id = idRaw.trim();
+    if (!id) continue;
+    const versionRaw = record.version ?? record.badgeVersion ?? record.tier ?? record.slot;
+    const version = typeof versionRaw === 'string' ? versionRaw.trim() : undefined;
+    out.push(version ? { id, version } : { id });
+  }
+  return out;
 }
 
 function coerceArray(primary: unknown, fallbackJson: unknown): any[] {

@@ -23,7 +23,7 @@ describe('normalizeWsPayload', () => {
       platform: 'Test',
       text: 'hello',
       emotes_json: '[]',
-      badges_json: '[]',
+      badges_json: '["subscriber/42","bits/100"]',
       raw_json: '{}'
     };
     const out = normalizeWsPayload(obj);
@@ -32,7 +32,29 @@ describe('normalizeWsPayload', () => {
     expect(out?.text).toBe('hello');
     expect(Array.isArray(out?.emotes)).toBe(true);
     expect(Array.isArray(out?.badges)).toBe(true);
+    expect(out?.badges).toEqual([
+      { id: 'subscriber', version: '42' },
+      { id: 'bits', version: '100' }
+    ]);
     expect(out && out.ts > 1000000000000).toBe(true);
+  });
+
+  it('normalizes badge objects and strings', () => {
+    const obj = {
+      author: 'BadgeTester',
+      message: 'hi',
+      badges: [
+        'vip/1',
+        { id: 'moderator', version: '1' },
+        { name: 'founder' }
+      ]
+    };
+    const out = normalizeWsPayload(obj);
+    expect(out?.badges).toEqual([
+      { id: 'vip', version: '1' },
+      { id: 'moderator', version: '1' },
+      { id: 'founder' }
+    ]);
   });
 
   it('drops empty frames', () => {

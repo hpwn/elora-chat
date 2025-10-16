@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS messages(
     platform TEXT NOT NULL,
     text TEXT NOT NULL,
     emotes_json TEXT NOT NULL DEFAULT '[]',
+    badges_json TEXT NOT NULL DEFAULT '[]',
     raw_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts DESC);

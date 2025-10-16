@@ -12,9 +12,10 @@ func TestMessagePayloadFromStorageFallback(t *testing.T) {
 	userColorMap["tester"] = "#112233"
 
 	payload, err := messagePayloadFromStorage(storage.Message{
-		Username: "tester",
-		Text:     "hello",
-		Platform: "Twitch",
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		BadgesJSON: "[]",
 	})
 	if err != nil {
 		t.Fatalf("messagePayloadFromStorage returned error: %v", err)
@@ -45,6 +46,48 @@ func TestMessagePayloadFromStorageFallback(t *testing.T) {
 	}
 	if msg.Badges == nil || len(msg.Badges) != 0 {
 		t.Fatalf("expected empty badges slice, got %#v", msg.Badges)
+	}
+}
+
+func TestMessagePayloadFromStorageBadges(t *testing.T) {
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		BadgesJSON: `{"not":"array"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if len(msg.Badges) != 0 {
+		t.Fatalf("expected malformed badges to be ignored, got %#v", msg.Badges)
+	}
+
+	payload, err = messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		BadgesJSON: ` [ "subscriber/42" , "bits/100" , "vip" ] `,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	want := []Badge{{ID: "subscriber", Version: "42"}, {ID: "bits", Version: "100"}, {ID: "vip"}}
+	if len(msg.Badges) != len(want) {
+		t.Fatalf("expected %d badges, got %d", len(want), len(msg.Badges))
+	}
+	for i, badge := range msg.Badges {
+		if badge.ID != want[i].ID || badge.Version != want[i].Version {
+			t.Fatalf("badge[%d] mismatch: got %#v want %#v", i, badge, want[i])
+		}
 	}
 }
 

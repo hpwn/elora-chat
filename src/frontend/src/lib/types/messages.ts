@@ -6,11 +6,8 @@ interface Image {
 }
 
 interface Badge {
-  name: string;
-  title: string;
-  icons: Image[];
-  clickAction: string;
-  clickURL: string;
+  id: string;
+  version?: string;
 }
 
 export interface Emote {
