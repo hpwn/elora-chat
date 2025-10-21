@@ -201,7 +201,7 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY ts DESC, id DESC"
+	query += " ORDER BY ts DESC, CAST(id AS INTEGER) DESC, id DESC"
 	if q.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, q.Limit)

@@ -235,7 +235,19 @@ func encodeStoredBadges(badges []Badge) string {
 }
 
 func wsEnvelopeEnabled() bool {
-	return strings.EqualFold(os.Getenv("ELORA_WS_ENVELOPE"), "true")
+	raw := strings.TrimSpace(os.Getenv("ELORA_WS_ENVELOPE"))
+	if raw == "" {
+		return true
+	}
+
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func maybeEnvelope(b []byte) []byte {

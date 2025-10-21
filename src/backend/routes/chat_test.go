@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"testing"
@@ -145,12 +146,19 @@ func TestMaybeEnvelope(t *testing.T) {
 	}
 
 	// Ensure disabling the flag returns the payload unchanged.
-	if err := os.Unsetenv("ELORA_WS_ENVELOPE"); err != nil {
-		t.Fatalf("failed to unset env: %v", err)
-	}
+	t.Setenv("ELORA_WS_ENVELOPE", "off")
 	raw := maybeEnvelope(payload)
 	if string(raw) != string(payload) {
 		t.Fatalf("expected raw payload when envelope disabled, got %s", string(raw))
+	}
+
+	// Default (unset) should enable the envelope.
+	if err := os.Unsetenv("ELORA_WS_ENVELOPE"); err != nil {
+		t.Fatalf("failed to unset env: %v", err)
+	}
+	enveloped = maybeEnvelope(payload)
+	if bytes.Equal(enveloped, payload) {
+		t.Fatalf("expected envelope to be applied by default")
 	}
 }
 

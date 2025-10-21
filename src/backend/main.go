@@ -78,7 +78,7 @@ func main() {
 
 	tailerCfg := tailer.Config{
 		Enabled:  getEnvAsBool("ELORA_DB_TAIL_ENABLED", false),
-		Interval: time.Duration(getEnvAsInt("ELORA_DB_TAIL_INTERVAL_MS", 200)) * time.Millisecond,
+		Interval: time.Duration(getEnvAsIntFallback([]string{"ELORA_DB_TAIL_INTERVAL_MS", "ELORA_DB_TAIL_POLL_MS"}, 200)) * time.Millisecond,
 		Batch:    getEnvAsInt("ELORA_DB_TAIL_BATCH", 500),
 	}
 	dbTailer := tailer.New(tailerCfg, store)
@@ -183,4 +183,20 @@ func getEnvAsInt(key string, def int) int {
 		return def
 	}
 	return parsed
+}
+
+func getEnvAsIntFallback(keys []string, def int) int {
+	for _, key := range keys {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			log.Printf("config: invalid %s=%q, ignoring", key, value)
+			continue
+		}
+		return parsed
+	}
+	return def
 }
