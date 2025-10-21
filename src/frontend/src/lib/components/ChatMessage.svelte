@@ -3,6 +3,7 @@
   import type { SvelteSet } from 'svelte/reactivity';
   import { getContext } from 'svelte';
   import { loadImage, formatMessageFragments, validNameColors, sanitizeMessage } from '$lib/utils';
+  import { resolveBadgeIcon } from '$lib/chat/badge-icons';
   import { TwitchIcon, YoutubeIcon } from './icons';
 
   let { message }: { message: Message } = $props();
@@ -22,6 +23,43 @@
   const hexColour = validNameColors.get(message.colour);
   if (hexColour != undefined) {
     message.colour = hexColour;
+  }
+
+  type DisplayBadge = {
+    key: string;
+    id: string;
+    version?: string;
+    icon: ReturnType<typeof resolveBadgeIcon>;
+  };
+
+  let badgeViews = $state<DisplayBadge[]>([]);
+
+  $effect(() => {
+    const rawBadges = Array.isArray(message.badges) ? message.badges : [];
+    badgeViews = rawBadges.flatMap((badge) => {
+      if (!badge || typeof badge !== 'object') return [] as DisplayBadge[];
+      const id = typeof badge.id === 'string' ? badge.id.trim() : '';
+      if (!id) return [] as DisplayBadge[];
+      const version =
+        typeof badge.version === 'string' && badge.version.trim().length > 0 ? badge.version.trim() : undefined;
+      const icon = resolveBadgeIcon(id, version);
+      return [
+        {
+          key: `${id}-${version ?? 'default'}`,
+          id,
+          version,
+          icon
+        }
+      ];
+    });
+  });
+
+  function badgeImageSource(src: string | undefined): string | undefined {
+    if (!src) return undefined;
+    if (src.startsWith('data:')) {
+      return src;
+    }
+    return loadImage(src);
   }
 
   function toggleVisible() {
@@ -75,14 +113,18 @@
         </span>
       {/if}
 
-      {#each message.badges as badge}
-        {#if badge.icons && badge.icons.length > 0}
+      {#each badgeViews as badge (badge.key)}
+        {#if badge.icon.src}
           <img
             class="badge-icon"
-            src={loadImage(badge.icons[badge.icons.length - 1].url)}
-            title={badge.title}
-            alt={badge.title}
+            src={badgeImageSource(badge.icon.src)}
+            title={badge.icon.alt}
+            alt={badge.icon.alt}
           />
+        {:else}
+          <span class="badge-label" title={badge.icon.alt} aria-label={badge.icon.alt}>
+            {badge.icon.label}
+          </span>
         {/if}
       {/each}
       <span class="message-username" style="color: {message.colour}">
@@ -117,6 +159,25 @@
       height: 18px;
       margin-right: 5px;
       vertical-align: middle;
+    }
+
+    .badge-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 4px;
+      margin-right: 5px;
+      border-radius: 4px;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      background: rgba(226, 232, 240, 0.7);
+      color: #0f172a;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      line-height: 1;
     }
 
     .emote-image {

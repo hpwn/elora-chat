@@ -38,6 +38,7 @@ func TestSQLiteGetRecentEphemeral(t *testing.T) {
 			Platform:   "twitch",
 			Text:       fmt.Sprintf("hello world %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"hello world %d"}`, i),
 		}
 		want = append(want, msg)
@@ -73,6 +74,12 @@ func TestSQLiteGetRecentEphemeral(t *testing.T) {
 		if result.EmotesJSON != expected.EmotesJSON {
 			t.Fatalf("result[%d] expected EmotesJSON %s, got %s", i, expected.EmotesJSON, result.EmotesJSON)
 		}
+		if result.BadgesJSON != expected.BadgesJSON {
+			t.Fatalf("result[%d] expected BadgesJSON %s, got %s", i, expected.BadgesJSON, result.BadgesJSON)
+		}
+		if result.BadgesJSON != expected.BadgesJSON {
+			t.Fatalf("result[%d] expected BadgesJSON %s, got %s", i, expected.BadgesJSON, result.BadgesJSON)
+		}
 		if result.RawJSON != expected.RawJSON {
 			t.Fatalf("result[%d] expected RawJSON %s, got %s", i, expected.RawJSON, result.RawJSON)
 		}
@@ -99,11 +106,12 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	msgs := make([]*storage.Message, 0, 5)
 	for i := 0; i < 5; i++ {
 		msg := &storage.Message{
-			ID:        fmt.Sprintf("msg-%d", i),
-			Timestamp: base.Add(time.Duration(i) * time.Second),
-			Username:  "tester",
-			Platform:  "twitch",
-			Text:      fmt.Sprintf("body-%d", i),
+			ID:         fmt.Sprintf("msg-%d", i),
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			Username:   "tester",
+			Platform:   "twitch",
+			Text:       fmt.Sprintf("body-%d", i),
+			BadgesJSON: "[]",
 		}
 		msgs = append(msgs, msg)
 		if err := store.InsertMessage(ctx, msg); err != nil {
@@ -140,7 +148,7 @@ func TestSQLiteGetRecentStableOrdering(t *testing.T) {
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 	ids := []string{"msg-a", "msg-b", "msg-c"}
 	for _, id := range ids {
-		msg := &storage.Message{ID: id, Timestamp: ts, Username: "tester", Platform: "twitch", Text: id}
+		msg := &storage.Message{ID: id, Timestamp: ts, Username: "tester", Platform: "twitch", Text: id, BadgesJSON: "[]"}
 		if err := store.InsertMessage(ctx, msg); err != nil {
 			t.Fatalf("InsertMessage returned error: %v", err)
 		}
@@ -200,6 +208,7 @@ func TestSQLitePurge(t *testing.T) {
 			Platform:   "twitch",
 			Text:       fmt.Sprintf("message %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"message %d"}`, i),
 		}
 		if err := store.InsertMessage(ctx, msg); err != nil {
@@ -244,6 +253,7 @@ func TestSQLitePurgeBefore(t *testing.T) {
 			Platform:   "twitch",
 			Text:       fmt.Sprintf("message %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"message %d"}`, i),
 		}
 		msgs = append(msgs, msg)
@@ -295,6 +305,7 @@ func TestSQLiteGetRecentPersistent(t *testing.T) {
 			Platform:   "youtube",
 			Text:       fmt.Sprintf("persistent message %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"persistent message %d"}`, i),
 		}
 		want = append(want, msg)

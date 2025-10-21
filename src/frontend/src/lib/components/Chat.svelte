@@ -102,35 +102,25 @@
     if (!Array.isArray(badges)) return [];
     const out: Message['badges'] = [];
     for (const badge of badges) {
+      if (typeof badge === 'string') {
+        const trimmed = badge.trim();
+        if (!trimmed) continue;
+        const [idPart, versionPart] = trimmed.split('/', 2);
+        const id = idPart.trim();
+        if (!id) continue;
+        const version = versionPart?.trim();
+        out.push(version ? { id, version } : { id });
+        continue;
+      }
       if (!badge || typeof badge !== 'object') continue;
       const record = badge as Record<string, unknown>;
-      const nameCandidate = typeof record.name === 'string' && record.name.trim().length > 0 ? record.name : undefined;
-      const titleCandidate = typeof record.title === 'string' && record.title.trim().length > 0 ? record.title : undefined;
-      const name = nameCandidate ?? titleCandidate ?? 'badge';
-      const title = titleCandidate ?? name;
-      const iconsRaw = Array.isArray(record.icons) ? record.icons : [];
-      const icons = iconsRaw.flatMap((icon) => {
-        if (!icon || typeof icon !== 'object') return [] as Message['badges'][number]['icons'];
-        const iconRecord = icon as Record<string, unknown>;
-        const url = typeof iconRecord.url === 'string' ? iconRecord.url : undefined;
-        if (!url) return [] as Message['badges'][number]['icons'];
-        return [
-          {
-            id: typeof iconRecord.id === 'string' ? iconRecord.id : `${name}-${url}`,
-            url,
-            width: typeof iconRecord.width === 'number' ? iconRecord.width : 0,
-            height: typeof iconRecord.height === 'number' ? iconRecord.height : 0
-          }
-        ];
-      });
-
-      out.push({
-        name,
-        title,
-        icons,
-        clickAction: typeof record.clickAction === 'string' ? record.clickAction : '',
-        clickURL: typeof record.clickURL === 'string' ? record.clickURL : ''
-      });
+      const idCandidate = record.id ?? record.name ?? record.title;
+      if (typeof idCandidate !== 'string') continue;
+      const id = idCandidate.trim();
+      if (!id) continue;
+      const versionCandidate = record.version ?? record.tier ?? record.slot;
+      const version = typeof versionCandidate === 'string' ? versionCandidate.trim() : undefined;
+      out.push(version ? { id, version } : { id });
     }
     return out;
   }
