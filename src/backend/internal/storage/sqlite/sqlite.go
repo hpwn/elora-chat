@@ -3,8 +3,10 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/url"
 	"os"
@@ -44,15 +46,26 @@ func ensureMigrationsTable(db *sql.DB) error {
 	return err
 }
 
+//go:embed migrations/*.sql
+var embeddedMigrationFiles embed.FS
+
+var embeddedMigrationsFS = func() fs.FS {
+	sub, err := fs.Sub(embeddedMigrationFiles, "migrations")
+	if err != nil {
+		panic("sqlite: embed migrations: " + err.Error())
+	}
+	return sub
+}()
+
 // applyMigrationsIdempotent applies .sql files from the migrations dir.
 // If a migration was already applied (row exists) or errors with a benign
 // "already exists / duplicate column" message, it is treated as success.
-func applyMigrationsIdempotent(ctx context.Context, db *sql.DB, migDir string, logger func(format string, args ...any)) error {
+func applyMigrationsIdempotent(ctx context.Context, db *sql.DB, migFS fs.FS, logger func(format string, args ...any)) error {
 	if err := ensureMigrationsTable(db); err != nil {
 		return fmt.Errorf("ensure migrations table: %w", err)
 	}
 
-	files, err := os.ReadDir(migDir)
+	files, err := fs.ReadDir(migFS, ".")
 	if err != nil {
 		return fmt.Errorf("read migrations dir: %w", err)
 	}
@@ -83,7 +96,7 @@ func applyMigrationsIdempotent(ctx context.Context, db *sql.DB, migDir string, l
 			continue
 		}
 
-		b, err := os.ReadFile(filepath.Join(migDir, name))
+		b, err := fs.ReadFile(migFS, name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
@@ -227,7 +240,7 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		if err := applyMigrationsIdempotent(ctx, db, "./src/backend/internal/storage/sqlite/migrations", log.Printf); err != nil {
+		if err := applyMigrationsIdempotent(ctx, db, embeddedMigrationsFS, log.Printf); err != nil {
 			_ = db.Close()
 			s.initErr = err
 			return
