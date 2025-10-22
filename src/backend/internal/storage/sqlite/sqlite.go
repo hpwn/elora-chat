@@ -3,16 +3,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +18,104 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
+// isBenignMigrationError returns true when an ALTER/CREATE failed because the artifact already exists.
+func isBenignMigrationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "duplicate column name"),
+		strings.Contains(msg, "already exists"),
+		strings.Contains(msg, "duplicate column"),
+		strings.Contains(msg, "not unique"),
+		strings.Contains(msg, "constraint failed: migrations.name"):
+		return true
+	default:
+		return false
+	}
+}
+
+func ensureMigrationsTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
+        name TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+)`)
+	return err
+}
+
+// applyMigrationsIdempotent applies .sql files from the migrations dir.
+// If a migration was already applied (row exists) or errors with a benign
+// "already exists / duplicate column" message, it is treated as success.
+func applyMigrationsIdempotent(ctx context.Context, db *sql.DB, migDir string, logger func(format string, args ...any)) error {
+	if err := ensureMigrationsTable(db); err != nil {
+		return fmt.Errorf("ensure migrations table: %w", err)
+	}
+
+	files, err := os.ReadDir(migDir)
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".sql") {
+			continue
+		}
+		name := f.Name()
+
+		// already applied?
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM migrations WHERE name=?`, name).Scan(&n); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if n > 0 {
+			if logger != nil {
+				logger("sqlite: migration %s already applied, skipping", name)
+			}
+			continue
+		}
+
+		b, err := os.ReadFile(filepath.Join(migDir, name))
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		sqlText := strings.TrimSpace(string(b))
+		if sqlText == "" {
+			// record empty migration as applied
+			if _, err := tx.ExecContext(ctx, `INSERT INTO migrations(name, applied_at) VALUES(?, ?)`, name, time.Now().UnixMilli()); err != nil && !isBenignMigrationError(err) {
+				return fmt.Errorf("record empty migration %s: %w", name, err)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, sqlText); err != nil {
+			if isBenignMigrationError(err) {
+				if logger != nil {
+					logger("sqlite: benign migration error on %s (%v); marking as applied", name, err)
+				}
+			} else {
+				return fmt.Errorf("apply migration %s: %w", name, err)
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO migrations(name, applied_at) VALUES(?, ?)`, name, time.Now().UnixMilli()); err != nil && !isBenignMigrationError(err) {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
+	}
+	return nil
+}
 
 // Config controls how the SQLite store is configured.
 type Config struct {
@@ -135,7 +227,7 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		if err := s.applyMigrations(ctx, db); err != nil {
+		if err := applyMigrationsIdempotent(ctx, db, "./src/backend/internal/storage/sqlite/migrations", log.Printf); err != nil {
 			_ = db.Close()
 			s.initErr = err
 			return
@@ -561,77 +653,4 @@ func (s *Store) parseExtraPragmas() []string {
 		pragmas = append(pragmas, "_pragma="+p)
 	}
 	return pragmas
-}
-
-func (s *Store) applyMigrations(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
-		return fmt.Errorf("sqlite: ensure schema_migrations: %w", err)
-	}
-
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
-	if err != nil {
-		return fmt.Errorf("sqlite: read migrations: %w", err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: begin migrations: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-
-		version, err := parseMigrationVersion(entry.Name())
-		if err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-
-		var exists int
-		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&exists); {
-		case err == nil:
-			continue
-		case errors.Is(err, sql.ErrNoRows):
-			// not applied
-		default:
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: check migration %s: %w", entry.Name(), err)
-		}
-
-		data, err := migrationsFS.ReadFile("migrations/" + entry.Name())
-		if err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: read migration %s: %w", entry.Name(), err)
-		}
-		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: apply migration %s: %w", entry.Name(), err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (?)`, version); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: record migration %s: %w", entry.Name(), err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sqlite: commit migrations: %w", err)
-	}
-	return nil
-}
-
-func parseMigrationVersion(name string) (int, error) {
-	base := strings.TrimSuffix(name, filepath.Ext(name))
-	parts := strings.SplitN(base, "_", 2)
-	if len(parts) == 0 || parts[0] == "" {
-		return 0, fmt.Errorf("sqlite: invalid migration name %q", name)
-	}
-	version, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: invalid migration version in %q: %w", name, err)
-	}
-	return version, nil
 }
