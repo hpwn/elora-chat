@@ -1,0 +1,8 @@
+services:
+  elora-chat:
+    environment:
+      ELORA_WS_DROP_EMPTY: "true"
+  gnasty:
+    environment:
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
