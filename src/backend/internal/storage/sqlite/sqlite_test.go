@@ -700,8 +700,17 @@ func TestSQLiteMigrationsIdempotent(t *testing.T) {
 	}
 
 	var applied int
-	if err := second.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
-		t.Fatalf("failed to count schema_migrations: %v", err)
+	countApplied := func(query string) error {
+		return second.db.QueryRowContext(ctx, query).Scan(&applied)
+	}
+	if err := countApplied(`SELECT COUNT(*) FROM schema_migrations`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			if err := countApplied(`SELECT COUNT(*) FROM migrations`); err != nil {
+				t.Fatalf("failed to count migrations: %v", err)
+			}
+		} else {
+			t.Fatalf("failed to count schema_migrations: %v", err)
+		}
 	}
 	if applied == 0 {
 		t.Fatalf("expected schema_migrations to record applied migrations")

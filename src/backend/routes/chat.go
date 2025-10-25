@@ -24,6 +24,7 @@ import (
 	"github.com/hpwn/EloraChat/src/backend/internal/authutil"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
+	"github.com/hpwn/EloraChat/src/backend/internal/ws"
 	"github.com/jdavasligil/emodl"
 )
 
@@ -146,6 +147,85 @@ type Message struct {
 	Badges  []Badge `json:"badges"`
 	Source  string  `json:"source"`
 	Colour  string  `json:"colour"`
+}
+
+var errDropMessage = errors.New("chat: drop empty message")
+
+func normalizeSource(src string) string {
+	src = strings.TrimSpace(src)
+	switch strings.ToLower(src) {
+	case "twitch":
+		return "Twitch"
+	case "youtube":
+		return "YouTube"
+	default:
+		return src
+	}
+}
+
+func wsDropEmptyEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("ELORA_WS_DROP_EMPTY"))
+	if raw == "" {
+		return true
+	}
+
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func (m *Message) normalize() {
+	if m == nil {
+		return
+	}
+
+	m.Author = strings.TrimSpace(m.Author)
+	m.Message = strings.TrimSpace(m.Message)
+	m.Source = normalizeSource(m.Source)
+
+	if m.Tokens == nil {
+		m.Tokens = []Token{}
+	}
+	if m.Emotes == nil {
+		m.Emotes = []Emote{}
+	}
+	if m.Badges == nil {
+		m.Badges = []Badge{}
+	}
+}
+
+func (m Message) toChatPayload() ws.ChatPayload {
+	m.normalize()
+
+	fragments := make([]any, len(m.Tokens))
+	for i, token := range m.Tokens {
+		fragments[i] = token
+	}
+
+	emotes := make([]any, len(m.Emotes))
+	for i, emote := range m.Emotes {
+		emotes[i] = emote
+	}
+
+	badges := make([]any, len(m.Badges))
+	for i, badge := range m.Badges {
+		badges[i] = badge
+	}
+
+	return ws.ChatPayload{
+		Author:    m.Author,
+		Message:   m.Message,
+		Fragments: fragments,
+		Emotes:    emotes,
+		Badges:    badges,
+		Source:    m.Source,
+		Colour:    m.Colour,
+	}
 }
 
 var fallbackColourPalette = []string{
@@ -291,8 +371,9 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 		Source:  m.Platform,
 		Colour:  userColorMap[m.Username],
 	}
+	fallback.normalize()
 
-	data, err := json.Marshal(fallback)
+	data, err := json.Marshal(fallback.toChatPayload())
 	if err != nil {
 		return nil, err
 	}
@@ -305,17 +386,13 @@ func sanitizeMessagePayload(payload []byte) ([]byte, error) {
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return nil, err
 	}
-	if msg.Tokens == nil {
-		msg.Tokens = []Token{}
-	}
-	if msg.Emotes == nil {
-		msg.Emotes = []Emote{}
-	}
-	if msg.Badges == nil {
-		msg.Badges = []Badge{}
+	msg.normalize()
+
+	if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
+		return nil, errDropMessage
 	}
 
-	return json.Marshal(msg)
+	return json.Marshal(msg.toChatPayload())
 }
 
 func InitRoutes(store storage.Store) {
@@ -473,6 +550,7 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 		} else if strings.Contains(url, "youtube.com") {
 			msg.Source = "YouTube"
 		}
+		msg.Source = normalizeSource(msg.Source)
 
 		// Add unknown emotes to the emote cache for tokenization
 		for _, e := range msg.Emotes {
@@ -507,8 +585,13 @@ func processChatOutput(stdout io.ReadCloser, url string) {
 			msg.Badges = []Badge{}
 		}
 
+		msg.normalize()
+		if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
+			continue
+		}
+
 		// Re-marshal the message with the Source set.
-		modifiedMessage, err := json.Marshal(msg)
+		modifiedMessage, err := json.Marshal(msg.toChatPayload())
 		if err != nil {
 			log.Printf("chat: Failed to marshal message: %v, Message: %#v\n", err, msg)
 			continue
@@ -635,13 +718,19 @@ func enrichTailerMessage(m storage.Message) Message {
 		msg.Source = m.Platform
 	}
 
+	msg.Source = normalizeSource(msg.Source)
+	msg.normalize()
+
 	return msg
 }
 
 // BroadcastFromTailer enqueues a stored message onto the WebSocket broadcast loop.
 func BroadcastFromTailer(m storage.Message) {
 	msg := enrichTailerMessage(m)
-	payload, err := json.Marshal(msg)
+	if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
+		return
+	}
+	payload, err := json.Marshal(msg.toChatPayload())
 	if err != nil {
 		log.Printf("dbtailer: failed to marshal enriched message: %v", err)
 		return
@@ -700,6 +789,9 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 				}
 				sanitized, marshalErr := sanitizeMessagePayload(payload)
 				if marshalErr != nil {
+					if errors.Is(marshalErr, errDropMessage) {
+						continue
+					}
 					log.Printf("chat: Failed to sanitize history message: %v\n", marshalErr)
 					continue
 				}
@@ -725,6 +817,9 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 				}
 				sanitized, err := sanitizeMessagePayload(m)
 				if err != nil {
+					if errors.Is(err, errDropMessage) {
+						continue
+					}
 					log.Println("json: ", err)
 					continue
 				}

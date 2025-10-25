@@ -3,6 +3,7 @@ package routes
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 
@@ -159,6 +160,48 @@ func TestMaybeEnvelope(t *testing.T) {
 	enveloped = maybeEnvelope(payload)
 	if bytes.Equal(enveloped, payload) {
 		t.Fatalf("expected envelope to be applied by default")
+	}
+}
+
+func TestSanitizeMessagePayloadDrop(t *testing.T) {
+	if err := os.Unsetenv("ELORA_WS_DROP_EMPTY"); err != nil {
+		t.Fatalf("failed to unset drop env: %v", err)
+	}
+
+	payload := []byte(`{"author":"tester","message":"   ","fragments":[],"emotes":[],"badges":[],"source":""}`)
+	if _, err := sanitizeMessagePayload(payload); !errors.Is(err, errDropMessage) {
+		t.Fatalf("expected errDropMessage, got %v", err)
+	}
+}
+
+func TestSanitizeMessagePayloadNormalizes(t *testing.T) {
+	t.Setenv("ELORA_WS_DROP_EMPTY", "false")
+
+	payload := []byte(`{"author":"tester","message":" hello ","fragments":null,"emotes":null,"badges":null,"source":" twitch "}`)
+	sanitized, err := sanitizeMessagePayload(payload)
+	if err != nil {
+		t.Fatalf("sanitizeMessagePayload returned error: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(sanitized, &msg); err != nil {
+		t.Fatalf("failed to unmarshal sanitized payload: %v", err)
+	}
+
+	if msg.Source != "Twitch" {
+		t.Fatalf("expected source to normalize to Twitch, got %q", msg.Source)
+	}
+	if msg.Message != "hello" {
+		t.Fatalf("expected message to be trimmed to 'hello', got %q", msg.Message)
+	}
+	if msg.Tokens == nil {
+		t.Fatalf("expected tokens slice to be initialized")
+	}
+	if msg.Emotes == nil {
+		t.Fatalf("expected emotes slice to be initialized")
+	}
+	if msg.Badges == nil {
+		t.Fatalf("expected badges slice to be initialized")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	httpapi "github.com/hpwn/EloraChat/src/backend/internal/http"
 	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
 	"github.com/hpwn/EloraChat/src/backend/internal/tailer"
@@ -76,10 +77,14 @@ func main() {
 	routes.SetupSendRoutes(r)
 	routes.SetupMessageRoutes(r)
 
+	rootMux := http.NewServeMux()
+	httpapi.RegisterHealth(rootMux)
+	rootMux.Handle("/", r)
+
 	tailerCfg := tailer.Config{
 		Enabled:  getEnvAsBool("ELORA_DB_TAIL_ENABLED", false),
-		Interval: time.Duration(getEnvAsIntFallback([]string{"ELORA_DB_TAIL_INTERVAL_MS", "ELORA_DB_TAIL_POLL_MS"}, 200)) * time.Millisecond,
-		Batch:    getEnvAsInt("ELORA_DB_TAIL_BATCH", 500),
+		Interval: time.Duration(getEnvAsIntFallback([]string{"ELORA_DB_TAIL_INTERVAL_MS", "ELORA_DB_TAIL_POLL_MS"}, 1000)) * time.Millisecond,
+		Batch:    getEnvAsInt("ELORA_DB_TAIL_BATCH", 200),
 	}
 	dbTailer := tailer.New(tailerCfg, store)
 	if err := dbTailer.Start(baseCtx); err != nil {
@@ -127,7 +132,7 @@ func main() {
 	// Create server
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: r,
+		Handler: rootMux,
 	}
 
 	// Start the server in a goroutine
