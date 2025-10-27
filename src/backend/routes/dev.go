@@ -5,7 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,13 +23,60 @@ type seedResponse struct {
 	Inserted int `json:"inserted"`
 }
 
+var (
+	devSeedOnce    sync.Once
+	devSeedAllowed bool
+)
+
 // SetupDevRoutes registers development helper endpoints.
 func SetupDevRoutes(r *mux.Router) {
 	if r == nil {
 		return
 	}
-	r.HandleFunc("/api/dev/seed/marker", handleSeedMarker).Methods(http.MethodPost)
-	r.HandleFunc("/api/dev/seed/burst", handleSeedBurst).Methods(http.MethodPost)
+	if !enableDevSeedRoutes() {
+		return
+	}
+
+	seed := r.PathPrefix("/api/dev/seed").Subrouter()
+	seed.Use(SessionMiddleware)
+	seed.HandleFunc("/marker", handleSeedMarker).Methods(http.MethodPost)
+	seed.HandleFunc("/burst", handleSeedBurst).Methods(http.MethodPost)
+}
+
+func enableDevSeedRoutes() bool {
+	devSeedOnce.Do(func() {
+		raw := strings.TrimSpace(os.Getenv("ELORA_DEV_SEED_ENABLED"))
+		if raw == "" {
+			devSeedAllowed = false
+			return
+		}
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			log.Printf("dev: invalid ELORA_DEV_SEED_ENABLED=%q, disabling seeding routes", raw)
+			devSeedAllowed = false
+			return
+		}
+		if !enabled {
+			devSeedAllowed = false
+			return
+		}
+
+		env := strings.ToLower(strings.TrimSpace(os.Getenv("ELORA_ENV")))
+		if env == "" {
+			env = strings.ToLower(strings.TrimSpace(os.Getenv("GO_ENV")))
+		}
+		if env == "" {
+			env = strings.ToLower(strings.TrimSpace(os.Getenv("ENVIRONMENT")))
+		}
+		if env == "production" || env == "prod" {
+			log.Printf("dev: refusing to enable seeding routes in environment %q", env)
+			devSeedAllowed = false
+			return
+		}
+
+		devSeedAllowed = true
+	})
+	return devSeedAllowed
 }
 
 func handleSeedMarker(w http.ResponseWriter, r *http.Request) {
