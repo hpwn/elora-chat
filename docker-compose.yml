@@ -1,0 +1,58 @@
+name: ${COMPOSE_PROJECT_NAME:-elora}
+
+services:
+  elora-chat:
+    image: ${ELORA_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "65532:65532"
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ}
+      LOG_LEVEL: ${LOG_LEVEL}
+    volumes:
+      - elora-data:${ELORA_DATA_DIR}
+    ports:
+      - "${ELORA_HTTP_PORT:-8080}:${ELORA_HTTP_PORT:-8080}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:${ELORA_HTTP_PORT:-8080}/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - elora
+    restart: unless-stopped
+
+  gnasty-harvester:
+    image: ${GNASTY_IMAGE}
+    user: "65532:65532"
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - elora-data:${ELORA_DATA_DIR}
+    depends_on:
+      elora-chat:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:${GNASTY_HTTP_PORT:-8765}/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - elora
+    restart: unless-stopped
+
+networks:
+  elora:
+    name: ${ELORA_DOCKER_NETWORK:-elora-network}
+    driver: bridge
+
+volumes:
+  elora-data:
+    name: ${COMPOSE_PROJECT_NAME:-elora}_data

@@ -4,7 +4,7 @@
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
-  import { deployedUrl, useDeployedApi } from '$lib/config';
+  import { hideYouTubeAt, showBadges, wsUrl as configuredWsUrl } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { SvelteSet } from 'svelte/reactivity';
 
@@ -37,7 +37,7 @@
   setContext('keymods', keymods);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
-    const author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
+    let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const text = typeof message.text === 'string' ? message.text : '';
     if (!text && (!Array.isArray(message.emotes) || message.emotes.length === 0)) {
       return null;
@@ -48,9 +48,12 @@
 
     const sourceCandidate = typeof message.platform === 'string' ? (message.platform as Message['source']) : DEFAULT_SOURCE;
     const source = ALLOWED_SOURCES.has(sourceCandidate) ? sourceCandidate : DEFAULT_SOURCE;
+    if (hideYouTubeAt && source === 'YouTube' && author.startsWith('@')) {
+      author = author.slice(1).trim() || author;
+    }
 
     const emotes = coerceEmotes(message.emotes);
-    const badges = coerceBadges(message.badges);
+    const badges = showBadges ? coerceBadges(message.badges) : [];
 
     return {
       author,
@@ -201,9 +204,8 @@
 
   function initializeWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-
-    const localUrl = `${wsProtocol}://${window.location.host}`;
-    const wsUrl = `${useDeployedApi ? deployedUrl : localUrl}/ws/chat`;
+    const localUrl = `${wsProtocol}://${window.location.host}/ws/chat`;
+    const wsUrl = configuredWsUrl || localUrl;
 
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       if (CHAT_DEBUG) console.log('[chat] ws already connected/connecting');
