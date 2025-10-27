@@ -137,6 +137,7 @@ type Config struct {
 	MaxConns        int
 	BusyTimeoutMS   int
 	PragmasExtraCSV string
+	JournalMode     string
 }
 
 // Store implements storage.Store backed by SQLite.
@@ -217,7 +218,11 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		journalModeRow := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL;")
+		desiredJournalMode := s.cfg.JournalMode
+		if desiredJournalMode == "" {
+			desiredJournalMode = "WAL"
+		}
+		journalModeRow := db.QueryRowContext(ctx, fmt.Sprintf("PRAGMA journal_mode=%s;", desiredJournalMode))
 		var journalMode string
 		if err := journalModeRow.Scan(&journalMode); err != nil {
 			_ = db.Close()

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,11 +50,42 @@ func (m *CmdMap) Range(f func(key string, cmd *exec.Cmd) bool) {
 
 var chatFetchCmds CmdMap
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for simplicity; adjust as needed for security
-	},
+var (
+	upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return originAllowed(r.Header.Get("Origin"))
+		},
+	}
+
+	allowedOriginsMu sync.RWMutex
+	allowAllOrigins  = true
+	allowedOrigins   = map[string]struct{}{}
+)
+
+type websocketConfig struct {
+	pingInterval  time.Duration
+	pongWait      time.Duration
+	writeDeadline time.Duration
+	maxBytes      int64
 }
+
+type uiConfig struct {
+	hideYouTubeAt bool
+	showBadges    bool
+}
+
+var (
+	activeWebsocketConfig = websocketConfig{
+		pingInterval:  25 * time.Second,
+		pongWait:      30 * time.Second,
+		writeDeadline: 5 * time.Second,
+		maxBytes:      131072,
+	}
+	activeUIConfig = uiConfig{
+		hideYouTubeAt: true,
+		showBadges:    true,
+	}
+)
 
 var tokenizer Tokenizer
 
@@ -195,6 +227,16 @@ func (m *Message) normalize() {
 		m.Emotes = []Emote{}
 	}
 	if m.Badges == nil {
+		m.Badges = []Badge{}
+	}
+
+	if activeUIConfig.hideYouTubeAt && strings.EqualFold(m.Source, "YouTube") {
+		if strings.HasPrefix(m.Author, "@") {
+			m.Author = strings.TrimPrefix(m.Author, "@")
+			m.Author = strings.TrimSpace(m.Author)
+		}
+	}
+	if !activeUIConfig.showBadges {
 		m.Badges = []Badge{}
 	}
 }
@@ -407,6 +449,9 @@ func InitRoutes(store storage.Store) {
 		subscribers = make(map[chan []byte]struct{})
 	}
 	subscribersMu.Unlock()
+
+	activeWebsocketConfig = loadWebsocketConfigFromEnv()
+	activeUIConfig = loadUIConfigFromEnv()
 
 	// Initialize tokenizer
 	tokenizer.TextEffectSep = ':'
@@ -770,6 +815,30 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	cfg := activeWebsocketConfig
+	if cfg.maxBytes > 0 {
+		conn.SetReadLimit(cfg.maxBytes)
+	}
+	if cfg.pongWait > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+	}
+	conn.SetPongHandler(func(string) error {
+		if cfg.pongWait > 0 {
+			return conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+		}
+		return nil
+	})
+	conn.SetPingHandler(func(appData string) error {
+		deadline := time.Now().Add(cfg.writeDeadline)
+		if cfg.writeDeadline <= 0 {
+			deadline = time.Now().Add(5 * time.Second)
+		}
+		if cfg.pongWait > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+		}
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), deadline)
+	})
+
 	// Channel to signal closure of WebSocket connection
 	done := make(chan struct{})
 	messageChan := addSubscriber()
@@ -805,8 +874,7 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 
 	// Websocket writer
 	go func() {
-		// Keep alive ticker
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(cfg.pingInterval)
 		defer ticker.Stop()
 
 		for {
@@ -823,13 +891,21 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 					log.Println("json: ", err)
 					continue
 				}
-				if err := conn.WriteMessage(websocket.TextMessage, maybeEnvelope(sanitized)); err != nil {
+				if err := writeWSMessage(conn, websocket.TextMessage, maybeEnvelope(sanitized), cfg.writeDeadline); err != nil {
 					log.Println("ws: WebSocket write error:", err)
 					return
 				}
 			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.TextMessage, []byte("__keepalive__")); err != nil {
+				if err := writeWSMessage(conn, websocket.TextMessage, []byte("__keepalive__"), cfg.writeDeadline); err != nil {
 					log.Println("ws: Failed to send keep-alive message:", err)
+					return
+				}
+				deadline := time.Now().Add(cfg.writeDeadline)
+				if cfg.writeDeadline <= 0 {
+					deadline = time.Now().Add(5 * time.Second)
+				}
+				if err := conn.WriteControl(websocket.PingMessage, []byte{}, deadline); err != nil {
+					log.Println("ws: Failed to send ping:", err)
 					return
 				}
 			case <-done:
@@ -847,6 +923,147 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 			close(done)
 			break
 		}
+		if cfg.pongWait > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+		}
+	}
+}
+
+func writeWSMessage(conn *websocket.Conn, messageType int, payload []byte, deadline time.Duration) error {
+	if deadline > 0 {
+		_ = conn.SetWriteDeadline(time.Now().Add(deadline))
+	} else {
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
+	return conn.WriteMessage(messageType, payload)
+}
+
+func originAllowed(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	origin = strings.TrimRight(origin, "/")
+
+	allowedOriginsMu.RLock()
+	defer allowedOriginsMu.RUnlock()
+
+	if allowAllOrigins {
+		return true
+	}
+	_, ok := allowedOrigins[origin]
+	return ok
+}
+
+// SetAllowedOrigins updates the accepted Origin headers for WebSocket connections.
+func SetAllowedOrigins(origins []string) {
+	allowedOriginsMu.Lock()
+	defer allowedOriginsMu.Unlock()
+
+	if len(origins) == 0 {
+		allowAllOrigins = true
+		allowedOrigins = map[string]struct{}{}
+		return
+	}
+
+	allowAllOrigins = false
+	allowedOrigins = make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		trimmed := strings.TrimSpace(origin)
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == "*" {
+			allowAllOrigins = true
+			allowedOrigins = map[string]struct{}{}
+			return
+		}
+		trimmed = strings.TrimRight(trimmed, "/")
+		allowedOrigins[trimmed] = struct{}{}
+	}
+	if len(allowedOrigins) == 0 {
+		allowAllOrigins = true
+	}
+}
+
+func loadWebsocketConfigFromEnv() websocketConfig {
+	cfg := websocketConfig{
+		pingInterval:  durationFromEnv("ELORA_WS_PING_INTERVAL_MS", 25000),
+		pongWait:      durationFromEnv("ELORA_WS_PONG_WAIT_MS", 30000),
+		writeDeadline: durationFromEnv("ELORA_WS_WRITE_DEADLINE_MS", 5000),
+		maxBytes:      int64FromEnv("ELORA_WS_MAX_MESSAGE_BYTES", 131072),
+	}
+	if cfg.pingInterval <= 0 {
+		cfg.pingInterval = 25 * time.Second
+	}
+	if cfg.pongWait <= 0 {
+		cfg.pongWait = 30 * time.Second
+	}
+	if cfg.writeDeadline < 0 {
+		cfg.writeDeadline = 0
+	}
+	if cfg.maxBytes <= 0 {
+		cfg.maxBytes = 131072
+	}
+	return cfg
+}
+
+func loadUIConfigFromEnv() uiConfig {
+	hide := true
+	raw := strings.TrimSpace(os.Getenv("ELORA_UI_YT_PREFIX_AT"))
+	if raw != "" {
+		hide = !isTruthy(raw)
+	}
+
+	showBadges := true
+	if val := strings.TrimSpace(os.Getenv("ELORA_UI_SHOW_BADGES")); val != "" {
+		showBadges = isTruthy(val)
+	}
+
+	return uiConfig{
+		hideYouTubeAt: hide,
+		showBadges:    showBadges,
+	}
+}
+
+// UIConfig returns the active presentation toggles for the frontend.
+func UIConfig() (hideYouTubeAt bool, showBadges bool) {
+	return activeUIConfig.hideYouTubeAt, activeUIConfig.showBadges
+}
+
+func durationFromEnv(key string, def int) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return time.Duration(def) * time.Millisecond
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %d", key, raw, def)
+		return time.Duration(def) * time.Millisecond
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+func int64FromEnv(key string, def int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %d", key, raw, def)
+		return def
+	}
+	return n
+}
+
+func isTruthy(raw string) bool {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	switch raw {
+	case "1", "true", "yes", "on", "show", "enable":
+		return true
+	default:
+		return false
 	}
 }
 

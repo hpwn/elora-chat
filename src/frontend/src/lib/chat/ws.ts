@@ -1,3 +1,4 @@
+import { wsUrl as configuredWsUrl } from '$lib/config';
 import { normalizeWsPayloads, type ChatMessage } from './normalize';
 
 export type OnMessage = (m: ChatMessage) => void;
@@ -52,8 +53,11 @@ function emitMessages(messages: ChatMessage[], onMessage: OnMessage): void {
 }
 
 export function defaultWsUrl(): string {
+  if (configuredWsUrl) {
+    return configuredWsUrl;
+  }
   if (typeof location === 'undefined') {
-    return 'ws://localhost/ws/chat';
+    return 'ws://localhost:8080/ws/chat';
   }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${location.host}/ws/chat`;
