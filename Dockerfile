@@ -50,8 +50,9 @@ COPY --from=build-frontend /app/build /app/public
 COPY python/fetch_chat.py /app/python/
 COPY python/requirements.txt /app/python/
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r /app/python/requirements.txt && \
+# Install runtime dependencies and Python packages
+RUN apk add --no-cache curl && \
+    pip install --no-cache-dir -r /app/python/requirements.txt && \
     rm -rf /app/python/requirements.txt
 
 # Create a non-root user, credential directory, and shared token mount point
