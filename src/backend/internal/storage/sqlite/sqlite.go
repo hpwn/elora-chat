@@ -583,6 +583,17 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	return nil
 }
 
+// Ping verifies that the database connection is healthy and writable.
+func (s *Store) Ping(ctx context.Context) error {
+	if s.db == nil {
+		return errors.New("sqlite: store not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.db.PingContext(ctx)
+}
+
 // Close terminates the database connection and cleans up any ephemeral files.
 func (s *Store) Close(ctx context.Context) error {
 	var errs []error

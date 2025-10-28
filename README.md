@@ -32,7 +32,7 @@ make bootstrap
 make up
 ```
 
-Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers.
+Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make healthz` to confirm the HTTP server is responding and `make readyz` to wait for SQLite to be writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting.
 
 ### Local commands
 
@@ -41,6 +41,8 @@ Within a few seconds the API and WebSocket endpoints will be available at [`${VI
 | `make bootstrap` | Build the local `elora-chat` image and pull the harvester image declared in `.env`. |
 | `make up` | Launch the API (`elora-chat`) and harvester (`gnasty-harvester`) in the background. |
 | `make logs` | Tail logs for both services (add `SERVICES=elora-chat` to focus on one). |
+| `make healthz` | Hit `/healthz` and print `ok` once the HTTP server is responding. |
+| `make readyz` | Hit `/readyz` and print `ready` once the database is writable. |
 | `make ws:twitch` | Connect to the WebSocket feed and stream Twitch messages to the console. |
 | `make ws:youtube` | Same as above but filters for YouTube messages. |
 | `make seed:marker` | Inject a single high-visibility marker message into the feed. |
