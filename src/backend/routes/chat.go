@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +68,14 @@ type websocketConfig struct {
 	pongWait      time.Duration
 	writeDeadline time.Duration
 	maxBytes      int64
+}
+
+// WebsocketRuntimeConfig exposes the runtime websocket tuning knobs.
+type WebsocketRuntimeConfig struct {
+	PingInterval  time.Duration
+	PongWait      time.Duration
+	WriteDeadline time.Duration
+	MaxMessage    int64
 }
 
 type uiConfig struct {
@@ -816,6 +825,7 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	cfg := activeWebsocketConfig
+	sourceFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
 	if cfg.maxBytes > 0 {
 		conn.SetReadLimit(cfg.maxBytes)
 	}
@@ -864,6 +874,9 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 					log.Printf("chat: Failed to sanitize history message: %v\n", marshalErr)
 					continue
 				}
+				if shouldSkipSource(sanitized, sourceFilter) {
+					continue
+				}
 				if err := conn.WriteMessage(websocket.TextMessage, maybeEnvelope(sanitized)); err != nil {
 					log.Println("ws: WebSocket write error:", err)
 					return
@@ -889,6 +902,9 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					log.Println("json: ", err)
+					continue
+				}
+				if shouldSkipSource(sanitized, sourceFilter) {
 					continue
 				}
 				if err := writeWSMessage(conn, websocket.TextMessage, maybeEnvelope(sanitized), cfg.writeDeadline); err != nil {
@@ -936,6 +952,20 @@ func writeWSMessage(conn *websocket.Conn, messageType int, payload []byte, deadl
 		_ = conn.SetWriteDeadline(time.Time{})
 	}
 	return conn.WriteMessage(messageType, payload)
+}
+
+func shouldSkipSource(payload []byte, filter string) bool {
+	if filter == "" {
+		return false
+	}
+
+	var msg ws.ChatPayload
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return false
+	}
+
+	source := strings.ToLower(strings.TrimSpace(msg.Source))
+	return source != filter
 }
 
 func originAllowed(origin string) bool {
@@ -1006,6 +1036,37 @@ func loadWebsocketConfigFromEnv() websocketConfig {
 		cfg.maxBytes = 131072
 	}
 	return cfg
+}
+
+// WebsocketConfig returns the currently active websocket runtime configuration.
+func WebsocketConfig() WebsocketRuntimeConfig {
+	cfg := activeWebsocketConfig
+	return WebsocketRuntimeConfig{
+		PingInterval:  cfg.pingInterval,
+		PongWait:      cfg.pongWait,
+		WriteDeadline: cfg.writeDeadline,
+		MaxMessage:    cfg.maxBytes,
+	}
+}
+
+// AllowedOriginsConfig returns whether all origins are permitted along with the normalized allow-list.
+func AllowedOriginsConfig() (allowAll bool, origins []string) {
+	allowedOriginsMu.RLock()
+	defer allowedOriginsMu.RUnlock()
+
+	if allowAllOrigins {
+		return true, nil
+	}
+	if len(allowedOrigins) == 0 {
+		return false, nil
+	}
+
+	origins = make([]string, 0, len(allowedOrigins))
+	for origin := range allowedOrigins {
+		origins = append(origins, origin)
+	}
+	sort.Strings(origins)
+	return false, origins
 }
 
 func loadUIConfigFromEnv() uiConfig {
