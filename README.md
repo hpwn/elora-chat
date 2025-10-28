@@ -32,7 +32,7 @@ make bootstrap
 make up
 ```
 
-Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make healthz` to confirm the HTTP server is responding and `make readyz` to wait for SQLite to be writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting.
+Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting.
 
 ### Local commands
 
@@ -41,15 +41,20 @@ Within a few seconds the API and WebSocket endpoints will be available at [`${VI
 | `make bootstrap` | Build the local `elora-chat` image and pull the harvester image declared in `.env`. |
 | `make up` | Launch the API (`elora-chat`) and harvester (`gnasty-harvester`) in the background. |
 | `make logs` | Tail logs for both services (add `SERVICES=elora-chat` to focus on one). |
-| `make healthz` | Hit `/healthz` and print `ok` once the HTTP server is responding. |
-| `make readyz` | Hit `/readyz` and print `ready` once the database is writable. |
-| `make ws:twitch` | Connect to the WebSocket feed and stream Twitch messages to the console. |
-| `make ws:youtube` | Same as above but filters for YouTube messages. |
+| `make health` | Hit `/readyz` and print `ready` once the database is writable. |
+| `make configz` | Fetch `/configz` and pretty-print the redacted runtime configuration. |
+| `make ws` | Connect to the WebSocket feed (containerized websocat + Python formatter). |
+| `make ws-twitch` | Same as above but filter for Twitch messages. |
+| `make ws-youtube` | Same as above but filter for YouTube messages. |
 | `make seed:marker` | Inject a single high-visibility marker message into the feed. |
 | `make seed:burst` | Inject a short burst of mixed Twitch/YouTube sample messages. |
 | `make down` | Stop the stack while preserving the shared volume. |
 
 All of the commands read configuration from `.env`, so update that file (or export overrides) before running them.
+
+### Which mode am I in?
+
+Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field shows whether the process is using the bundled `chatdownloader` client or tailing gnasty's SQLite output. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
 
 ## Running with gnasty
 

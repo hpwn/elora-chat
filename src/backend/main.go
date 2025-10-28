@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/configreporter"
 	httpapi "github.com/hpwn/EloraChat/src/backend/internal/http"
 	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
@@ -111,7 +112,7 @@ func main() {
 	httpapi.RegisterHealth(rootMux, store)
 	rootMux.Handle("/", r)
 
-	allowedOrigins := parseCSV(os.Getenv("ELORA_ALLOWED_ORIGINS"))
+	allowedOrigins := parseCSV(getEnvFirst([]string{"ELORA_WS_ALLOWED_ORIGINS", "ELORA_ALLOWED_ORIGINS"}))
 	routes.SetAllowedOrigins(allowedOrigins)
 	corsHandler := handlers.CORS(
 		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodOptions}),
@@ -150,6 +151,33 @@ func main() {
 			tailerCfg.OffsetPath = filepath.Clean(tailerCfg.OffsetPath)
 		}
 	}
+
+	ingestEnv := ingest.FromEnv()
+	allowAnyOrigins, normalizedOrigins := routes.AllowedOriginsConfig()
+	wsRuntime := routes.WebsocketConfig()
+	reporter := configreporter.NewReporter(
+		sqliteCfg,
+		tailerCfg,
+		ingestEnv,
+		configreporter.Origins{AllowAny: allowAnyOrigins, Values: normalizedOrigins},
+		configreporter.WebsocketLimits{
+			PingInterval:  wsRuntime.PingInterval,
+			PongWait:      wsRuntime.PongWait,
+			WriteDeadline: wsRuntime.WriteDeadline,
+			MaxMessage:    wsRuntime.MaxMessage,
+		},
+	)
+
+	httpapi.RegisterConfigz(rootMux, func() configreporter.Snapshot {
+		return reporter.Snapshot()
+	})
+
+	if summaryJSON, err := reporter.SummaryJSON(); err == nil {
+		log.Printf("config_summary=%s", summaryJSON)
+	} else {
+		log.Printf("config_summary: %+v", reporter.Summary())
+	}
+
 	dbTailer := tailer.New(tailerCfg, store)
 	if err := dbTailer.Start(baseCtx); err != nil {
 		log.Printf("dbtailer: error: %v", err)
@@ -171,24 +199,23 @@ func main() {
 			}
 		}
 	}
+	log.Printf("ingest: selected driver=%q", ingestEnv.Driver)
 	if len(chatURLs) == 0 {
 		log.Printf("No CHAT_URLS provided; skipping chat fetch")
 	} else {
-		env := ingest.FromEnv()
 		log.Printf("chat seed URLs: %d", len(chatURLs))
-		log.Printf("ingest: selected driver=%q", env.Driver)
 
-		switch env.Driver {
+		switch ingestEnv.Driver {
 		case ingest.DriverChatDownloader:
 			routes.StartChatFetch(chatURLs)
 		case ingest.DriverGnasty:
-			gn, err := env.BuildGnasty(nil, chatURLs, log.Default())
+			gn, err := ingestEnv.BuildGnasty(nil, chatURLs, log.Default())
 			if err != nil {
 				log.Fatalf("ingest: gnasty config error: %v", err)
 			}
 			gn.Start(baseCtx)
 		default:
-			log.Printf("ingest: unknown driver %q; defaulting to chatdownloader", env.Driver)
+			log.Printf("ingest: unknown driver %q; defaulting to chatdownloader", ingestEnv.Driver)
 			routes.StartChatFetch(chatURLs)
 		}
 	}
@@ -286,6 +313,15 @@ func getEnvAsIntFallback(keys []string, def int) int {
 		return parsed
 	}
 	return def
+}
+
+func getEnvFirst(keys []string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseCSV(raw string) []string {
