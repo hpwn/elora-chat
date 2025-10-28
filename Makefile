@@ -15,7 +15,7 @@ DEFAULT_WS_URL := ws://localhost:$(DEFAULT_HTTP_PORT)/ws/chat
 WS_URL ?= $(if $(VITE_PUBLIC_WS_URL),$(VITE_PUBLIC_WS_URL),$(DEFAULT_WS_URL))
 API_URL ?= $(if $(VITE_PUBLIC_API_BASE),$(VITE_PUBLIC_API_BASE),http://localhost:$(DEFAULT_HTTP_PORT))
 
-.PHONY: bootstrap up down logs ws ws:twitch ws:youtube seed:marker seed:burst
+.PHONY: bootstrap up down logs ws ws:twitch ws:youtube seed:marker seed:burst healthz readyz
 
 bootstrap:
 $(COMPOSE) pull --ignore-pull-failures
@@ -44,3 +44,9 @@ curl -fsS -X POST "$(API_URL)/api/dev/seed/marker"
 
 seed\:burst:
 curl -fsS -X POST "$(API_URL)/api/dev/seed/burst"
+
+healthz:
+@curl -fsS "$(API_URL)/healthz" && echo " (health OK)"
+
+readyz:
+@curl -fsS "$(API_URL)/readyz" && echo " (ready OK)"

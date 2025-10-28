@@ -42,6 +42,7 @@ type QueryOpts struct {
 // Store describes a backend capable of persisting chat messages and sessions.
 type Store interface {
 	Init(ctx context.Context) error
+	Ping(ctx context.Context) error
 	InsertMessage(ctx context.Context, m *Message) error
 	GetRecent(ctx context.Context, q QueryOpts) ([]Message, error)
 	// PurgeBefore deletes messages with timestamps strictly before the cutoff.

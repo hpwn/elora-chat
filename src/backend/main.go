@@ -108,7 +108,7 @@ func main() {
 	routes.SetupDevRoutes(r)
 
 	rootMux := http.NewServeMux()
-	httpapi.RegisterHealth(rootMux)
+	httpapi.RegisterHealth(rootMux, store)
 	rootMux.Handle("/", r)
 
 	allowedOrigins := parseCSV(os.Getenv("ELORA_ALLOWED_ORIGINS"))
