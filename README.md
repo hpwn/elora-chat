@@ -143,6 +143,16 @@ ELORA_TWITCH_TOKEN_DIR=/shared                 # optional; defaults to the file'
    twitch: token reload detected; reconnecting
    ```
 
+### Twitch OAuth configuration
+
+Set the following variables for the built-in Twitch login flow:
+
+- `TWITCH_OAUTH_CLIENT_ID`
+- `TWITCH_OAUTH_CLIENT_SECRET`
+- `TWITCH_OAUTH_REDIRECT_URL`
+
+The UI directs users to `/auth/twitch/start`, and the backend exposes `/auth/twitch/start` with `/login/twitch` retained as a legacy alias.
+
 ## SQLite storage (default) 🗄️
 
 The backend now persists chat history to SQLite by default. Ephemeral mode keeps everything in a temp file so you can run without any extra setup. To customize the database:

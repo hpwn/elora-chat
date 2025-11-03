@@ -25,13 +25,17 @@ import (
 )
 
 // Twitch OAuth configuration
-var twitchOAuthConfig = &oauth2.Config{
-	ClientID:     os.Getenv("TWITCH_CLIENT_ID"),
-	ClientSecret: os.Getenv("TWITCH_CLIENT_SECRET"),
-	RedirectURL:  os.Getenv("TWITCH_REDIRECT_URL"),
-	Scopes:       []string{"chat:edit", "chat:read"}, // Updated scopes
-	Endpoint:     twitch.Endpoint,                    // Make sure to import "golang.org/x/oauth2/twitch"
+func newTwitchOAuthConfigFromEnv() *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     os.Getenv("TWITCH_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("TWITCH_OAUTH_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("TWITCH_OAUTH_REDIRECT_URL"),
+		Scopes:       []string{"chat:edit", "chat:read"}, // Updated scopes
+		Endpoint:     twitch.Endpoint,                    // Make sure to import "golang.org/x/oauth2/twitch"
+	}
 }
+
+var twitchOAuthConfig = newTwitchOAuthConfigFromEnv()
 
 // loginHandler to initiate OAuth with Twitch
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +59,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Construct the OAuth URL and redirect the user to the Twitch authentication page
-	url := twitchOAuthConfig.AuthCodeURL(state, oauth2.AccessTypeOnline)
+	url := twitchOAuthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
@@ -555,7 +559,8 @@ func toUnixSeconds(value any) (int64, bool) {
 
 func SetupAuthRoutes(router *mux.Router) {
 	// Existing setup...
-	router.HandleFunc("/login/twitch", loginHandler).Methods("GET")
+	router.HandleFunc("/auth/twitch/start", loginHandler).Methods("GET")
+	router.HandleFunc("/login/twitch", loginHandler).Methods("GET") // legacy alias
 	router.HandleFunc("/callback/twitch", callbackHandler)
 	router.HandleFunc("/logout", logoutHandler).Methods("POST")
 
