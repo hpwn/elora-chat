@@ -73,6 +73,20 @@ When offsets are persisted and no explicit path is provided the backend appends 
 
 The tailer feeds `routes.BroadcastFromTailer`, which uses the same WebSocket hub as live ingest.
 
+### Twitch auth (`TWITCH_OAUTH_*`, `ELORA_TWITCH_*`)
+
+`/configz` now emits an `auth.twitch` block so operators can confirm OAuth wiring without leaking secrets:
+
+| Field | Source | Notes |
+| --- | --- | --- |
+| `client_id` | `TWITCH_OAUTH_CLIENT_ID` | Always redacted to `"[redacted]"` when set. |
+| `redirect_url` | `TWITCH_OAUTH_REDIRECT_URL` | Exact redirect URI configured for Twitch. |
+| `write_gnasty_tokens` | `ELORA_TWITCH_WRITE_GNASTY_TOKENS` | Defaults to `true`; `0/false/no/off` disable gnasty handoff writes. |
+| `access_token_path` | `ELORA_DATA_DIR` | Resolved to `<ELORA_DATA_DIR>/twitch_irc.pass` when writes are enabled. |
+| `refresh_token_path` | `ELORA_DATA_DIR` | Resolved to `<ELORA_DATA_DIR>/twitch_refresh.pass` when writes are enabled. |
+
+The access/refresh paths mirror gnasty handoff defaults so you can verify shared volume wiring. Set `ELORA_DATA_DIR` to a writable mount when gnasty and the API share tokens.
+
 ## Topologies
 
 ### 1. chatdownloader-only

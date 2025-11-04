@@ -18,6 +18,7 @@ func TestSnapshotRedactsIngestSecrets(t *testing.T) {
 		ingest.Env{Driver: ingest.DriverGnasty, GnastyArgs: []string{"--token=secret"}},
 		Origins{AllowAny: false, Values: []string{"http://localhost:8080"}},
 		WebsocketLimits{PingInterval: 25 * time.Second, PongWait: 30 * time.Second, WriteDeadline: 5 * time.Second, MaxMessage: 131072},
+		AuthConfig{},
 	)
 
 	snapshot := reporter.Snapshot()
@@ -40,6 +41,7 @@ func TestSummaryJSON(t *testing.T) {
 		ingest.Env{Driver: ingest.DriverChatDownloader},
 		Origins{AllowAny: true},
 		WebsocketLimits{},
+		AuthConfig{},
 	)
 
 	data, err := reporter.SummaryJSON()
@@ -48,5 +50,44 @@ func TestSummaryJSON(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatalf("expected non-empty json summary")
+	}
+}
+
+func TestSnapshotRedactsTwitchClientID(t *testing.T) {
+	reporter := NewReporter(
+		sqlite.Config{},
+		tailer.Config{},
+		ingest.Env{},
+		Origins{},
+		WebsocketLimits{},
+		AuthConfig{Twitch: TwitchAuthConfig{
+			ClientID:          "abc123",
+			RedirectURL:       "https://example.com/callback",
+			WriteGnastyTokens: true,
+			AccessTokenPath:   "/data/twitch_irc.pass",
+			RefreshTokenPath:  "/data/twitch_refresh.pass",
+		}},
+	)
+
+	snapshot := reporter.Snapshot()
+	if snapshot.Auth.Twitch.ClientID != "[redacted]" {
+		t.Fatalf("expected client id to be redacted, got %q", snapshot.Auth.Twitch.ClientID)
+	}
+	if snapshot.Auth.Twitch.RedirectURL != "https://example.com/callback" {
+		t.Fatalf("unexpected redirect url: %s", snapshot.Auth.Twitch.RedirectURL)
+	}
+	if !snapshot.Auth.Twitch.WriteGnastyTokens {
+		t.Fatalf("expected write gnasty tokens to be true")
+	}
+	if snapshot.Auth.Twitch.AccessTokenPath != "/data/twitch_irc.pass" {
+		t.Fatalf("unexpected access token path: %s", snapshot.Auth.Twitch.AccessTokenPath)
+	}
+	if snapshot.Auth.Twitch.RefreshTokenPath != "/data/twitch_refresh.pass" {
+		t.Fatalf("unexpected refresh token path: %s", snapshot.Auth.Twitch.RefreshTokenPath)
+	}
+
+	summary := reporter.Summary()
+	if summary.Auth.Twitch.ClientID != "[redacted]" {
+		t.Fatalf("expected summary client id to be redacted, got %q", summary.Auth.Twitch.ClientID)
 	}
 }

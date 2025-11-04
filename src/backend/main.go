@@ -153,6 +153,20 @@ func main() {
 	}
 
 	ingestEnv := ingest.FromEnv()
+	twitchClientID := strings.TrimSpace(os.Getenv("TWITCH_OAUTH_CLIENT_ID"))
+	twitchRedirectURL := strings.TrimSpace(os.Getenv("TWITCH_OAUTH_REDIRECT_URL"))
+	twitchWriteGnastyTokens := twitchGnastyWritesEnabled()
+	twitchAccessPath := ""
+	twitchRefreshPath := ""
+	if twitchWriteGnastyTokens {
+		dataDir := strings.TrimSpace(os.Getenv("ELORA_DATA_DIR"))
+		if dataDir == "" {
+			dataDir = "/data"
+		}
+		dataDir = filepath.Clean(dataDir)
+		twitchAccessPath = filepath.Join(dataDir, "twitch_irc.pass")
+		twitchRefreshPath = filepath.Join(dataDir, "twitch_refresh.pass")
+	}
 	allowAnyOrigins, normalizedOrigins := routes.AllowedOriginsConfig()
 	wsRuntime := routes.WebsocketConfig()
 	reporter := configreporter.NewReporter(
@@ -166,6 +180,13 @@ func main() {
 			WriteDeadline: wsRuntime.WriteDeadline,
 			MaxMessage:    wsRuntime.MaxMessage,
 		},
+		configreporter.AuthConfig{Twitch: configreporter.TwitchAuthConfig{
+			ClientID:          twitchClientID,
+			RedirectURL:       twitchRedirectURL,
+			WriteGnastyTokens: twitchWriteGnastyTokens,
+			AccessTokenPath:   twitchAccessPath,
+			RefreshTokenPath:  twitchRefreshPath,
+		}},
 	)
 
 	httpapi.RegisterConfigz(rootMux, func() configreporter.Snapshot {
@@ -351,6 +372,20 @@ func sanitizeJournalMode(mode string) string {
 		}
 	}
 	return upper
+}
+
+func twitchGnastyWritesEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS"))
+	if v == "" {
+		return true
+	}
+	v = strings.ToLower(v)
+	switch v {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func computeAPIBase(port string) string {
