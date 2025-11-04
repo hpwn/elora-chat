@@ -192,6 +192,177 @@ func TestTwitchCallbackWritesGnastyTokens(t *testing.T) {
 	}
 }
 
+func TestTwitchCallbackHandlesExchangeFailure(t *testing.T) {
+	prevStore := chatStore
+	store := newStubStore()
+	chatStore = store
+	t.Cleanup(func() { chatStore = prevStore })
+
+	state := "fail"
+	if err := storeOAuthState(context.Background(), state); err != nil {
+		t.Fatalf("storeOAuthState: %v", err)
+	}
+
+	userInfoCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.WriteHeader(http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"error":"invalid_grant"}`)
+		case "/helix/users":
+			userInfoCalled = true
+			t.Fatalf("user info should not be requested on exchange failure")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prevConfig := twitchOAuthConfig
+	twitchOAuthConfig = &oauth2.Config{
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		RedirectURL:  "https://example.com/callback",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  server.URL + "/oauth2/authorize",
+			TokenURL: server.URL + "/oauth2/token",
+		},
+	}
+	t.Cleanup(func() { twitchOAuthConfig = prevConfig })
+
+	prevUserInfo := twitchUserInfoURL
+	twitchUserInfoURL = server.URL + "/helix/users"
+	t.Cleanup(func() { twitchUserInfoURL = prevUserInfo })
+
+	prevHTTPClient := twitchHTTPClient
+	twitchHTTPClient = server.Client()
+	t.Cleanup(func() { twitchHTTPClient = prevHTTPClient })
+
+	prevGnastyClient := gnastyHTTPClient
+	gnastyHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("gnasty reload should not be triggered")
+		return nil, nil
+	})}
+	t.Cleanup(func() { gnastyHTTPClient = prevGnastyClient })
+
+	dataDir := t.TempDir()
+	t.Setenv("ELORA_DATA_DIR", dataDir)
+	t.Setenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS", "1")
+
+	router := mux.NewRouter()
+	SetupAuthRoutes(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/callback/twitch?state="+state+"&code=bad", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "Connected") {
+		t.Fatalf("unexpected body: %q", body)
+	}
+
+	if userInfoCalled {
+		t.Fatalf("user info should not be fetched on exchange failure")
+	}
+
+	if _, err := os.Stat(filepath.Join(dataDir, "twitch_irc.pass")); !os.IsNotExist(err) {
+		t.Fatalf("access token file should not exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "twitch_refresh.pass")); !os.IsNotExist(err) {
+		t.Fatalf("refresh token file should not exist: %v", err)
+	}
+}
+
+func TestTwitchCallbackReloadsWhenURLSetOnExchangeFailure(t *testing.T) {
+	prevStore := chatStore
+	store := newStubStore()
+	chatStore = store
+	t.Cleanup(func() { chatStore = prevStore })
+
+	state := "reload"
+	if err := storeOAuthState(context.Background(), state); err != nil {
+		t.Fatalf("storeOAuthState: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.WriteHeader(http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"error":"invalid_grant"}`)
+		case "/helix/users":
+			t.Fatalf("user info should not be requested on exchange failure")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prevConfig := twitchOAuthConfig
+	twitchOAuthConfig = &oauth2.Config{
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		RedirectURL:  "https://example.com/callback",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  server.URL + "/oauth2/authorize",
+			TokenURL: server.URL + "/oauth2/token",
+		},
+	}
+	t.Cleanup(func() { twitchOAuthConfig = prevConfig })
+
+	prevUserInfo := twitchUserInfoURL
+	twitchUserInfoURL = server.URL + "/helix/users"
+	t.Cleanup(func() { twitchUserInfoURL = prevUserInfo })
+
+	prevHTTPClient := twitchHTTPClient
+	twitchHTTPClient = server.Client()
+	t.Cleanup(func() { twitchHTTPClient = prevHTTPClient })
+
+	reloadURL := "http://example.com/reload"
+	calls := 0
+	prevGnastyClient := gnastyHTTPClient
+	gnastyHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.String() != reloadURL {
+			t.Fatalf("unexpected gnasty url: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	t.Cleanup(func() { gnastyHTTPClient = prevGnastyClient })
+
+	dataDir := t.TempDir()
+	t.Setenv("ELORA_DATA_DIR", dataDir)
+	t.Setenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS", "1")
+	t.Setenv("ELORA_GNASTY_RELOAD_URL", reloadURL)
+
+	router := mux.NewRouter()
+	SetupAuthRoutes(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/callback/twitch?state="+state+"&code=bad", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "Connected") {
+		t.Fatalf("unexpected body: %q", body)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected 1 gnasty call, got %d", calls)
+	}
+}
+
 func TestTwitchCallbackSkipsGnastyWritesWhenDisabled(t *testing.T) {
 	prevStore := chatStore
 	store := newStubStore()
