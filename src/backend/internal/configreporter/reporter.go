@@ -3,6 +3,7 @@ package configreporter
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
@@ -31,16 +32,18 @@ type Reporter struct {
 	ingest    ingest.Env
 	origins   Origins
 	websocket WebsocketLimits
+	auth      AuthConfig
 }
 
 // NewReporter constructs a Reporter from the effective runtime configuration.
-func NewReporter(db sqlite.Config, tailerCfg tailer.Config, ingestEnv ingest.Env, origins Origins, ws WebsocketLimits) Reporter {
+func NewReporter(db sqlite.Config, tailerCfg tailer.Config, ingestEnv ingest.Env, origins Origins, ws WebsocketLimits, authCfg AuthConfig) Reporter {
 	return Reporter{
 		db:        db,
 		tailer:    tailerCfg,
 		ingest:    ingestEnv,
 		origins:   normalizeOrigins(origins),
 		websocket: ws,
+		auth:      authCfg,
 	}
 }
 
@@ -50,6 +53,7 @@ type Snapshot struct {
 	Tailer    TailerSnapshot    `json:"tailer"`
 	Ingest    IngestSnapshot    `json:"ingest"`
 	Websocket WebsocketSnapshot `json:"websocket"`
+	Auth      AuthSnapshot      `json:"auth"`
 }
 
 // DBSnapshot contains the SQLite-related configuration shared with operators.
@@ -87,12 +91,41 @@ type WebsocketSnapshot struct {
 	MaxMessageBytes int64    `json:"max_message_bytes"`
 }
 
+// AuthConfig captures authentication-related runtime configuration inputs.
+type AuthConfig struct {
+	Twitch TwitchAuthConfig
+}
+
+// TwitchAuthConfig holds the Twitch OAuth wiring used by the backend.
+type TwitchAuthConfig struct {
+	ClientID          string
+	RedirectURL       string
+	WriteGnastyTokens bool
+	AccessTokenPath   string
+	RefreshTokenPath  string
+}
+
+// AuthSnapshot reports the redacted authentication configuration.
+type AuthSnapshot struct {
+	Twitch TwitchAuthSnapshot `json:"twitch"`
+}
+
+// TwitchAuthSnapshot is the Twitch-specific authentication snapshot shared with operators.
+type TwitchAuthSnapshot struct {
+	ClientID          string `json:"client_id"`
+	RedirectURL       string `json:"redirect_url"`
+	WriteGnastyTokens bool   `json:"write_gnasty_tokens"`
+	AccessTokenPath   string `json:"access_token_path"`
+	RefreshTokenPath  string `json:"refresh_token_path"`
+}
+
 // Summary is the compact subset logged on startup.
 type Summary struct {
 	DB        DBSummary        `json:"db"`
 	Tailer    TailerSummary    `json:"tailer"`
 	Ingest    IngestSnapshot   `json:"ingest"`
 	Websocket WebsocketSummary `json:"websocket"`
+	Auth      AuthSummary      `json:"auth"`
 }
 
 // DBSummary is the subset of DB settings logged at startup.
@@ -118,11 +151,21 @@ type WebsocketSummary struct {
 	MaxMessageBytes int64 `json:"max_message_bytes"`
 }
 
+// AuthSummary contains the subset of auth settings logged at startup.
+type AuthSummary struct {
+	Twitch TwitchAuthSnapshot `json:"twitch"`
+}
+
 // Snapshot returns the current redacted configuration snapshot.
 func (r Reporter) Snapshot() Snapshot {
 	offsetPath := r.tailer.OffsetPath
 	if !r.tailer.PersistOffsets {
 		offsetPath = ""
+	}
+
+	twitchClientID := ""
+	if strings.TrimSpace(r.auth.Twitch.ClientID) != "" {
+		twitchClientID = "[redacted]"
 	}
 
 	return Snapshot{
@@ -151,11 +194,25 @@ func (r Reporter) Snapshot() Snapshot {
 			WriteDeadlineMS: durationToMS(r.websocket.WriteDeadline),
 			MaxMessageBytes: r.websocket.MaxMessage,
 		},
+		Auth: AuthSnapshot{
+			Twitch: TwitchAuthSnapshot{
+				ClientID:          twitchClientID,
+				RedirectURL:       r.auth.Twitch.RedirectURL,
+				WriteGnastyTokens: r.auth.Twitch.WriteGnastyTokens,
+				AccessTokenPath:   r.auth.Twitch.AccessTokenPath,
+				RefreshTokenPath:  r.auth.Twitch.RefreshTokenPath,
+			},
+		},
 	}
 }
 
 // Summary returns the compact subset logged at startup.
 func (r Reporter) Summary() Summary {
+	twitchClientID := ""
+	if strings.TrimSpace(r.auth.Twitch.ClientID) != "" {
+		twitchClientID = "[redacted]"
+	}
+
 	return Summary{
 		DB: DBSummary{
 			Mode:        r.db.Mode,
@@ -174,6 +231,15 @@ func (r Reporter) Summary() Summary {
 			PongWaitMS:      durationToMS(r.websocket.PongWait),
 			WriteDeadlineMS: durationToMS(r.websocket.WriteDeadline),
 			MaxMessageBytes: r.websocket.MaxMessage,
+		},
+		Auth: AuthSummary{
+			Twitch: TwitchAuthSnapshot{
+				ClientID:          twitchClientID,
+				RedirectURL:       r.auth.Twitch.RedirectURL,
+				WriteGnastyTokens: r.auth.Twitch.WriteGnastyTokens,
+				AccessTokenPath:   r.auth.Twitch.AccessTokenPath,
+				RefreshTokenPath:  r.auth.Twitch.RefreshTokenPath,
+			},
 		},
 	}
 }
