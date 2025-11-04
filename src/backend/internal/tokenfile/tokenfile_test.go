@@ -9,8 +9,7 @@ import (
 func resetCache() {
 	mu.Lock()
 	defer mu.Unlock()
-	lastPath = ""
-	lastToken = ""
+	lastTokens = make(map[string]string)
 }
 
 func TestPathFromEnvWithDir(t *testing.T) {
@@ -139,5 +138,60 @@ func TestSaveSkipsDuplicateToken(t *testing.T) {
 	}
 	if !info.ModTime().Equal(info2.ModTime()) {
 		t.Fatalf("modtime changed: %v -> %v", info.ModTime(), info2.ModTime())
+	}
+}
+
+func TestWriteAccessAndRefreshTokens(t *testing.T) {
+	resetCache()
+
+	root := t.TempDir()
+	accessPath := filepath.Join(root, "tokens", "twitch_irc.pass")
+	refreshPath := filepath.Join(root, "tokens", "twitch_refresh.pass")
+
+	if err := WriteAccessToken(accessPath, "abc123"); err != nil {
+		t.Fatalf("WriteAccessToken error: %v", err)
+	}
+	if err := WriteRefreshToken(refreshPath, "refreshXYZ"); err != nil {
+		t.Fatalf("WriteRefreshToken error: %v", err)
+	}
+
+	accessData, err := os.ReadFile(accessPath)
+	if err != nil {
+		t.Fatalf("ReadFile access: %v", err)
+	}
+	if string(accessData) != "oauth:abc123\n" {
+		t.Fatalf("access file content = %q", string(accessData))
+	}
+
+	refreshData, err := os.ReadFile(refreshPath)
+	if err != nil {
+		t.Fatalf("ReadFile refresh: %v", err)
+	}
+	if string(refreshData) != "refreshXYZ\n" {
+		t.Fatalf("refresh file content = %q", string(refreshData))
+	}
+
+	accessInfo, err := os.Stat(accessPath)
+	if err != nil {
+		t.Fatalf("Stat access: %v", err)
+	}
+	if accessInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("access perm = %v, want 0600", accessInfo.Mode().Perm())
+	}
+
+	refreshInfo, err := os.Stat(refreshPath)
+	if err != nil {
+		t.Fatalf("Stat refresh: %v", err)
+	}
+	if refreshInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("refresh perm = %v, want 0600", refreshInfo.Mode().Perm())
+	}
+
+	dirInfo, err := os.Stat(filepath.Dir(accessPath))
+	if err != nil {
+		t.Fatalf("Stat dir: %v", err)
+	}
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("dir perm = %v, want 0700", dirInfo.Mode().Perm())
 	}
 }

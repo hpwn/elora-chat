@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,7 +36,12 @@ func newTwitchOAuthConfigFromEnv() *oauth2.Config {
 	}
 }
 
-var twitchOAuthConfig = newTwitchOAuthConfigFromEnv()
+var (
+	twitchOAuthConfig = newTwitchOAuthConfigFromEnv()
+	twitchUserInfoURL = "https://api.twitch.tv/helix/users"
+	twitchHTTPClient  = http.DefaultClient
+	gnastyHTTPClient  = &http.Client{Timeout: 2 * time.Second}
+)
 
 // loginHandler to initiate OAuth with Twitch
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +76,6 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var oauthConfig *oauth2.Config = twitchOAuthConfig
-	var userInfoURL string = "https://api.twitch.tv/helix/users"
 	var service string = "twitch"
 
 	// Check if an error query parameter is present
@@ -98,8 +103,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	var res *http.Response
 
 	// For Twitch, manually set the headers and create the request
-	userInfoURL = "https://api.twitch.tv/helix/users"
-	req, err = http.NewRequest("GET", userInfoURL, nil)
+	req, err = http.NewRequest(http.MethodGet, twitchUserInfoURL, nil)
 	if err != nil {
 		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -107,7 +111,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Set necessary headers for Twitch API
 	req.Header.Set("Client-ID", oauthConfig.ClientID)
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	res, err = http.DefaultClient.Do(req)
+	res, err = twitchHTTPClient.Do(req)
 
 	if err != nil || res.StatusCode != 200 {
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
@@ -159,8 +163,17 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// This should include setting the session token in a cookie
 	updateSessionDataForService(w, userData, service, sessionToken)
 
-	// Redirect the user to the main page or dashboard
-	http.Redirect(w, r, "/", http.StatusFound)
+	if shouldWriteGnastyTokens() {
+		if err := persistGnastyTokens(token); err != nil {
+			log.Printf("auth: failed to persist gnasty tokens: %v", err)
+		} else {
+			triggerGnastyReload(r.Context())
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("<!DOCTYPE html><html><body>Connected ✔</body></html>"))
 }
 
 func updateSessionDataForService(w http.ResponseWriter, userData map[string]any, service string, sessionToken string) {
@@ -246,6 +259,75 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 
 	if w != nil {
 		setSessionCookie(w, sessionToken)
+	}
+}
+
+func shouldWriteGnastyTokens() bool {
+	v := strings.TrimSpace(os.Getenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS"))
+	if v == "" {
+		return true
+	}
+	v = strings.ToLower(v)
+	switch v {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func persistGnastyTokens(token *oauth2.Token) error {
+	if token == nil {
+		return errors.New("nil token")
+	}
+
+	dataDir := strings.TrimSpace(os.Getenv("ELORA_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+
+	accessPath := filepath.Join(dataDir, "twitch_irc.pass")
+	if err := tokenfile.WriteAccessToken(accessPath, token.AccessToken); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		refreshPath := filepath.Join(dataDir, "twitch_refresh.pass")
+		if err := tokenfile.WriteRefreshToken(refreshPath, token.RefreshToken); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func triggerGnastyReload(ctx context.Context) {
+	port := strings.TrimSpace(os.Getenv("GNASTY_HTTP_PORT"))
+	if port == "" {
+		port = "8765"
+	}
+	url := fmt.Sprintf("http://gnasty:%s/admin/twitch/reload", port)
+
+	client := gnastyHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 2 * time.Second}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		log.Printf("auth: failed to build gnasty reload request: %v", err)
+		return
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("auth: gnasty reload request failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 400 {
+		log.Printf("auth: gnasty reload returned %s", resp.Status)
 	}
 }
 
