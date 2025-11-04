@@ -93,6 +93,12 @@ Prefer the external [gnasty](https://github.com/hpwn/gnasty) chat fetcher instea
 When `ELORA_TWITCH_TOKEN_FILE` is set, the backend writes the current Twitch IRC token to that file (atomically, mode `0600`).
 Run `gnasty-chat` with `-twitch-token-file` pointing at the same path (use a shared volume).
 
+By default the Twitch OAuth callback also writes gnasty-compatible handoff files
+`${ELORA_DATA_DIR:-/data}/twitch_irc.pass` and `${ELORA_DATA_DIR:-/data}/twitch_refresh.pass` and pings
+`http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload` so gnasty reloads immediately. Set
+`ELORA_TWITCH_WRITE_GNASTY_TOKENS=false` (or `0`, `no`, `off`) to disable this automatic export when you
+prefer to manage the files manually.
+
 **Environment**
 
 ```bash

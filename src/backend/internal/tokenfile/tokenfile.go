@@ -10,9 +10,8 @@ import (
 )
 
 var (
-	mu        sync.Mutex
-	lastPath  string
-	lastToken string
+	mu         sync.Mutex
+	lastTokens = make(map[string]string)
 )
 
 // ErrEmptyToken indicates that the provided token was blank after trimming.
@@ -70,29 +69,68 @@ func Save(token string) error {
 		return ErrEmptyToken
 	}
 
+	return writeTokenFile(path, token, true, dirFromEnv(path))
+}
+
+// WriteAccessToken persists the provided access token to the supplied path,
+// ensuring it is prefixed with "oauth:".
+func WriteAccessToken(path, token string) error {
+	return writeTokenFile(path, token, true, "")
+}
+
+// WriteRefreshToken persists the provided refresh token to the supplied path
+// without modifying the value. The file is written atomically with 0600
+// permissions, creating parent directories with 0700 when necessary.
+func WriteRefreshToken(path, token string) error {
+	return writeTokenFile(path, token, false, "")
+}
+
+func writeTokenFile(path, token string, ensurePrefix bool, overrideDir string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return errors.New("tokenfile: empty path")
+	}
+
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrEmptyToken
+	}
+	if ensurePrefix {
+		token = ensureOAuthPrefix(token)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 
-	if lastPath == path && lastToken == token {
+	if lastTokens[path] == token {
 		return nil
 	}
 
-	dirCfg := dirFromEnv(path)
 	actualDir := filepath.Clean(filepath.Dir(path))
+	dirCfg := filepath.Clean(strings.TrimSpace(overrideDir))
+	if dirCfg == "." {
+		dirCfg = ""
+	}
+	if actualDir == "." {
+		actualDir = ""
+	}
 
-	// Ensure directories exist with strict permissions where possible.
-	if dirCfg != "" && dirCfg != "." {
+	if dirCfg != "" {
 		if err := os.MkdirAll(dirCfg, 0o700); err != nil {
 			return fmt.Errorf("tokenfile: mkdir %s: %w", dirCfg, err)
 		}
 	}
-	if actualDir != "" && actualDir != "." && actualDir != dirCfg {
+	if actualDir != "" && actualDir != dirCfg {
 		if err := os.MkdirAll(actualDir, 0o700); err != nil {
 			return fmt.Errorf("tokenfile: mkdir %s: %w", actualDir, err)
 		}
 	}
 
-	tmp := filepath.Join(actualDir, "."+filepath.Base(path)+".tmp")
+	tmpDir := actualDir
+	if tmpDir == "" {
+		tmpDir = "."
+	}
+	tmp := filepath.Join(tmpDir, "."+filepath.Base(path)+".tmp")
 	cleanup := true
 	defer func() {
 		if cleanup {
@@ -141,7 +179,6 @@ func Save(token string) error {
 		syncDir(dirCfg)
 	}
 
-	lastPath = path
-	lastToken = token
+	lastTokens[path] = token
 	return nil
 }
