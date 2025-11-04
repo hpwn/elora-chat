@@ -39,7 +39,7 @@ export function checkLoginStatus() {
 }
 
 export function redirectToTwitchLogin() {
-  window.location.href = buildApiUrl('/login/twitch');
+  window.location.href = buildApiUrl('/auth/twitch/start');
 }
 
 export function logout() {
