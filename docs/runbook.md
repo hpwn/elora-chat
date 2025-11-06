@@ -87,6 +87,20 @@ The tailer feeds `routes.BroadcastFromTailer`, which uses the same WebSocket hub
 
 The access/refresh paths mirror gnasty handoff defaults so you can verify shared volume wiring. Set `ELORA_DATA_DIR` to a writable mount when gnasty and the API share tokens.
 
+#### Sign in with Twitch
+
+Use the local OAuth flow to grant the chat scope pair Twitch requires:
+
+- Start the handoff from your browser at <http://localhost:8080/auth/twitch/start>.
+- Authorise the `chat:read` and `chat:edit` scopes when prompted.
+
+When `ELORA_TWITCH_WRITE_GNASTY_TOKENS` (the "write flag") is enabled the callback writes the access token to `${ELORA_DATA_DIR}/twitch_irc.pass` and the refresh token to `${ELORA_DATA_DIR}/twitch_refresh.pass`. Both files trigger gnasty's reload hook so the harvester begins using the new credentials without manual restarts.
+
+Verify the handoff end to end by:
+
+1. Hitting `/configz` (or `make configz`) to confirm `auth.twitch.write_gnasty_tokens` is `true` and the resolved paths match the expected shared volume.
+2. Watching gnasty's logs for its reload acknowledgement to ensure it detected the updated pass files and resumed Twitch ingestion with the new scopes.
+
 ## Topologies
 
 ### 1. chatdownloader-only
