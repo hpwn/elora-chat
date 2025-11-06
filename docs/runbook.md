@@ -14,7 +14,7 @@
    ```bash
    make up
    ```
-4. Wait for SQLite readiness. `make health` curls `/readyz` until the database can service writes. `make configz` pretty-prints the redacted runtime configuration so you can verify paths, journal mode, origins, and the ingest driver selected from `ELORA_INGEST_DRIVER`.
+4. Wait for SQLite readiness. `make health` curls `/readyz` until the database can service writes. `make configz` pretty-prints the redacted runtime configuration so you can verify paths, journal mode, origins, and the ingest driver selected from `ELORA_INGEST_DRIVER` (defaults to `gnasty`).
 5. Inspect live traffic with the containerised helpers:
    ```bash
    make ws          # all frames
@@ -87,6 +87,19 @@ The tailer feeds `routes.BroadcastFromTailer`, which uses the same WebSocket hub
 
 The access/refresh paths mirror gnasty handoff defaults so you can verify shared volume wiring. Set `ELORA_DATA_DIR` to a writable mount when gnasty and the API share tokens.
 
+#### gnasty reload hook
+
+The Twitch callback posts to gnasty after exporting fresh tokens. Override the target with `ELORA_GNASTY_RELOAD_URL` (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+
+#### Channel selection
+
+Pass Twitch and YouTube selectors via the shared `.env` file so both containers agree on the upstream rooms:
+
+- `TWITCH_CHANNEL` and `TWITCH_NICK` inform gnasty which IRC room to join and which nickname to present.
+- `YOUTUBE_URL` and/or `GNASTY_YT_CHANNEL_IDS` select the YouTube Live source.
+
+The Twitch OAuth credentials (`TWITCH_OAUTH_CLIENT_ID`, `TWITCH_OAUTH_CLIENT_SECRET`, `TWITCH_OAUTH_REDIRECT_URL`) are required for the login flow that populates gnasty's token files.
+
 #### Sign in with Twitch
 
 Use the local OAuth flow to grant the chat scope pair Twitch requires:
@@ -103,21 +116,20 @@ Verify the handoff end to end by:
 
 ## Topologies
 
-### 1. chatdownloader-only
+### 1. gnasty + SQLite tailer (default)
 
-- `ELORA_INGEST_DRIVER=chatdownloader` (default).
-- `CHAT_URLS` contains one or more Twitch/YouTube URLs.
-- The Python chatdownloader subprocess streams messages directly into the API.
+- `ELORA_INGEST_DRIVER=gnasty` (default) tells the backend to tail SQLite instead of launching chatdownloader.
+- gnasty writes frames into the shared volume (`GNASTY_SINK_SQLITE_PATH` should match `ELORA_DB_PATH`).
+- Configure Twitch/YouTube selectors via `TWITCH_CHANNEL`, `TWITCH_NICK`, `YOUTUBE_URL`, and/or `GNASTY_YT_CHANNEL_IDS`.
+- The elora tailer (`ELORA_DB_TAIL_ENABLED=1`) polls the same database and republishes new rows over WebSocket.
+- `/configz` shows `ingest.driver="gnasty"`, the active journal mode, tailer interval/batch/lag thresholds, and the resolved offset path. The startup log includes a `config_summary` JSON line with the same fields for quick grepping alongside gnasty's logs.
+
+### 2. chatdownloader-only (legacy)
+
+- `ELORA_INGEST_DRIVER=chatdownloader` starts the Python chatdownloader subprocess inside the elora container.
+- `CHAT_URLS` contains one or more Twitch/YouTube URLs consumed by chatdownloader.
 - SQLite persistence is optional. With `ELORA_DB_TAIL_ENABLED=0` the WebSocket broadcast loop pushes messages as they arrive.
 - `/configz` will report `ingest.driver="chatdownloader"` and `tailer.enabled=false` unless explicitly enabled for replay/bursting.
-
-### 2. gnasty + SQLite tailer
-
-- `ELORA_INGEST_DRIVER=gnasty` and `CHAT_URLS` describes the upstream rooms (passed through to gnasty so it can auto-subscribe).
-- gnasty runs in a separate container/process and writes NDJSON into the shared SQLite database (`GNASTY_SINK_SQLITE_PATH` should match `ELORA_DB_PATH`).
-- The elora tailer (`ELORA_DB_TAIL_ENABLED=1`) polls the same database and republishes new rows over WebSocket. No local chatdownloader subprocess is spawned when the driver is `gnasty`.
-- The contract is "gnasty writes → SQLite → elora tailer broadcasts". All connected WebSocket clients see gnasty's frames without additional configuration.
-- `/configz` shows `ingest.driver="gnasty"`, the active journal mode, tailer interval/batch/lag thresholds, and the resolved offset path. The startup log includes a `config_summary` JSON line with the same fields for quick grepping alongside gnasty's logs.
 
 ## Ports, Volumes, and Troubleshooting
 
