@@ -32,7 +32,7 @@ make bootstrap
 make up
 ```
 
-Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting.
+Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. `ELORA_INGEST_DRIVER` defaults to `gnasty`, so once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
 
 ### Local commands
 
@@ -56,48 +56,35 @@ All of the commands read configuration from `.env`, so update that file (or expo
 
 Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field shows whether the process is using the bundled `chatdownloader` client or tailing gnasty's SQLite output. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
 
-## Running with gnasty
+## gnasty + SQLite (default topology)
 
-Prefer the external [gnasty](https://github.com/hpwn/gnasty) chat fetcher instead of the bundled `chat_downloader` script? Configure the backend to spawn the gnasty binary and stream NDJSON:
+The Docker compose stack launches [gnasty](https://github.com/hpwn/gnasty) alongside the API and both containers mount the same volume at `${ELORA_DATA_DIR:-/data}`. With `ELORA_INGEST_DRIVER=gnasty` (the default) the backend tails gnasty's SQLite writes instead of spawning chatdownloader.
 
-1. Update your `.env` with the gnasty settings:
+Key environment variables to review after copying `.env.example`:
 
-   ```env
-   ELORA_INGEST_DRIVER=gnasty
-   CHAT_URLS=https://www.twitch.tv/rifftrax,https://www.youtube.com/watch?v=jfKfPfyJRdk
-   GNASTY_BIN=/usr/local/bin/gnasty-chat
-   GNASTY_ARGS=--stdout,--format,ndjson
-   ```
+- `ELORA_DB_PATH` / `GNASTY_SINK_SQLITE_PATH` – point both services at the same SQLite file inside the shared volume.
+- `TWITCH_CHANNEL` / `TWITCH_NICK` – gnasty's IRC join target and identity.
+- `YOUTUBE_URL` and/or `GNASTY_YT_CHANNEL_IDS` – YouTube Live selection knobs.
+- `TWITCH_OAUTH_CLIENT_ID`, `TWITCH_OAUTH_CLIENT_SECRET`, `TWITCH_OAUTH_REDIRECT_URL` – required for the `/auth/twitch` flow that exports gnasty tokens.
+- `ELORA_TWITCH_WRITE_GNASTY_TOKENS` – leave enabled to keep gnasty's `${ELORA_DATA_DIR}/twitch_irc.pass` and `twitch_refresh.pass` up to date.
+- `ELORA_GNASTY_RELOAD_URL` – optional override for gnasty's reload endpoint (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
 
-2. If you run via Docker, mount the gnasty binary into the container path you configured in `GNASTY_BIN`:
+After the stack is up, run `make configz` to confirm the shared volume paths and ingest driver. gnasty logs a reload message whenever fresh Twitch tokens land in the shared volume.
 
-   ```bash
-   docker run --name elora-chat-instance \
-     -p 8080:8080 \
-     --env-file .env \
-     -v elora_sqlite_data:/data \
-     -v /host/path/gnasty-chat:/usr/local/bin/gnasty-chat:ro \
-     -d elora-chat
-   ```
+### Legacy chatdownloader mode
 
-3. Tail the logs to confirm gnasty ingest activity:
-
-   ```bash
-   docker logs -f elora-chat-instance | grep -i 'ingest[gnasty]'
-   ```
-
-> In this slice, gnasty lines are validated and logged. The insert hook will be wired up in the next slice so messages land in SQLite.
+Set `ELORA_INGEST_DRIVER=chatdownloader` to fall back to the bundled Python fetcher. Provide a comma-separated list of `CHAT_URLS`, disable the DB tailer if you only need live fan-out, and restart the API container. This mode does not require gnasty.
 
 ## Twitch integration (gnasty-chat token handoff)
 
 When `ELORA_TWITCH_TOKEN_FILE` is set, the backend writes the current Twitch IRC token to that file (atomically, mode `0600`).
-Run `gnasty-chat` with `-twitch-token-file` pointing at the same path (use a shared volume).
+Run gnasty with `-twitch-token-file` pointing at the same path (use a shared volume).
 
 By default the Twitch OAuth callback also writes gnasty-compatible handoff files
 `${ELORA_DATA_DIR:-/data}/twitch_irc.pass` and `${ELORA_DATA_DIR:-/data}/twitch_refresh.pass` and pings
 `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload` so gnasty reloads immediately. Set
 `ELORA_TWITCH_WRITE_GNASTY_TOKENS=false` (or `0`, `no`, `off`) to disable this automatic export when you
-prefer to manage the files manually.
+prefer to manage the files manually, or override the webhook target with `ELORA_GNASTY_RELOAD_URL`.
 
 **Environment**
 
@@ -151,7 +138,7 @@ ELORA_TWITCH_TOKEN_DIR=/shared                 # optional; defaults to the file'
 
 ### Twitch OAuth configuration
 
-Set the following variables for the built-in Twitch login flow:
+Set the following variables for the built-in Twitch login flow (they also seed gnasty's shared token files):
 
 - `TWITCH_OAUTH_CLIENT_ID`
 - `TWITCH_OAUTH_CLIENT_SECRET`
