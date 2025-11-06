@@ -37,6 +37,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Application data
+/data/
+
 # Python virutal environment
 python/venv
 

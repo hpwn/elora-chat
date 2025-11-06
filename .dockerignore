@@ -41,3 +41,6 @@ Dockerfile
 **/.vscode
 **/*.tar.gz
 **/*.zip
+
+# Application data
+data/
