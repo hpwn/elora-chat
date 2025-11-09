@@ -39,6 +39,14 @@ Health endpoints:
 | `/readyz` | Backend can open the configured SQLite database. | Gated by `store.Ping`. |
 | `/configz` | Redacted snapshot of runtime configuration. | Use `make configz` for jq formatting. |
 
+### Host user mapping (bind-mounted data)
+
+Both services run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so the bind-mounted `./data` directory inherits the host user’s
+ownership. This prevents SQLite errors such as `unable to open database file` when the image user (`myuser`) differs from your
+workstation UID/GID (commonly `1000:1000`). If your account uses different IDs, set `DOCKER_UID` and `DOCKER_GID` in your local
+`.env` before running `./scripts/run-local.sh` or `docker compose up -d --build`. The `./data/` path is gitignored and dockerign
+ored, making it a safe place for `elora.db`, `gnasty.db`, and Twitch token handoff files without loosening permissions.
+
 ## Configuration Map
 
 ### SQLite store (`ELORA_DB_*`)
@@ -141,7 +149,7 @@ Verify the handoff end to end by:
 
 Troubleshooting checklist:
 
-- **`make health` fails** – confirm the SQLite path exists and the container user can create the file. `/configz` echoes the resolved `db.path` and journal mode.
+- **`make health` fails** – confirm the SQLite path exists and the container user can create the file. If ownership is wrong, set `DOCKER_UID`/`DOCKER_GID` in `.env` so the containers run as your host user. `/configz` echoes the resolved `db.path` and journal mode.
 - **`make ws-*` shows no frames** – verify `/configz` reports `tailer.enabled=true` when relying on gnasty, and that gnasty is writing to the same database path. Use `make configz` to confirm `allowed_origins` allows your websocket client.
 - **`/configz` shows `allow_any_origin=false` with an empty list** – set `ELORA_WS_ALLOWED_ORIGINS` or `ELORA_ALLOWED_ORIGINS` to a comma-separated list of origins.
 - **`ingest.driver` unexpected** – ensure `ELORA_INGEST_DRIVER` is set in `.env`. The backend logs `ingest: selected driver="…"` on startup and the value appears in `/configz` and the `config_summary` log line.
