@@ -15,9 +15,9 @@ const (
 	envDumpUnhandled = "GNASTY_YT_DUMP_UNHANDLED"
 	envPollTimeout   = "GNASTY_YT_POLL_TIMEOUT_SECS"
 	envPollInterval  = "GNASTY_YT_POLL_INTERVAL_MS"
-	envLiveURL       = "YOUTUBE_URL"
+	envLiveURL       = "GNASTY_YT_URL"
 	defaultTimeout   = 20 * time.Second
-	defaultInterval  = 1500
+	defaultInterval  = 3000
 )
 
 func main() {
@@ -68,11 +68,15 @@ func main() {
 }
 
 func getBoolEnv(name string, def bool) bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
-	switch v {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def
+	}
+
+	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
 		return true
-	case "0", "false", "no", "off", "":
+	case "0", "false", "no", "off":
 		return false
 	default:
 		return def
