@@ -54,7 +54,7 @@ func main() {
 	}
 
 	logger.Printf(
-		"yt: settings dump_unhandled=%v poll_timeout=%s poll_interval_ms=%d url=%s",
+		"ytlive: settings dump_unhandled=%v poll_timeout=%s poll_interval_ms=%d url=%s",
 		ytCfg.DumpUnhandled,
 		ytCfg.PollTimeout,
 		ytCfg.PollIntervalMS,
