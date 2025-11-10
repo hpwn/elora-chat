@@ -10,8 +10,10 @@ import (
 
 // Config controls runtime behavior for the YouTube live worker.
 type Config struct {
-	DumpUnhandled bool
-	PollTimeout   time.Duration
+	DumpUnhandled  bool
+	PollTimeout    time.Duration
+	PollIntervalMS int
+	LiveURL        string
 }
 
 // LiveWorker handles YouTube live actions streamed from gnasty.
@@ -28,22 +30,29 @@ func NewLiveWorker(logger *log.Logger, cfg Config) *LiveWorker {
 	if cfg.PollTimeout <= 0 {
 		cfg.PollTimeout = 20 * time.Second
 	}
+	if cfg.PollIntervalMS <= 0 {
+		cfg.PollIntervalMS = int((3 * time.Second) / time.Millisecond)
+	}
 
 	return &LiveWorker{
 		logger:       logger,
 		cfg:          cfg,
 		client:       &http.Client{},
-		pollInterval: 3 * time.Second,
+		pollInterval: time.Duration(cfg.PollIntervalMS) * time.Millisecond,
 	}
 }
 
-// LogUnhandledAction dumps the raw action when enabled.
-func (w *LiveWorker) LogUnhandledAction(action string) {
+func (w *LiveWorker) dumpUnhandledf(format string, args ...any) {
 	if !w.cfg.DumpUnhandled {
 		return
 	}
 
-	w.logger.Printf("unhandled action dump: %s", action)
+	w.logger.Printf("ytlive: unhandled action dump "+format, args...)
+}
+
+// LogUnhandledAction dumps the raw action when enabled.
+func (w *LiveWorker) LogUnhandledAction(action string) {
+	w.dumpUnhandledf("%s", action)
 }
 
 // Run starts the polling loop until the provided context is cancelled.

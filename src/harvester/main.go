@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hpwn/EloraChat/src/harvester/yt"
@@ -13,17 +14,20 @@ import (
 const (
 	envDumpUnhandled = "GNASTY_YT_DUMP_UNHANDLED"
 	envPollTimeout   = "GNASTY_YT_POLL_TIMEOUT_SECS"
+	envPollInterval  = "GNASTY_YT_POLL_INTERVAL_MS"
+	envLiveURL       = "YOUTUBE_URL"
 	defaultTimeout   = 20 * time.Second
+	defaultInterval  = 1500
 )
 
 func main() {
 	ctx := context.Background()
 	logger := log.Default()
 
-	dumpUnhandled := os.Getenv(envDumpUnhandled) == "1"
+	dumpUnhandled := getBoolEnv(envDumpUnhandled, false)
 
 	pollTimeout := defaultTimeout
-	if raw := os.Getenv(envPollTimeout); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv(envPollTimeout)); raw != "" {
 		if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
 			pollTimeout = time.Duration(secs) * time.Second
 		} else {
@@ -31,15 +35,46 @@ func main() {
 		}
 	}
 
-	logger.Printf("yt config: dump_unhandled=%v poll_timeout=%s", dumpUnhandled, pollTimeout)
-
-	cfg := yt.Config{
-		DumpUnhandled: dumpUnhandled,
-		PollTimeout:   pollTimeout,
+	pollIntervalMS := defaultInterval
+	if raw := strings.TrimSpace(os.Getenv(envPollInterval)); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			pollIntervalMS = ms
+		} else {
+			logger.Printf("yt config: invalid %s=%q, using default %d", envPollInterval, raw, defaultInterval)
+		}
 	}
 
-	worker := yt.NewLiveWorker(logger, cfg)
+	liveURL := strings.TrimSpace(os.Getenv(envLiveURL))
+
+	ytCfg := yt.Config{
+		DumpUnhandled:  dumpUnhandled,
+		PollTimeout:    pollTimeout,
+		PollIntervalMS: pollIntervalMS,
+		LiveURL:        liveURL,
+	}
+
+	logger.Printf(
+		"yt: settings dump_unhandled=%v poll_timeout=%s poll_interval_ms=%d url=%s",
+		ytCfg.DumpUnhandled,
+		ytCfg.PollTimeout,
+		ytCfg.PollIntervalMS,
+		ytCfg.LiveURL,
+	)
+
+	worker := yt.NewLiveWorker(logger, ytCfg)
 	if err := worker.Run(ctx); err != nil {
 		logger.Printf("ytlive: worker stopped: %v", err)
+	}
+}
+
+func getBoolEnv(name string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off", "":
+		return false
+	default:
+		return def
 	}
 }
