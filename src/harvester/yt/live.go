@@ -11,6 +11,7 @@ import (
 // Config controls runtime behavior for the YouTube live worker.
 type Config struct {
 	DumpUnhandled bool
+	PollTimeout   time.Duration
 }
 
 // LiveWorker handles YouTube live actions streamed from gnasty.
@@ -19,18 +20,20 @@ type LiveWorker struct {
 	cfg    Config
 	client *http.Client
 
-	pollInterval   time.Duration
-	requestTimeout time.Duration
+	pollInterval time.Duration
 }
 
 // NewLiveWorker constructs a LiveWorker.
 func NewLiveWorker(logger *log.Logger, cfg Config) *LiveWorker {
+	if cfg.PollTimeout <= 0 {
+		cfg.PollTimeout = 20 * time.Second
+	}
+
 	return &LiveWorker{
-		logger:         logger,
-		cfg:            cfg,
-		client:         &http.Client{},
-		pollInterval:   3 * time.Second,
-		requestTimeout: 30 * time.Second,
+		logger:       logger,
+		cfg:          cfg,
+		client:       &http.Client{},
+		pollInterval: 3 * time.Second,
 	}
 }
 
@@ -58,8 +61,8 @@ func (w *LiveWorker) Run(ctx context.Context) error {
 			return err
 		}
 
-		reqCtx, cancel := context.WithTimeout(ctx, w.requestTimeout)
-		summary, nextContinuation, err := w.pollOnce(reqCtx, continuation)
+		pollCtx, cancel := context.WithTimeout(ctx, w.cfg.PollTimeout)
+		summary, nextContinuation, err := w.pollOnce(pollCtx, continuation)
 		cancel()
 
 		if err != nil {
@@ -68,7 +71,11 @@ func (w *LiveWorker) Run(ctx context.Context) error {
 				return nil
 			}
 
-			w.logger.Printf("ytlive: poll error: %v", err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				w.logger.Printf("ytlive: poll timed out after %s", w.cfg.PollTimeout)
+			} else {
+				w.logger.Printf("ytlive: poll error: %v", err)
+			}
 
 			if !w.wait(ctx, w.pollInterval) {
 				return nil
