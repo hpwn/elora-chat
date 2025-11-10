@@ -33,6 +33,7 @@ services:
       - .env
     environment:
       TZ: ${TZ}
+      GNASTY_YT_DUMP_UNHANDLED: ${GNASTY_YT_DUMP_UNHANDLED:-1}
     volumes:
       - ./data:${ELORA_DATA_DIR}
     depends_on:
