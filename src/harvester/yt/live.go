@@ -1,6 +1,12 @@
 package yt
 
-import "log"
+import (
+	"context"
+	"errors"
+	"log"
+	"net/http"
+	"time"
+)
 
 // Config controls runtime behavior for the YouTube live worker.
 type Config struct {
@@ -11,11 +17,21 @@ type Config struct {
 type LiveWorker struct {
 	logger *log.Logger
 	cfg    Config
+	client *http.Client
+
+	pollInterval   time.Duration
+	requestTimeout time.Duration
 }
 
 // NewLiveWorker constructs a LiveWorker.
 func NewLiveWorker(logger *log.Logger, cfg Config) *LiveWorker {
-	return &LiveWorker{logger: logger, cfg: cfg}
+	return &LiveWorker{
+		logger:         logger,
+		cfg:            cfg,
+		client:         &http.Client{},
+		pollInterval:   3 * time.Second,
+		requestTimeout: 30 * time.Second,
+	}
 }
 
 // LogUnhandledAction dumps the raw action when enabled.
@@ -25,4 +41,77 @@ func (w *LiveWorker) LogUnhandledAction(action string) {
 	}
 
 	w.logger.Printf("unhandled action dump: %s", action)
+}
+
+// Run starts the polling loop until the provided context is cancelled.
+func (w *LiveWorker) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var continuation string
+	for {
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+
+		reqCtx, cancel := context.WithTimeout(ctx, w.requestTimeout)
+		summary, nextContinuation, err := w.pollOnce(reqCtx, continuation)
+		cancel()
+
+		if err != nil {
+			// Treat context cancellation specially so we exit cleanly when shutting down.
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+
+			w.logger.Printf("ytlive: poll error: %v", err)
+
+			if !w.wait(ctx, w.pollInterval) {
+				return nil
+			}
+
+			continue
+		}
+
+		if summary != "" {
+			w.logger.Printf("ytlive: poll summary: %s", summary)
+		}
+
+		continuation = nextContinuation
+
+		if !w.wait(ctx, w.pollInterval) {
+			return nil
+		}
+	}
+}
+
+func (w *LiveWorker) pollOnce(ctx context.Context, continuation string) (string, string, error) {
+	// Placeholder implementation. Actual YouTube polling will make HTTP requests using the
+	// provided context and return a summary string when new events are received.
+	select {
+	case <-ctx.Done():
+		return "", continuation, ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+		return "", continuation, nil
+	}
+}
+
+func (w *LiveWorker) wait(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

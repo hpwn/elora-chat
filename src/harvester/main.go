@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -8,10 +9,13 @@ import (
 )
 
 func main() {
+	ctx := context.Background()
 	dumpUnhandled := os.Getenv("GNASTY_YT_DUMP_UNHANDLED") == "1"
 	logger := log.Default()
 
 	cfg := yt.Config{DumpUnhandled: dumpUnhandled}
 	worker := yt.NewLiveWorker(logger, cfg)
-	_ = worker
+	if err := worker.Run(ctx); err != nil {
+		logger.Printf("ytlive: worker stopped: %v", err)
+	}
 }
