@@ -23,8 +23,7 @@ type LiveWorker struct {
 	cfg    Config
 	client *http.Client
 
-	pollInterval  time.Duration
-	DumpUnhandled bool
+	pollInterval time.Duration
 }
 
 // NewLiveWorker constructs a LiveWorker.
@@ -37,16 +36,18 @@ func NewLiveWorker(logger *log.Logger, cfg Config) *LiveWorker {
 	}
 
 	return &LiveWorker{
-		logger:        logger,
-		cfg:           cfg,
-		client:        &http.Client{},
-		pollInterval:  time.Duration(cfg.PollIntervalMS) * time.Millisecond,
-		DumpUnhandled: cfg.DumpUnhandled,
+		logger:       logger,
+		cfg:          cfg,
+		client:       &http.Client{},
+		pollInterval: time.Duration(cfg.PollIntervalMS) * time.Millisecond,
 	}
 }
 
-func (w *LiveWorker) logUnhandled(prefix string, payload any) {
-	if !w.DumpUnhandled {
+func (w *LiveWorker) logUnhandled(prefix string, payload any, fallbackFormat string, fallbackArgs ...any) {
+	if !w.cfg.DumpUnhandled {
+		if fallbackFormat != "" {
+			w.logger.Printf(fallbackFormat, fallbackArgs...)
+		}
 		return
 	}
 
@@ -76,7 +77,7 @@ func (w *LiveWorker) logUnhandled(prefix string, payload any) {
 
 // LogUnhandledAction dumps the raw action when enabled.
 func (w *LiveWorker) LogUnhandledAction(action string) {
-	w.logUnhandled("action", action)
+	w.logUnhandled("action", action, "")
 }
 
 // handleAddChatItemAction processes addChatItemAction renderers, logging only the
@@ -85,29 +86,38 @@ func (w *LiveWorker) LogUnhandledAction(action string) {
 func (w *LiveWorker) handleAddChatItemAction(key, rendererType string, raw []byte) error {
 	switch rendererType {
 	case "liveChatViewerEngagementMessageRenderer":
-		if w.DumpUnhandled {
-			w.logUnhandled("viewer engagement action", raw)
-		} else {
-			w.logger.Printf("ytlive: skipped non-chat action type=addChatItemAction key=%s renderer=%s", key, rendererType)
-		}
+		w.logUnhandled(
+			"viewer engagement action",
+			raw,
+			"ytlive: skipped non-chat action type=addChatItemAction key=%s renderer=%s",
+			key,
+			rendererType,
+		)
 		return nil
 	case "liveChatMembershipItemRenderer":
 		w.logger.Printf("ytlive: skipped non-chat action type=addChatItemAction key=%s", key)
 		return nil
 	}
 
-	w.logUnhandled("action", raw)
+	w.logUnhandled(
+		"action",
+		raw,
+		"ytlive: skipped non-chat action type=addChatItemAction key=%s renderer=%s",
+		key,
+		rendererType,
+	)
 	return nil
 }
 
 // handleRemoveChatItemAction skips known ticker cleanups that should not emit
 // verbose dumps while still routing unexpected payloads through logUnhandled.
 func (w *LiveWorker) handleRemoveChatItemAction(key string, raw []byte) error {
-	if w.DumpUnhandled {
-		w.logUnhandled("removeChatItemAction", raw)
-	} else {
-		w.logger.Printf("ytlive: skipped non-chat action type=removeChatItemAction key=%s", key)
-	}
+	w.logUnhandled(
+		"removeChatItemAction",
+		raw,
+		"ytlive: skipped non-chat action type=removeChatItemAction key=%s",
+		key,
+	)
 	return nil
 }
 
