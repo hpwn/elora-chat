@@ -2,6 +2,7 @@ package yt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -10,7 +11,10 @@ import (
 
 // Config controls runtime behavior for the YouTube live worker.
 type Config struct {
-	DumpUnhandled bool
+	DumpUnhandled  bool
+	PollTimeout    time.Duration
+	PollIntervalMS int
+	LiveURL        string
 }
 
 // LiveWorker handles YouTube live actions streamed from gnasty.
@@ -19,28 +23,102 @@ type LiveWorker struct {
 	cfg    Config
 	client *http.Client
 
-	pollInterval   time.Duration
-	requestTimeout time.Duration
+	pollInterval time.Duration
 }
 
 // NewLiveWorker constructs a LiveWorker.
 func NewLiveWorker(logger *log.Logger, cfg Config) *LiveWorker {
-	return &LiveWorker{
-		logger:         logger,
-		cfg:            cfg,
-		client:         &http.Client{},
-		pollInterval:   3 * time.Second,
-		requestTimeout: 30 * time.Second,
+	if cfg.PollTimeout <= 0 {
+		cfg.PollTimeout = 20 * time.Second
 	}
+	if cfg.PollIntervalMS <= 0 {
+		cfg.PollIntervalMS = int((3 * time.Second) / time.Millisecond)
+	}
+
+	return &LiveWorker{
+		logger:       logger,
+		cfg:          cfg,
+		client:       &http.Client{},
+		pollInterval: time.Duration(cfg.PollIntervalMS) * time.Millisecond,
+	}
+}
+
+func (w *LiveWorker) logUnhandled(prefix string, payload any, fallbackFormat string, fallbackArgs ...any) {
+	if !w.cfg.DumpUnhandled {
+		if fallbackFormat != "" {
+			w.logger.Printf(fallbackFormat, fallbackArgs...)
+		}
+		return
+	}
+
+	var body string
+	switch v := payload.(type) {
+	case nil:
+		body = "<nil>"
+	case string:
+		body = v
+	case []byte:
+		body = string(v)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			w.logger.Printf("ytlive: unhandled %s dump <marshal error: %v>", prefix, err)
+			return
+		}
+		body = string(b)
+	}
+
+	if body == "" {
+		body = "<empty>"
+	}
+
+	w.logger.Printf("ytlive: unhandled %s dump %s", prefix, body)
 }
 
 // LogUnhandledAction dumps the raw action when enabled.
 func (w *LiveWorker) LogUnhandledAction(action string) {
-	if !w.cfg.DumpUnhandled {
-		return
+	w.logUnhandled("action", action, "")
+}
+
+// handleAddChatItemAction processes addChatItemAction renderers, logging only the
+// concise skip line for known non-chat items and delegating noisy dumps through
+// logUnhandled for everything else.
+func (w *LiveWorker) handleAddChatItemAction(key, rendererType string, raw []byte) error {
+	switch rendererType {
+	case "liveChatViewerEngagementMessageRenderer":
+		w.logUnhandled(
+			"viewer engagement action",
+			raw,
+			"ytlive: skipped non-chat action type=addChatItemAction key=%s renderer=%s",
+			key,
+			rendererType,
+		)
+		return nil
+	case "liveChatMembershipItemRenderer":
+		w.logger.Printf("ytlive: skipped non-chat action type=addChatItemAction key=%s", key)
+		return nil
 	}
 
-	w.logger.Printf("unhandled action dump: %s", action)
+	w.logUnhandled(
+		"action",
+		raw,
+		"ytlive: skipped non-chat action type=addChatItemAction key=%s renderer=%s",
+		key,
+		rendererType,
+	)
+	return nil
+}
+
+// handleRemoveChatItemAction skips known ticker cleanups that should not emit
+// verbose dumps while still routing unexpected payloads through logUnhandled.
+func (w *LiveWorker) handleRemoveChatItemAction(key string, raw []byte) error {
+	w.logUnhandled(
+		"removeChatItemAction",
+		raw,
+		"ytlive: skipped non-chat action type=removeChatItemAction key=%s",
+		key,
+	)
+	return nil
 }
 
 // Run starts the polling loop until the provided context is cancelled.
@@ -58,8 +136,8 @@ func (w *LiveWorker) Run(ctx context.Context) error {
 			return err
 		}
 
-		reqCtx, cancel := context.WithTimeout(ctx, w.requestTimeout)
-		summary, nextContinuation, err := w.pollOnce(reqCtx, continuation)
+		pollCtx, cancel := context.WithTimeout(ctx, w.cfg.PollTimeout)
+		summary, nextContinuation, err := w.pollOnce(pollCtx, continuation)
 		cancel()
 
 		if err != nil {
@@ -68,7 +146,11 @@ func (w *LiveWorker) Run(ctx context.Context) error {
 				return nil
 			}
 
-			w.logger.Printf("ytlive: poll error: %v", err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				w.logger.Printf("ytlive: poll timed out after %s", w.cfg.PollTimeout)
+			} else {
+				w.logger.Printf("ytlive: poll error: %v", err)
+			}
 
 			if !w.wait(ctx, w.pollInterval) {
 				return nil
