@@ -85,7 +85,11 @@ func (w *LiveWorker) LogUnhandledAction(action string) {
 func (w *LiveWorker) handleAddChatItemAction(key, rendererType string, raw []byte) error {
 	switch rendererType {
 	case "liveChatViewerEngagementMessageRenderer":
-		w.logger.Printf("ytlive: skipped non-chat action type=addChatItemAction key=%s", key)
+		if w.DumpUnhandled {
+			w.logUnhandled("viewer engagement action", raw)
+		} else {
+			w.logger.Printf("ytlive: skipped non-chat action type=addChatItemAction key=%s renderer=%s", key, rendererType)
+		}
 		return nil
 	case "liveChatMembershipItemRenderer":
 		w.logger.Printf("ytlive: skipped non-chat action type=addChatItemAction key=%s", key)
@@ -99,7 +103,11 @@ func (w *LiveWorker) handleAddChatItemAction(key, rendererType string, raw []byt
 // handleRemoveChatItemAction skips known ticker cleanups that should not emit
 // verbose dumps while still routing unexpected payloads through logUnhandled.
 func (w *LiveWorker) handleRemoveChatItemAction(key string, raw []byte) error {
-	w.logger.Printf("ytlive: skipped non-chat action type=removeChatItemAction key=%s", key)
+	if w.DumpUnhandled {
+		w.logUnhandled("removeChatItemAction", raw)
+	} else {
+		w.logger.Printf("ytlive: skipped non-chat action type=removeChatItemAction key=%s", key)
+	}
 	return nil
 }
 
