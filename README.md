@@ -34,6 +34,8 @@ make up
 
 Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. `ELORA_INGEST_DRIVER` defaults to `gnasty`, so once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
 
+> ⚠️ `gnasty-harvester` always pulls the published `gnasty-chat` image specified by `GNASTY_IMAGE` (defaults to `gnasty-chat:latest`). Verify the resolved tag with `docker compose config` before proposing changes and see [docs/dev/harvester.md](docs/dev/harvester.md) for details on where to contribute harvester edits.
+
 ### Host user mapping (bind-mounted data)
 
 Both containers now run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so bind-mounted `./data` permissions match the host user. This avoids SQLite errors such as `unable to open database file` when the host directory is owned by your real UID/GID instead of the image's default user. If your workstation account is not `1000:1000`, set `DOCKER_UID` and `DOCKER_GID` in your local `.env` before running `./scripts/run-local.sh`, `make up`, or `docker compose up -d --build`. The `./data/` directory is both gitignored and dockerignored, making it a safe location for `elora.db`, `gnasty.db`, and token handoff files without loosening permissions.
