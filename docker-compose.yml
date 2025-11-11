@@ -25,7 +25,9 @@ services:
     networks:
       - elora
     restart: unless-stopped
-
+  # NOTE: gnasty-harvester pulls the prebuilt gnasty-chat image; update harvester code in
+  # the gnasty-chat project and rebuild/retag gnasty-chat:latest (or set GNASTY_IMAGE)
+  # for changes to take effect.
   gnasty-harvester:
     image: ${GNASTY_IMAGE}
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
