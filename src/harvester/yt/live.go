@@ -1,3 +1,7 @@
+// NOTE: Production harvester builds live in the gnasty-chat image, not this repository.
+// Update https://github.com/hpwn/gnasty-chat, rebuild/retag the `gnasty-chat` image
+// (or adjust `GNASTY_IMAGE`) to deploy changes. These sources are kept for reference
+// only and are not part of the shipped container.
 package yt
 
 import (
