@@ -113,7 +113,7 @@ ELORA_TWITCH_TOKEN_DIR=/shared                 # optional; defaults to the file'
    docker run --name elora-chat-instance -d \
      -p 8080:8080 \
      -e ELORA_DB_MODE=persistent \
-     -e ELORA_DB_PATH=/data/elora.db \
+     -e ELORA_DB_PATH=/data/gnasty.db \
      -e ELORA_DB_TAIL_ENABLED=true \
      -e ELORA_TWITCH_TOKEN_FILE=/shared/twitch_token \
      -v elora_sqlite_data:/data \
@@ -130,7 +130,7 @@ ELORA_TWITCH_TOKEN_DIR=/shared                 # optional; defaults to the file'
      -v elora_sqlite_data:/data \
      -v chat_shared:/shared \
      gnasty-chat:latest \
-     -sqlite /data/elora.db \
+     -sqlite /data/gnasty.db \
      -twitch-channel <channel> -twitch-nick <nick> \
      -twitch-token-file /shared/twitch_token \
      -http-addr :8765 -http-access-log=true
@@ -169,7 +169,7 @@ running the Python fetcher. Enable the tailer alongside your persistent database
 
 ```
 ELORA_DB_MODE=persistent
-ELORA_DB_PATH=/data/elora.db
+ELORA_DB_PATH=/data/gnasty.db
 ELORA_DB_TAIL_ENABLED=true
 ELORA_DB_TAIL_INTERVAL_MS=200  # aka ELORA_DB_TAIL_POLL_MS
 ELORA_DB_TAIL_BATCH=500
@@ -182,7 +182,7 @@ The WebSocket payload shape can be wrapped for debugging or compatibility by exp
 frames like `{ "type": "chat", "data": "<chat-json>" }`. The default remains plain chat JSON strings so existing clients keep
 working.
 
-Run gnasty so it ingests into `/data/elora.db` (for example via a shared Docker volume) and start Elora with the same volume
+Run gnasty so it ingests into `/data/gnasty.db` (for example via a shared Docker volume) and start Elora with the same volume
 mounted to enable real-time updates.
 
 ### DB tailer + WebSocket payloads
