@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	DriverChatDownloader = "chatdownloader"
-	DriverGnasty         = "gnasty"
+	DriverGnasty = "gnasty"
 )
 
 type Env struct {
@@ -24,7 +23,7 @@ type Env struct {
 
 func FromEnv() Env {
 	return Env{
-		Driver:        getEnvTrim("ELORA_INGEST_DRIVER", DriverChatDownloader),
+		Driver:        DriverGnasty,
 		GnastyBin:     getEnvTrim("GNASTY_BIN", ""),
 		GnastyArgs:    splitCSV(getEnvTrim("GNASTY_ARGS", "")),
 		BackoffBaseMS: getEnvInt("GNASTY_BACKOFF_BASE_MS", 1000),
@@ -36,16 +35,12 @@ func FromEnv() Env {
 func New(driver string) (Env, error) {
 	trimmed := strings.TrimSpace(driver)
 	if trimmed == "" {
-		trimmed = DriverChatDownloader
+		trimmed = DriverGnasty
 	}
-	switch trimmed {
-	case DriverChatDownloader:
-		return Env{Driver: DriverChatDownloader}, nil
-	case DriverGnasty:
-		return Env{Driver: DriverGnasty}, nil
-	default:
+	if trimmed != DriverGnasty {
 		return Env{}, fmt.Errorf("ingest: unsupported driver %q", driver)
 	}
+	return Env{Driver: DriverGnasty}, nil
 }
 
 func (e Env) BuildGnasty(insert InsertFn, urls []string, logger *log.Logger) (*GnastyProcess, error) {

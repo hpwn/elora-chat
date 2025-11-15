@@ -14,7 +14,7 @@
    ```bash
    make up
    ```
-4. Wait for SQLite readiness. `make health` curls `/readyz` until the database can service writes. `make configz` pretty-prints the redacted runtime configuration so you can verify paths, journal mode, origins, and the ingest driver selected from `ELORA_INGEST_DRIVER` (defaults to `gnasty`).
+4. Wait for SQLite readiness. `make health` curls `/readyz` until the database can service writes. `make configz` pretty-prints the redacted runtime configuration so you can verify paths, journal mode, origins, and that `ingest.driver` is locked to `gnasty`.
 5. Inspect live traffic with the containerised helpers:
    ```bash
    make ws          # all frames
@@ -124,20 +124,12 @@ Verify the handoff end to end by:
 
 ## Topologies
 
-### 1. gnasty + SQLite tailer (default)
+### gnasty + SQLite tailer (default)
 
-- `ELORA_INGEST_DRIVER=gnasty` (default) tells the backend to tail SQLite instead of launching chatdownloader.
 - gnasty writes frames into the shared volume (`GNASTY_SINK_SQLITE_PATH` should match `ELORA_DB_PATH`).
 - Configure Twitch/YouTube selectors via `TWITCH_CHANNEL`, `TWITCH_NICK`, `YOUTUBE_URL`, and/or `GNASTY_YT_CHANNEL_IDS`.
 - The elora tailer (`ELORA_DB_TAIL_ENABLED=1`) polls the same database and republishes new rows over WebSocket.
 - `/configz` shows `ingest.driver="gnasty"`, the active journal mode, tailer interval/batch/lag thresholds, and the resolved offset path. The startup log includes a `config_summary` JSON line with the same fields for quick grepping alongside gnasty's logs.
-
-### 2. chatdownloader-only (legacy)
-
-- `ELORA_INGEST_DRIVER=chatdownloader` starts the Python chatdownloader subprocess inside the elora container.
-- `CHAT_URLS` contains one or more Twitch/YouTube URLs consumed by chatdownloader.
-- SQLite persistence is optional. With `ELORA_DB_TAIL_ENABLED=0` the WebSocket broadcast loop pushes messages as they arrive.
-- `/configz` will report `ingest.driver="chatdownloader"` and `tailer.enabled=false` unless explicitly enabled for replay/bursting.
 
 ## Ports, Volumes, and Troubleshooting
 
@@ -152,7 +144,7 @@ Troubleshooting checklist:
 - **`make health` fails** – confirm the SQLite path exists and the container user can create the file. If ownership is wrong, set `DOCKER_UID`/`DOCKER_GID` in `.env` so the containers run as your host user. `/configz` echoes the resolved `db.path` and journal mode.
 - **`make ws-*` shows no frames** – verify `/configz` reports `tailer.enabled=true` when relying on gnasty, and that gnasty is writing to the same database path. Use `make configz` to confirm `allowed_origins` allows your websocket client.
 - **`/configz` shows `allow_any_origin=false` with an empty list** – set `ELORA_WS_ALLOWED_ORIGINS` or `ELORA_ALLOWED_ORIGINS` to a comma-separated list of origins.
-- **`ingest.driver` unexpected** – ensure `ELORA_INGEST_DRIVER` is set in `.env`. The backend logs `ingest: selected driver="…"` on startup and the value appears in `/configz` and the `config_summary` log line.
+- **`ingest.driver` unexpected** – it should always be `gnasty`. Double-check that gnasty and elora-chat share the same SQLite volume and review the `config_summary` log line for the resolved paths.
 - **Tailer lag warnings** – adjust `ELORA_TAILER_MAX_BATCH`/`ELORA_TAILER_POLL_MS`/`ELORA_TAILER_MAX_LAG_MS` to increase throughput, or reduce gnasty's flush batch size.
 
 For deeper wiring details (env variable precedence, command examples, and failure modes) this runbook plus the `/configz` endpoint act as the canonical source of truth.

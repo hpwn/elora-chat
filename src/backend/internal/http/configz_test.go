@@ -15,7 +15,7 @@ func TestRegisterConfigz(t *testing.T) {
 	snapshot := func() configreporter.Snapshot {
 		called = true
 		return configreporter.Snapshot{
-			Ingest: configreporter.IngestSnapshot{Driver: "chatdownloader"},
+			Ingest: configreporter.IngestSnapshot{Driver: "gnasty"},
 			Auth: configreporter.AuthSnapshot{Twitch: configreporter.TwitchAuthSnapshot{
 				ClientID:          "[redacted]",
 				RedirectURL:       "https://example.com/callback",
