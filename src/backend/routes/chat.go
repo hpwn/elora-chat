@@ -502,6 +502,7 @@ func InitRoutes(store storage.Store) {
 			Images:    []Image{Image(emote.Images[0])},
 		}
 	}
+        log.Printf("emodl: cache size = %d", len(tokenizer.EmoteCache));
 	// DEBUG
 	// log.Println("3P EMOTES SUPPORTED")
 	// for _, e := range tokenizer.EmoteCache {
@@ -756,6 +757,21 @@ func enrichTailerMessage(m storage.Message) Message {
 	} else {
 		msg.Tokens = msg.Tokens[:0]
 	}
+
+	// Fallback: decode Twitch first-party emote spans -> Emote slice, then seed cache.
+	// This runs only if we don't already have emotes on the message.
+	if strings.EqualFold(m.Platform, "twitch") && len(msg.Emotes) == 0 {
+  	  if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
+  	      // Seed tokenizer cache by NAME so tokenization emits emote fragments.
+  	      for _, e := range dec {
+  	          if strings.TrimSpace(e.Name) != "" {
+  	              tokenizer.EmoteCache[e.Name] = e
+  	          }
+  	      }
+  	      msg.Emotes = append(msg.Emotes, dec...)
+ 	   }
+	}
+
 	for token := range tokenizer.Iter(msg.Message) {
 		msg.Tokens = append(msg.Tokens, token)
 	}
@@ -1180,4 +1196,61 @@ func SetupChatRoutes(router *mux.Router) {
 
 	// Add protected chat routes to protectedRoutes
 	protectedRoutes.HandleFunc("/restart-server", StopChatFetches).Methods("POST")
+}
+
+// decodeTwitchSpans converts Twitch first-party span strings (e.g. "425618:12-14")
+// into Emote entries with a 1x image URL. It is ASCII-safe and bounds-checked.
+func decodeTwitchSpans(text string, spansJSON string) []Emote {
+	if strings.TrimSpace(spansJSON) == "" {
+		return nil
+	}
+	var raw []string
+	if err := json.Unmarshal([]byte(spansJSON), &raw); err != nil || len(raw) == 0 {
+		return nil
+	}
+
+	out := make([]Emote, 0, len(raw))
+	// NOTE: we index by bytes; Twitch spans for common ASCII emotes (e.g., "LUL") align with byte boundaries.
+	for _, s := range raw {
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		id := strings.TrimSpace(parts[0])
+		rng := parts[1]
+		bounds := strings.SplitN(rng, "-", 2)
+		if len(bounds) != 2 {
+			continue
+		}
+		start, err1 := strconv.Atoi(bounds[0])
+		end, err2 := strconv.Atoi(bounds[1])
+		if err1 != nil || err2 != nil || start < 0 || end < start {
+			continue
+		}
+		if start >= len(text) {
+			continue
+		}
+		if end >= len(text) {
+			end = len(text) - 1
+		}
+		name := text[start : end+1]
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+
+		// Build a single 1x image (28px nominal) for first-party Twitch emotes.
+		img := Image{
+			ID:     id + "-1x",
+			URL:    "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/1.0",
+			Width:  28,
+			Height: 28,
+		}
+		out = append(out, Emote{
+			ID:        id,
+			Name:      name,
+			Locations: []string{bounds[0] + "-" + bounds[1]},
+			Images:    []Image{img},
+		})
+	}
+	return out
 }

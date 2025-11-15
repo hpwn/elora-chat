@@ -39,13 +39,14 @@ services:
       GNASTY_YT_URL: ${GNASTY_YT_URL:-https://www.youtube.com/@lofigirl/live}
       GNASTY_YT_POLL_INTERVAL_MS: ${GNASTY_YT_POLL_INTERVAL_MS:-1500}
       GNASTY_YT_DUMP_UNHANDLED: ${GNASTY_YT_DUMP_UNHANDLED:-0}
+    command: ["-http-addr",":8765","-http-access-log=true"]
     volumes:
       - ./data:/data
     depends_on:
       elora-chat:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:${GNASTY_HTTP_PORT:-8765}/healthz || exit 1"]
+      test: ["CMD", "/app/harvester", "-version"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -53,6 +54,8 @@ services:
     networks:
       - elora
     restart: unless-stopped
+    ports:
+      - "8765:8765"
 
 networks:
   elora:

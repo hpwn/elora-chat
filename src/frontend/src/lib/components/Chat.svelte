@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Message, Keymods } from '$lib/types/messages';
+  import { FragmentType } from '$lib/types/messages';
   import { onMount, setContext } from 'svelte';
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
@@ -37,11 +38,10 @@
   setContext('keymods', keymods);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
-    let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
+      console.debug("[convertIncomingMessage]", { fragments: (message as any).fragments, emotes: (message as any).emotes, text: (message as any).text, platform: (message as any).platform, username: (message as any).username });
+let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const text = typeof message.text === 'string' ? message.text : '';
-    if (!text && (!Array.isArray(message.emotes) || message.emotes.length === 0)) {
-      return null;
-    }
+    if (!text && (!Array.isArray(message.emotes) || message.emotes.length === 0) && (!Array.isArray((message as any).fragments) || (message as any).fragments.length === 0)) { return null; }
 
     const rawColour = typeof message.colour === 'string' ? message.colour : '';
     const colour = rawColour && rawColour.trim().length > 0 ? rawColour : DEFAULT_COLOUR;
@@ -53,6 +53,8 @@
     }
 
     const emotes = coerceEmotes(message.emotes);
+    const fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments) : [];
+
     const badges = showBadges ? coerceBadges(message.badges) : [];
 
     return {
@@ -60,7 +62,7 @@
       message: text,
       colour,
       source,
-      fragments: [],
+      fragments,
       emotes,
       badges
     } satisfies Message;
@@ -100,6 +102,58 @@
     }
     return out;
   }
+
+  function coerceFragments(fragments: any): Message['fragments'] {
+    if (!Array.isArray(fragments)) return [];
+    const out: Message['fragments'] = [];
+
+    for (const frag of fragments) {
+      if (!frag || typeof frag !== 'object') continue;
+      const r = frag as Record<string, any>;
+
+      const typeRaw = typeof r.type === 'string' ? r.type.toLowerCase() : 'text';
+      let type: FragmentType = FragmentType.Text;
+      switch (typeRaw) {
+        case 'emote':   type = FragmentType.Emote; break;
+        case 'colour':
+        case 'color':   type = FragmentType.Colour; break;
+        case 'effect':  type = FragmentType.Effect; break;
+        case 'pattern': type = FragmentType.Pattern; break;
+        // default -> Text
+      }
+
+      const text = typeof r.text === 'string' ? r.text : '';
+
+      // If this fragment is an emote, normalize the emote object shape
+      let emote: Message['emotes'][number] | null = null;
+      if (type === FragmentType.Emote && r.emote && typeof r.emote === 'object') {
+        const er = r.emote as Record<string, any>;
+        const name = typeof er.name === 'string' && er.name.trim().length > 0 ? er.name : text;
+        const id   = typeof er.id === 'string'   && er.id.trim().length > 0   ? er.id   : name;
+
+        const imagesRaw = Array.isArray(er.images) ? er.images : [];
+        const images = imagesRaw.flatMap((img) => {
+          if (!img || typeof img !== 'object') return [] as Message['emotes'][number]['images'];
+          const ir = img as Record<string, any>;
+          const url = typeof ir.url === 'string' ? ir.url : undefined;
+          if (!url) return [] as Message['emotes'][number]['images'];
+          return [{
+            id: typeof ir.id === 'string' ? ir.id : `${id}-${url}`,
+            url,
+            width: typeof ir.width === 'number' ? ir.width : 0,
+            height: typeof ir.height === 'number' ? ir.height : 0,
+          }];
+        });
+
+        emote = { id, name, images, locations: er.locations ?? [] };
+      }
+
+      out.push({ type, text, emote });
+    }
+
+    return out;
+  }
+
 
   function coerceBadges(badges: WsChatMessage['badges']): Message['badges'] {
     if (!Array.isArray(badges)) return [];

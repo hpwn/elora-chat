@@ -105,12 +105,13 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const colour = typeof colourRaw === 'string' && colourRaw.trim() ? colourRaw : undefined;
 
   const emotes = coerceArray(obj.emotes, obj.emotes_json);
+    const fragments = coerceArray((obj as any).fragments, (obj as any).fragments_json ?? (obj as any).tokens ?? (obj as any).tokens_json);
   const badgesRaw = coerceArray(obj.badges, obj.badges_json);
   const badges = normalizeBadges(badgesRaw);
 
   const ts = coerceTimestamp(obj.ts ?? obj.timestamp ?? obj.created_at ?? obj.time ?? null);
 
-  if (!text && emotes.length === 0) {
+  if (!text && emotes.length === 0 && (!Array.isArray(fragments) || fragments.length === 0)) {
     return null;
   }
 
@@ -122,7 +123,8 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     username,
     platform,
     text,
-    emotes,
+          fragments,
+      emotes,
     badges,
     colour,
     raw
@@ -228,4 +230,72 @@ declare global {
 
 if (typeof window !== 'undefined') {
   window.parseWsEvent = normalizeWsPayload;
+}
+
+/** Coerce a websocket "emote-like" object into the UI Emote shape or null */
+function normalizeEmote(input: any): Emote | null {
+  if (!input || typeof input !== 'object') return null;
+  const name = typeof input.name === 'string' ? input.name : '';
+  const imagesArr = Array.isArray(input.images) ? input.images : [];
+  const images = imagesArr.flatMap((img: any) => {
+    if (!img || typeof img !== 'object') return [];
+    const url = typeof img.url === 'string' ? img.url : undefined;
+    if (!url) return [];
+    return [{
+      url,
+      width: typeof img.width === 'number' ? img.width : 0,
+      height: typeof img.height === 'number' ? img.height : 0,
+      id: typeof img.id === 'string' ? img.id : `${name || 'emote'}-${url}`
+    }];
+  });
+
+  return {
+    id: typeof input.id === 'string' ? input.id : (name || ''),
+    name,
+    images: images.length > 0 ? images : [],
+    // Keep locations if present; otherwise empty
+    locations: Array.isArray(input.locations) ? input.locations as string[] : []
+  };
+}
+
+/** Map string/number fragment types from the socket to the enum the renderer expects */
+function mapFragmentType(t: any): FragmentType | null {
+  if (typeof t === 'number') {
+    // Already an enum value (best effort sanity check)
+    if (t in FragmentType) return t as FragmentType;
+  }
+  if (typeof t === 'string') {
+    const k = t.toLowerCase();
+    switch (k) {
+      case 'text':   return FragmentType.Text;
+      case 'emote':  return FragmentType.Emote;
+      case 'color':
+      case 'colour': return FragmentType.Colour;
+      case 'effect': return FragmentType.Effect;
+      case 'pattern':return FragmentType.Pattern;
+    }
+  }
+  return null;
+}
+
+/** Turn raw websocket fragments into UI-ready Fragment[] (enum types, sanitized text, emote objects) */
+function normalizeFragments(input: any): Fragment[] {
+  const arr = Array.isArray(input) ? input : [];
+  const out: Fragment[] = [];
+  for (const f of arr) {
+    if (!f || typeof f !== 'object') continue;
+    const t = mapFragmentType((f as any).type);
+    if (t == null) continue;
+
+    const text = typeof (f as any).text === 'string' ? (f as any).text : '';
+    const emoteObj = normalizeEmote((f as any).emote);
+
+    // Enforce the interface expected by formatMessageFragments()
+    out.push({
+      type: t,
+      text,
+      emote: t === FragmentType.Emote ? (emoteObj ?? null) : null
+    } as Fragment);
+  }
+  return out;
 }
