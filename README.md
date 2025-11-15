@@ -32,7 +32,7 @@ make bootstrap
 make up
 ```
 
-Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. `ELORA_INGEST_DRIVER` defaults to `gnasty`, so once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
+Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. Once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
 
 > ⚠️ `gnasty-harvester` always pulls the published `gnasty-chat` image specified by `GNASTY_IMAGE` (defaults to `gnasty-chat:latest`). Verify the resolved tag with `docker compose config` before proposing changes and see [docs/dev/harvester.md](docs/dev/harvester.md) for details on where to contribute harvester edits.
 
@@ -60,11 +60,11 @@ All of the commands read configuration from `.env`, so update that file (or expo
 
 ### Which mode am I in?
 
-Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field shows whether the process is using the bundled `chatdownloader` client or tailing gnasty's SQLite output. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
+Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field confirms gnasty-chat is powering the shared SQLite handoff. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
 
 ## gnasty + SQLite (default topology)
 
-The Docker compose stack launches [gnasty](https://github.com/hpwn/gnasty) alongside the API and both containers mount the same volume at `${ELORA_DATA_DIR:-/data}`. With `ELORA_INGEST_DRIVER=gnasty` (the default) the backend tails gnasty's SQLite writes instead of spawning chatdownloader.
+The Docker compose stack launches [gnasty](https://github.com/hpwn/gnasty) alongside the API and both containers mount the same volume at `${ELORA_DATA_DIR:-/data}`. The backend tails gnasty's SQLite writes and republishes them over WebSocket without spawning any in-process harvesters.
 
 Key environment variables to review after copying `.env.example`:
 
@@ -77,9 +77,7 @@ Key environment variables to review after copying `.env.example`:
 
 After the stack is up, run `make configz` to confirm the shared volume paths and ingest driver. gnasty logs a reload message whenever fresh Twitch tokens land in the shared volume.
 
-### Legacy chatdownloader mode
-
-Set `ELORA_INGEST_DRIVER=chatdownloader` to fall back to the bundled Python fetcher. Provide a comma-separated list of `CHAT_URLS`, disable the DB tailer if you only need live fan-out, and restart the API container. This mode does not require gnasty.
+Legacy chatdownloader support has been removed. gnasty-chat is the only supported harvester and all ingest flows run through the shared SQLite volume.
 
 ## Twitch integration (gnasty-chat token handoff)
 
@@ -295,9 +293,4 @@ See [LICENSE](./LICENSE) and [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) fo
 
 ### Ingestion driver
 
-The backend supports a pluggable ingestion driver via `ELORA_INGEST_DRIVER`:
-
-- `chatdownloader` *(default)* — current implementation; reads from `CHAT_URLS`.
-- `gnasty` *(stub)* — placeholder for upcoming gnasty-chat integration.
-
-Set `CHAT_URLS` to a comma-separated list of Twitch/YouTube live URLs.
+`ingest.driver` reported by `/configz` is always `gnasty`. The gnasty-chat container is responsible for scraping Twitch/YouTube chats, writing them into the shared SQLite database, and letting the Elora tailer handle fan-out to connected clients.

@@ -11,6 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure legacy Python harvester references are absent
+        run: |
+          if git grep -nE '(fetch_chat\.py|chat_downloader|python/requirements\.txt)' -- .; then
+            echo 'Legacy Python harvester files detected; remove them before running CI.' >&2
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
 

@@ -209,37 +209,7 @@ func main() {
 	fs := http.FileServer(http.Dir("public"))
 	r.PathPrefix("/").Handler(http.StripPrefix("/", fs))
 
-	// Start fetching chat messages from env (comma-separated)
-	rawChat := os.Getenv("CHAT_URLS")
-	chatURLs := []string{}
-	if rawChat != "" {
-		for _, u := range strings.Split(rawChat, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				chatURLs = append(chatURLs, u)
-			}
-		}
-	}
-	log.Printf("ingest: selected driver=%q", ingestEnv.Driver)
-	if len(chatURLs) == 0 {
-		log.Printf("No CHAT_URLS provided; skipping chat fetch")
-	} else {
-		log.Printf("chat seed URLs: %d", len(chatURLs))
-
-		switch ingestEnv.Driver {
-		case ingest.DriverChatDownloader:
-			routes.StartChatFetch(chatURLs)
-		case ingest.DriverGnasty:
-			gn, err := ingestEnv.BuildGnasty(nil, chatURLs, log.Default())
-			if err != nil {
-				log.Fatalf("ingest: gnasty config error: %v", err)
-			}
-			gn.Start(baseCtx)
-		default:
-			log.Printf("ingest: unknown driver %q; defaulting to chatdownloader", ingestEnv.Driver)
-			routes.StartChatFetch(chatURLs)
-		}
-	}
+	log.Printf("ingest: selected driver=%q (harvested via gnasty-chat)", ingestEnv.Driver)
 
 	// Create server
 	listenAddr := net.JoinHostPort(httpAddr, httpPort)

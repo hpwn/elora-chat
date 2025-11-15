@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,14 +11,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 
@@ -34,22 +31,6 @@ var chatStore storage.Store
 var ctx = context.Background()
 var subscribersMu sync.Mutex
 var subscribers map[chan []byte]struct{}
-
-type CmdMap struct {
-	data sync.Map
-}
-
-func (m *CmdMap) Store(key string, cmd *exec.Cmd) {
-	m.data.Store(key, cmd)
-}
-
-func (m *CmdMap) Range(f func(key string, cmd *exec.Cmd) bool) {
-	m.data.Range(func(key, value any) bool {
-		return f(key.(string), value.(*exec.Cmd))
-	})
-}
-
-var chatFetchCmds CmdMap
 
 var (
 	upgrader = websocket.Upgrader{
@@ -502,7 +483,7 @@ func InitRoutes(store storage.Store) {
 			Images:    []Image{Image(emote.Images[0])},
 		}
 	}
-        log.Printf("emodl: cache size = %d", len(tokenizer.EmoteCache));
+	log.Printf("emodl: cache size = %d", len(tokenizer.EmoteCache))
 	// DEBUG
 	// log.Println("3P EMOTES SUPPORTED")
 	// for _, e := range tokenizer.EmoteCache {
@@ -544,139 +525,6 @@ func maybeExportStoredTwitchToken(store storage.Store) {
 		return
 	} else {
 		_ = export(sess)
-	}
-}
-
-func StartChatFetch(urls []string) {
-	pythonExecPath := "/usr/local/bin/python3"
-	fetchChatScript := "/app/python/fetch_chat.py"
-
-	for _, url := range urls {
-		go monitorAndRestartChatFetch(url, pythonExecPath, fetchChatScript)
-	}
-}
-
-func monitorAndRestartChatFetch(url, pythonExecPath, fetchChatScript string) {
-	for {
-		cmd := startChatFetch(url, pythonExecPath, fetchChatScript)
-		chatFetchCmds.Store(url, cmd)
-
-		err := cmd.Wait() // Waits for the command to exit
-		if err != nil {
-			log.Printf("chat: Chat fetch for %s stopped: %v", url, err)
-		}
-
-		// Wait for a short duration before restarting to prevent rapid restart loops
-		log.Println("chat: Restarting chat fetch...")
-		time.Sleep(1 * time.Second)
-	}
-}
-
-func startChatFetch(url, pythonExecPath, fetchChatScript string) *exec.Cmd {
-	cmd := exec.Command(pythonExecPath, "-u", fetchChatScript, url)
-	cmd.Stderr = os.Stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatal("chat: Failed to create stdout pipe:", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		log.Fatal("chat: Failed to start command:", err)
-	}
-
-	log.Println("chat: Fetching chat from URL: ", url)
-
-	go processChatOutput(stdout, url)
-	return cmd
-}
-
-func processChatOutput(stdout io.ReadCloser, url string) {
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		var msg Message
-		var err error
-		rawMessage := scanner.Bytes()
-		if err := json.Unmarshal(rawMessage, &msg); err != nil {
-			log.Printf("chat: Failed to unmarshal message: %v, Raw message: %s\n", err, string(rawMessage))
-			continue
-		}
-		if strings.Contains(url, "twitch.tv") {
-			msg.Source = "Twitch"
-		} else if strings.Contains(url, "youtube.com") {
-			msg.Source = "YouTube"
-		}
-		msg.Source = normalizeSource(msg.Source)
-
-		// Add unknown emotes to the emote cache for tokenization
-		for _, e := range msg.Emotes {
-			tokenizer.EmoteCache[e.Name] = e
-		}
-
-		// Tokenize message
-		msg.Tokens = make([]Token, 0)
-		for token := range tokenizer.Iter(msg.Message) {
-			msg.Tokens = append(msg.Tokens, token)
-		}
-
-		// Process command
-		if len(msg.Tokens) > 0 && msg.Tokens[0].Type == TokenTypeCommand {
-			msg, err = commandParser.Parse(msg, userColorMap)
-			if err != nil {
-				log.Printf("chat: Failed to process command: %v, Message: %#v\n", err, msg)
-			}
-		}
-
-		// Apply user preferences
-		// TODO: Replace map lookup with db query
-		if _, ok := userColorMap[msg.Author]; ok {
-			msg.Colour = userColorMap[msg.Author]
-		}
-
-		// Prevent nil slices
-		if msg.Emotes == nil {
-			msg.Emotes = []Emote{}
-		}
-		if msg.Badges == nil {
-			msg.Badges = []Badge{}
-		}
-
-		msg.normalize()
-		if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
-			continue
-		}
-
-		// Re-marshal the message with the Source set.
-		modifiedMessage, err := json.Marshal(msg.toChatPayload())
-		if err != nil {
-			log.Printf("chat: Failed to marshal message: %v, Message: %#v\n", err, msg)
-			continue
-		}
-
-		if chatStore != nil {
-			emotesJSON, err := json.Marshal(msg.Emotes)
-			if err != nil {
-				log.Printf("storage: Failed to marshal emotes: %v", err)
-				emotesJSON = []byte("[]")
-			}
-			storedMessage := &storage.Message{
-				ID:         uuid.NewString(),
-				Timestamp:  time.Now().UTC(),
-				Username:   msg.Author,
-				Platform:   msg.Source,
-				Text:       msg.Message,
-				EmotesJSON: string(emotesJSON),
-				BadgesJSON: encodeStoredBadges(msg.Badges),
-				RawJSON:    string(modifiedMessage),
-			}
-			if err := chatStore.InsertMessage(ctx, storedMessage); err != nil {
-				log.Printf("storage: Failed to insert message: %v", err)
-			}
-		}
-
-		broadcastChatMessage(modifiedMessage)
-	}
-	if err := scanner.Err(); err != nil {
-		log.Println("chat: Error reading standard output:", err)
 	}
 }
 
@@ -761,15 +609,15 @@ func enrichTailerMessage(m storage.Message) Message {
 	// Fallback: decode Twitch first-party emote spans -> Emote slice, then seed cache.
 	// This runs only if we don't already have emotes on the message.
 	if strings.EqualFold(m.Platform, "twitch") && len(msg.Emotes) == 0 {
-  	  if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
-  	      // Seed tokenizer cache by NAME so tokenization emits emote fragments.
-  	      for _, e := range dec {
-  	          if strings.TrimSpace(e.Name) != "" {
-  	              tokenizer.EmoteCache[e.Name] = e
-  	          }
-  	      }
-  	      msg.Emotes = append(msg.Emotes, dec...)
- 	   }
+		if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
+			// Seed tokenizer cache by NAME so tokenization emits emote fragments.
+			for _, e := range dec {
+				if strings.TrimSpace(e.Name) != "" {
+					tokenizer.EmoteCache[e.Name] = e
+				}
+			}
+			msg.Emotes = append(msg.Emotes, dec...)
+		}
 	}
 
 	for token := range tokenizer.Iter(msg.Message) {
@@ -1170,18 +1018,19 @@ func ImageProxy(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// StopChatFetches stops all ongoing chat fetch commands
+// StopChatFetches is retained for backward compatibility with the legacy UI control.
+// The legacy Python harvester pipeline has been removed, so this endpoint now returns
+// a no-op response while gnasty-chat handles harvesting via SQLite.
 func StopChatFetches(w http.ResponseWriter, r *http.Request) {
-	chatFetchCmds.Range(func(key string, cmd *exec.Cmd) bool {
-		if cmd != nil && cmd.Process != nil {
-			err := cmd.Process.Kill()
-			if err != nil {
-				log.Printf("http: Failed to stop chat fetch command: %v", err)
-			}
-		}
-		return true
-	})
-	fmt.Fprintln(w, "Chat fetch commands stopped. Restarting...")
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]string{
+		"status":  "ok",
+		"message": "gnasty-chat is the active harvester; no restart required",
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("http: failed to encode restart response: %v", err)
+		http.Error(w, "restart response unavailable", http.StatusInternalServerError)
+	}
 }
 
 // SetupChatRoutes sets up WebSocket routes

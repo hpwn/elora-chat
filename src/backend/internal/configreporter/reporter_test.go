@@ -13,7 +13,7 @@ import (
 
 func TestSnapshotRedactsIngestSecrets(t *testing.T) {
 	reporter := NewReporter(
-                sqlite.Config{Mode: "persistent", Path: "/data/gnasty.db", JournalMode: "WAL", MaxConns: 8, BusyTimeoutMS: 1000, PragmasExtraCSV: "test=1"},
+		sqlite.Config{Mode: "persistent", Path: "/data/gnasty.db", JournalMode: "WAL", MaxConns: 8, BusyTimeoutMS: 1000, PragmasExtraCSV: "test=1"},
 		tailer.Config{Enabled: true, Interval: 25 * time.Millisecond, Batch: 200, MaxLag: 50 * time.Millisecond, PersistOffsets: true, OffsetPath: "/tmp/off"},
 		ingest.Env{Driver: ingest.DriverGnasty, GnastyArgs: []string{"--token=secret"}},
 		Origins{AllowAny: false, Values: []string{"http://localhost:8080"}},
@@ -38,7 +38,7 @@ func TestSummaryJSON(t *testing.T) {
 	reporter := NewReporter(
 		sqlite.Config{Mode: "ephemeral", Path: "", JournalMode: "WAL"},
 		tailer.Config{Enabled: false},
-		ingest.Env{Driver: ingest.DriverChatDownloader},
+		ingest.Env{Driver: ingest.DriverGnasty},
 		Origins{AllowAny: true},
 		WebsocketLimits{},
 		AuthConfig{},

@@ -35,10 +35,12 @@ COPY src/frontend/ ./
 RUN npm run build
 
 
-# Continue with a smaller Python base image for the runtime container
-FROM python:3.9-alpine
+# Runtime image with the Go server and built assets
+FROM alpine:3.20
 
 WORKDIR /app
+
+RUN apk add --no-cache curl
 
 # Copy the built Go binary from the builder stage
 COPY --from=builder /app/server /app/
@@ -46,27 +48,15 @@ COPY --from=builder /app/server /app/
 # Copy the frontend files to the production image
 COPY --from=build-frontend /app/build /app/public
 
-# Copy the Python script and requirements
-COPY python/fetch_chat.py /app/python/
-COPY python/requirements.txt /app/python/
-
-# Install runtime dependencies and Python packages
-RUN apk add --no-cache curl && \
-    pip install --no-cache-dir -r /app/python/requirements.txt && \
-    rm -rf /app/python/requirements.txt
-
-# Create a non-root user, credential directory, and shared token mount point
+# Create a non-root user and the shared token mount point
 RUN adduser -D myuser && \
-    mkdir -p /home/myuser/.credentials /shared && \
-    chown -R myuser:myuser /home/myuser /shared
+    mkdir -p /shared && \
+    chown -R myuser:myuser /app /shared
 
 USER myuser
 
 # Expose the port the app runs on
 EXPOSE 8080
-
-# Set environment variables for the Go application
-ENV PYTHONPATH=/app/python
 
 # Run the web service on container startup
 CMD ["/app/server"]
