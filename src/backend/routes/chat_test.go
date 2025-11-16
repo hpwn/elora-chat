@@ -181,6 +181,37 @@ func TestMessagePayloadFromStorageRawBadges(t *testing.T) {
 	}
 }
 
+func TestMessagePayloadFromStorageOverridesEmptyRawBadges(t *testing.T) {
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		RawJSON:    `{"author":"tester","message":"hello","badges":[],"source":"Twitch"}`,
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"17"},{"platform":"twitch","id":"premium","version":"1"}],"raw":{"extra":123}}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected 2 badges, got %d", len(msg.Badges))
+	}
+	if msg.BadgesRaw == nil {
+		t.Fatalf("expected badges_raw to be propagated")
+	}
+	if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Platform != "twitch" || msg.Badges[0].Version != "17" {
+		t.Fatalf("unexpected badge[0]: %#v", msg.Badges[0])
+	}
+	if msg.Badges[1].ID != "premium" || msg.Badges[1].Platform != "twitch" || msg.Badges[1].Version != "1" {
+		t.Fatalf("unexpected badge[1]: %#v", msg.Badges[1])
+	}
+}
+
 func TestMaybeEnvelope(t *testing.T) {
 	t.Setenv("ELORA_WS_ENVELOPE", "true")
 
@@ -333,6 +364,96 @@ func TestBroadcastFromTailerEnrichesPayload(t *testing.T) {
 		}
 		if msg.Tokens == nil {
 			t.Fatalf("expected tokens slice to be initialized")
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}
+
+func TestBroadcastFromTailerConvertsLegacyBadges(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	subscribersMu.Lock()
+	subscribers = nil
+	subscribersMu.Unlock()
+
+	ch := addSubscriber()
+	defer removeSubscriber(ch)
+
+	BroadcastFromTailer(storage.Message{
+		Username:   "BadgeUser",
+		Platform:   "Twitch",
+		Text:       "hello",
+		BadgesJSON: ` [ "subscriber/12" , "premium/1" , "subscriber/17" ] `,
+	})
+
+	select {
+	case payload := <-ch:
+		var msg Message
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			t.Fatalf("failed to unmarshal broadcast payload: %v", err)
+		}
+
+		if len(msg.Badges) != 3 {
+			t.Fatalf("expected 3 badges, got %d", len(msg.Badges))
+		}
+		if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Platform != "twitch" || msg.Badges[0].Version != "12" {
+			t.Fatalf("unexpected first badge: %#v", msg.Badges[0])
+		}
+		if msg.Badges[1].ID != "premium" || msg.Badges[1].Platform != "twitch" || msg.Badges[1].Version != "1" {
+			t.Fatalf("unexpected second badge: %#v", msg.Badges[1])
+		}
+		if msg.Badges[2].ID != "subscriber" || msg.Badges[2].Platform != "twitch" || msg.Badges[2].Version != "17" {
+			t.Fatalf("unexpected third badge: %#v", msg.Badges[2])
+		}
+		if msg.BadgesRaw != nil {
+			t.Fatalf("expected badges_raw to be empty")
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}
+
+func TestBroadcastFromTailerStructuredBadgesAndRaw(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	subscribersMu.Lock()
+	subscribers = nil
+	subscribersMu.Unlock()
+
+	ch := addSubscriber()
+	defer removeSubscriber(ch)
+
+	BroadcastFromTailer(storage.Message{
+		Username:   "BadgeUser",
+		Platform:   "Twitch",
+		Text:       "hi",
+		RawJSON:    `{"author":"BadgeUser","message":"hi","badges":[],"source":"Twitch"}`,
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"17"},{"platform":"twitch","id":"premium","version":"1"}],"raw":{"twitch":{"badge_info":"subscriber/17","badges":"subscriber/12,premium/1"}}}`,
+	})
+
+	select {
+	case payload := <-ch:
+		var msg Message
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			t.Fatalf("failed to unmarshal broadcast payload: %v", err)
+		}
+
+		if len(msg.Badges) != 2 {
+			t.Fatalf("expected 2 badges, got %d", len(msg.Badges))
+		}
+		if msg.BadgesRaw == nil {
+			t.Fatalf("expected badges_raw to be populated")
+		}
+		if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Platform != "twitch" || msg.Badges[0].Version != "17" {
+			t.Fatalf("unexpected first badge: %#v", msg.Badges[0])
+		}
+		if msg.Badges[1].ID != "premium" || msg.Badges[1].Platform != "twitch" || msg.Badges[1].Version != "1" {
+			t.Fatalf("unexpected second badge: %#v", msg.Badges[1])
 		}
 	default:
 		t.Fatalf("expected broadcast payload but channel was empty")
