@@ -380,7 +380,7 @@ func (s *Store) TailNext(ctx context.Context, after storage.TailPosition, limit 
 		limit = 500
 	}
 
-	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(raw_json, ''), rowid
+	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, ''), rowid
 FROM messages
 WHERE ts > ? OR (ts = ? AND rowid > ?)
 ORDER BY ts ASC, rowid ASC
@@ -401,7 +401,7 @@ LIMIT ?`
 			ts    int64
 			rowID int64
 		)
-		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.RawJSON, &rowID); err != nil {
+		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.BadgesJSON, &msg.RawJSON, &rowID); err != nil {
 			return nil, after, fmt.Errorf("sqlite: tail next scan: %w", err)
 		}
 		msg.Timestamp = time.UnixMilli(ts).UTC()

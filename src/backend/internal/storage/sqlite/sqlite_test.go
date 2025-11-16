@@ -132,6 +132,56 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	}
 }
 
+func TestSQLiteTailNextIncludesBadges(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	msg := &storage.Message{
+		ID:         "tail-1",
+		Timestamp:  time.Now().UTC().Truncate(time.Millisecond),
+		Username:   "badge-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"moderator","version":"1"}],"raw":{"twitch":{"badges":"moderator/1"}}}`,
+		RawJSON:    `{"message":"hello","badges":[]}`,
+	}
+
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+
+	got, pos, err := store.TailNext(ctx, storage.TailPosition{}, 10)
+	if err != nil {
+		t.Fatalf("TailNext returned error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(got))
+	}
+
+	if got[0].BadgesJSON != msg.BadgesJSON {
+		t.Fatalf("expected BadgesJSON %q, got %q", msg.BadgesJSON, got[0].BadgesJSON)
+	}
+
+	if got[0].RawJSON != msg.RawJSON {
+		t.Fatalf("expected RawJSON %q, got %q", msg.RawJSON, got[0].RawJSON)
+	}
+
+	if pos.TS == 0 || pos.RowID == 0 {
+		t.Fatalf("expected tail position to advance, got ts=%d rowid=%d", pos.TS, pos.RowID)
+	}
+}
+
 func TestSQLiteGetRecentStableOrdering(t *testing.T) {
 	store := New(Config{})
 	ctx := context.Background()
