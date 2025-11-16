@@ -431,13 +431,11 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 	if strings.TrimSpace(m.RawJSON) != "" {
 		var msg Message
 		if err := json.Unmarshal([]byte(m.RawJSON), &msg); err == nil {
-			if msg.Badges == nil {
-				if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
+			if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
+				if msg.Badges == nil || len(msg.Badges) == 0 {
 					msg.Badges = badges
 					msg.BadgesRaw = raw
-				}
-			} else if msg.BadgesRaw == nil {
-				if _, raw := parseStoredBadges(m.BadgesJSON); raw != nil {
+				} else if msg.BadgesRaw == nil {
 					msg.BadgesRaw = raw
 				}
 			}
@@ -648,13 +646,11 @@ func enrichTailerMessage(m storage.Message) Message {
 		}
 	}
 
-	if msg.Badges == nil {
-		if parsed, raw := parseStoredBadges(m.BadgesJSON); parsed != nil || raw != nil {
+	if parsed, raw := parseStoredBadges(m.BadgesJSON); parsed != nil || raw != nil {
+		if msg.Badges == nil || len(msg.Badges) == 0 {
 			msg.Badges = parsed
 			msg.BadgesRaw = raw
-		}
-	} else if msg.BadgesRaw == nil {
-		if _, raw := parseStoredBadges(m.BadgesJSON); raw != nil {
+		} else if msg.BadgesRaw == nil {
 			msg.BadgesRaw = raw
 		}
 	}
