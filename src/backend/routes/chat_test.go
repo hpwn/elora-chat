@@ -114,14 +114,70 @@ func TestMessagePayloadFromStorageBadges(t *testing.T) {
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		t.Fatalf("failed to unmarshal payload: %v", err)
 	}
-	want := []Badge{{ID: "subscriber", Version: "42"}, {ID: "bits", Version: "100"}, {ID: "vip"}}
+	want := []Badge{{ID: "subscriber", Platform: "twitch", Version: "42"}, {ID: "bits", Platform: "twitch", Version: "100"}, {ID: "vip", Platform: "twitch"}}
 	if len(msg.Badges) != len(want) {
 		t.Fatalf("expected %d badges, got %d", len(want), len(msg.Badges))
 	}
 	for i, badge := range msg.Badges {
-		if badge.ID != want[i].ID || badge.Version != want[i].Version {
+		if badge.ID != want[i].ID || badge.Version != want[i].Version || badge.Platform != want[i].Platform {
 			t.Fatalf("badge[%d] mismatch: got %#v want %#v", i, badge, want[i])
 		}
+	}
+
+	payload, err = messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"17"},{"platform":"twitch","id":"premium","version":"1"}],"raw":{"t1":true}}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected 2 badges, got %d", len(msg.Badges))
+	}
+	if msg.Badges[0].Platform != "twitch" || msg.Badges[0].ID != "subscriber" || msg.Badges[0].Version != "17" {
+		t.Fatalf("unexpected first badge: %#v", msg.Badges[0])
+	}
+	if msg.Badges[1].Platform != "twitch" || msg.Badges[1].ID != "premium" || msg.Badges[1].Version != "1" {
+		t.Fatalf("unexpected second badge: %#v", msg.Badges[1])
+	}
+	if msg.BadgesRaw == nil {
+		t.Fatalf("expected badges_raw to be populated")
+	}
+}
+
+func TestMessagePayloadFromStorageRawBadges(t *testing.T) {
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		RawJSON:    `{"author":"tester","message":"hello","fragments":[],"emotes":[],"source":"Twitch"}`,
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"17"},{"platform":"twitch","id":"premium","version":"1"}],"raw":{"extra":123}}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected 2 badges, got %d", len(msg.Badges))
+	}
+	if msg.BadgesRaw == nil {
+		t.Fatalf("expected badges_raw to be propagated")
+	}
+	if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Platform != "twitch" || msg.Badges[0].Version != "17" {
+		t.Fatalf("unexpected badge[0]: %#v", msg.Badges[0])
+	}
+	if msg.Badges[1].ID != "premium" || msg.Badges[1].Platform != "twitch" || msg.Badges[1].Version != "1" {
+		t.Fatalf("unexpected badge[1]: %#v", msg.Badges[1])
 	}
 }
 
