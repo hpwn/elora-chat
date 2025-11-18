@@ -120,7 +120,7 @@ describe('normalizeWsPayload', () => {
     });
   });
 
-  it('uses wrench icon for youtube moderators without thumbnails', () => {
+  it('uses local wrench icon for youtube moderators without thumbnails', () => {
     const obj = {
       author: 'ModUser',
       message: 'hi',
@@ -144,7 +144,7 @@ describe('normalizeWsPayload', () => {
     expect(out?.displayBadges?.[0]).toMatchObject({
       id: 'moderator',
       platform: 'youtube',
-      imageUrl: '/images/youtube-moderator.svg'
+      imageUrl: '/assets/badges/yt-mod-wrench.svg'
     });
     expect(out?.displayBadges?.[0].title).toBe('Moderator');
   });
@@ -161,7 +161,36 @@ describe('normalizeWsPayload', () => {
     expect(out?.displayBadges?.[0]).toMatchObject({
       id: 'moderator',
       platform: 'youtube',
-      imageUrl: '/images/youtube-moderator.svg',
+      imageUrl: '/assets/badges/yt-mod-wrench.svg',
+      title: 'Moderator'
+    });
+  });
+
+  it('maps youtube moderator badges from raw renderer data to the local wrench asset', () => {
+    const obj = {
+      author: 'RawModUser',
+      message: 'hi',
+      platform: 'YouTube',
+      badges: [{ id: 'moderator', platform: 'youtube' }],
+      badges_raw: {
+        youtube: {
+          authorBadges: [
+            {
+              liveChatAuthorBadgeRenderer: {
+                icon: { iconType: 'MODERATOR' },
+                tooltip: 'Moderator'
+              }
+            }
+          ]
+        }
+      }
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.displayBadges?.[0]).toMatchObject({
+      id: 'moderator',
+      platform: 'youtube',
+      imageUrl: '/assets/badges/yt-mod-wrench.svg',
       title: 'Moderator'
     });
   });

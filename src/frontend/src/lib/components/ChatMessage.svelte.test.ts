@@ -156,4 +156,45 @@ describe('ChatMessage', () => {
     expect(badgeImg).toBeInTheDocument();
     expect(badgeImg.src).toContain(encodeURIComponent('https://example.com/badge-large.png'));
   });
+
+  test('renders badge images as icons instead of text labels when image is present', () => {
+    const message: Message = {
+      author: 'ImageBadgeUser',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [],
+      displayBadges: [
+        {
+          id: 'moderator',
+          platform: 'youtube',
+          imageUrl: '/assets/badges/yt-mod-wrench.svg',
+          title: 'Moderator'
+        }
+      ],
+      emotes: [],
+      fragments: []
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const badgeIcon = screen.getByAltText('Moderator');
+    expect(badgeIcon.tagName).toBe('IMG');
+    expect((badgeIcon as HTMLImageElement).src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
+    expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
+  });
 });
