@@ -159,22 +159,20 @@
         {/each}
       {/if}
 
-      {#if message.source !== 'YouTube' || youtubeBadges.length === 0}
-        {#each badgeViews as badge (badge.key)}
-          {#if badge.icon.src}
-            <img
-              class="badge-icon"
-              src={badgeImageSource(badge.icon.src)}
-              title={badge.icon.alt}
-              alt={badge.icon.alt}
-            />
-          {:else}
-            <span class="badge-label" title={badge.icon.alt} aria-label={badge.icon.alt}>
-              {badge.icon.label}
-            </span>
-          {/if}
-        {/each}
-      {/if}
+      {#each badgeViews as badge (badge.key)}
+        {#if badge.icon.src}
+          <img
+            class="badge-icon"
+            src={badgeImageSource(badge.icon.src)}
+            title={badge.icon.alt}
+            alt={badge.icon.alt}
+          />
+        {:else}
+          <span class="badge-label" title={badge.icon.alt} aria-label={badge.icon.alt}>
+            {badge.icon.label}
+          </span>
+        {/if}
+      {/each}
       <span class="message-username" style="color: {message.colour}">
         {message.author}:
       </span>
