@@ -59,6 +59,29 @@ describe('normalizeWsPayload', () => {
     ]);
   });
 
+  it('retains badge images when provided', () => {
+    const obj = {
+      author: 'BadgeImages',
+      message: 'hi',
+      badges: [
+        {
+          id: 'subscriber',
+          version: '12',
+          images: [{ id: 'sub', url: 'https://example.com/subscriber.png', width: 18, height: 18 }]
+        }
+      ]
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.badges).toEqual([
+      {
+        id: 'subscriber',
+        version: '12',
+        images: [{ id: 'sub', url: 'https://example.com/subscriber.png', width: 18, height: 18 }]
+      }
+    ]);
+  });
+
   it('drops empty frames', () => {
     const obj = { author: '', message: '', source: 'YouTube' };
     expect(normalizeWsPayload(obj)).toBeNull();
