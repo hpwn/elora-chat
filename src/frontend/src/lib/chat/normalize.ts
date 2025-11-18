@@ -11,7 +11,11 @@ export type Badge = {
   version?: string | null;
   platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string;
   images?: BadgeImage[];
+  imageUrl?: string;
+  title?: string;
 };
+
+export type DisplayBadge = Badge;
 
 export interface ChatMessage {
   id: string;
@@ -22,10 +26,13 @@ export interface ChatMessage {
   emotes: Emote[];
   badges: Badge[];
   badges_raw?: unknown;
+  displayBadges?: DisplayBadge[];
   fragments?: any[];
   colour?: string;
   raw?: unknown;
 }
+
+const YOUTUBE_MODERATOR_ICON = '/images/youtube-moderator.svg';
 
 export const KEEPALIVE = '__keepalive__';
 
@@ -120,6 +127,7 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const badgesRaw = coerceArray(obj.badges, obj.badges_json);
   const badges = normalizeBadges(badgesRaw);
   const badgesRawPayload = coerceRawBadges((obj as any).badges_raw ?? (obj as any).badgesRaw ?? null);
+  const displayBadges = buildDisplayBadges(badges, badgesRawPayload);
 
   const ts = coerceTimestamp(obj.ts ?? obj.timestamp ?? obj.created_at ?? obj.time ?? null);
 
@@ -139,6 +147,7 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     emotes,
     badges,
     badges_raw: badgesRawPayload,
+    displayBadges,
     colour,
     raw
   } satisfies ChatMessage;
@@ -195,6 +204,113 @@ function normalizeBadges(badges: unknown[]): Badge[] {
     out.push(images.length > 0 ? { ...base, images } : base);
   }
   return out;
+}
+
+function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[] {
+  const youtubeRenderers = extractYoutubeBadgeRenderers(badgesRaw);
+  let youtubeIndex = 0;
+
+  return badges.map((badge) => {
+    const baseImages = Array.isArray(badge.images) ? [...badge.images] : [];
+    const renderer = isYoutubePlatform(badge.platform) ? youtubeRenderers[youtubeIndex++] : undefined;
+
+    const badgeId = typeof badge.id === 'string' ? badge.id : '';
+    const youtubeModerator = isYoutubePlatform(badge.platform) && badgeId.toLowerCase() === 'moderator';
+
+    let imageUrl = badge.imageUrl ?? baseImages.at(-1)?.url;
+    let title = badge.title;
+
+    if (renderer) {
+      if (renderer.thumbnail) {
+        const thumbnail = renderer.thumbnail;
+        imageUrl = thumbnail.url ?? imageUrl;
+
+        if (thumbnail.url) {
+          const hasThumb = baseImages.some((img) => img.url === thumbnail.url);
+          if (!hasThumb) {
+            baseImages.push({ url: thumbnail.url, width: thumbnail.width, height: thumbnail.height });
+          }
+        }
+      } else if (renderer.iconType === 'MODERATOR') {
+        imageUrl = YOUTUBE_MODERATOR_ICON;
+      }
+
+      if (!title && renderer.tooltip) {
+        title = renderer.tooltip;
+      }
+    }
+
+    if (youtubeModerator) {
+      if (!imageUrl) {
+        imageUrl = YOUTUBE_MODERATOR_ICON;
+      }
+      if (!title) {
+        title = 'Moderator';
+      }
+    }
+
+    const display: DisplayBadge = { ...badge };
+    if (baseImages.length > 0) {
+      display.images = baseImages;
+    }
+    if (imageUrl) {
+      display.imageUrl = imageUrl;
+    }
+    if (title) {
+      display.title = title;
+    }
+    return display;
+  });
+}
+
+type YoutubeRenderer = {
+  thumbnail?: BadgeImage;
+  tooltip?: string;
+  iconType?: string;
+};
+
+function extractYoutubeBadgeRenderers(raw: unknown): YoutubeRenderer[] {
+  const youtube = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).youtube : undefined;
+  if (!youtube || typeof youtube !== 'object') return [];
+
+  const authorBadgesRaw = (youtube as Record<string, unknown>).authorBadges;
+  const authorBadges = Array.isArray(authorBadgesRaw) ? authorBadgesRaw : [];
+
+  return authorBadges.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [] as YoutubeRenderer[];
+    const renderer = (entry as Record<string, any>).liveChatAuthorBadgeRenderer;
+    if (!renderer || typeof renderer !== 'object') return [] as YoutubeRenderer[];
+
+    const thumbnails = renderer.customThumbnail?.thumbnails;
+    let bestThumb: BadgeImage | undefined;
+    if (Array.isArray(thumbnails)) {
+      for (const thumb of thumbnails) {
+        if (!thumb || typeof thumb !== 'object') continue;
+        const url = typeof thumb.url === 'string' ? thumb.url : undefined;
+        const width = typeof thumb.width === 'number' ? thumb.width : undefined;
+        const height = typeof thumb.height === 'number' ? thumb.height : undefined;
+        if (!url) continue;
+        if (!bestThumb || (width ?? 0) > (bestThumb.width ?? 0)) {
+          bestThumb = { url, width, height };
+        }
+      }
+    }
+
+    const tooltip = typeof renderer.tooltip === 'string' && renderer.tooltip.trim().length > 0 ? renderer.tooltip : undefined;
+    const iconType = typeof renderer.icon?.iconType === 'string' ? renderer.icon.iconType : undefined;
+
+    return [
+      {
+        thumbnail: bestThumb,
+        tooltip,
+        iconType
+      }
+    ];
+  });
+}
+
+function isYoutubePlatform(platform: Badge['platform']): boolean {
+  return typeof platform === 'string' && platform.toLowerCase() === 'youtube';
 }
 
 function coerceRawBadges(input: unknown): unknown {

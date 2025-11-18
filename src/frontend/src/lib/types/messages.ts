@@ -10,6 +10,8 @@ interface Badge {
   version?: string;
   platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string;
   images?: Image[];
+  imageUrl?: string;
+  title?: string;
 }
 
 export interface Emote {
@@ -36,6 +38,7 @@ export interface Fragment {
 export interface Message {
   author: string;
   badges: Badge[];
+  displayBadges?: Badge[];
   badges_raw?: unknown;
   colour: string;
   message: string;
