@@ -120,7 +120,7 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const colour = typeof colourRaw === 'string' && colourRaw.trim() ? colourRaw : undefined;
 
   const emotes = coerceArray(obj.emotes, obj.emotes_json);
-  const fragments = coerceArray(
+  let fragments = coerceArray(
     (obj as any).fragments,
     (obj as any).fragments_json ?? (obj as any).tokens ?? (obj as any).tokens_json
   );
@@ -128,6 +128,10 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const badges = normalizeBadges(badgesRaw);
   const badgesRawPayload = coerceRawBadges((obj as any).badges_raw ?? (obj as any).badgesRaw ?? null);
   const displayBadges = buildDisplayBadges(badges, badgesRawPayload);
+
+  if ((!Array.isArray(fragments) || fragments.length === 0) && text.trim().length > 0) {
+    fragments = [{ type: 'text', text, emote: null }];
+  }
 
   const ts = coerceTimestamp(obj.ts ?? obj.timestamp ?? obj.created_at ?? obj.time ?? null);
 
@@ -215,7 +219,8 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
     const renderer = isYoutubePlatform(badge.platform) ? youtubeRenderers[youtubeIndex++] : undefined;
 
     const badgeId = typeof badge.id === 'string' ? badge.id : '';
-    const youtubeModerator = isYoutubePlatform(badge.platform) && badgeId.toLowerCase() === 'moderator';
+    const rendererModerator = renderer?.iconType === 'MODERATOR';
+    const youtubeModerator = (isYoutubePlatform(badge.platform) || rendererModerator) && badgeId.toLowerCase() === 'moderator';
 
     let imageUrl = badge.imageUrl ?? baseImages.at(-1)?.url;
     let title = badge.title;
@@ -231,7 +236,9 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
             baseImages.push({ url: thumbnail.url, width: thumbnail.width, height: thumbnail.height });
           }
         }
-      } else if (renderer.iconType === 'MODERATOR') {
+      }
+
+      if (renderer.iconType === 'MODERATOR') {
         imageUrl = YOUTUBE_MODERATOR_ICON;
       }
 
@@ -246,6 +253,9 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
       }
       if (!title) {
         title = 'Moderator';
+      }
+      if (imageUrl === YOUTUBE_MODERATOR_ICON && !baseImages.some((img) => img.url === imageUrl)) {
+        baseImages.push({ url: imageUrl });
       }
     }
 

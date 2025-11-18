@@ -66,7 +66,11 @@
     }
 
     const emotes = coerceEmotes(message.emotes);
-    const fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments) : [];
+    let fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments) : [];
+
+    if (fragments.length === 0 && text.trim().length > 0) {
+      fragments = [{ type: FragmentType.Text, text, emote: null }];
+    }
 
     const badgeInput = message.displayBadges ?? message.badges;
     const badges = showBadges ? coerceBadges(badgeInput) : [];
