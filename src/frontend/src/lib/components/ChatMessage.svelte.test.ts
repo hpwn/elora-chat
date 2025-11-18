@@ -73,4 +73,53 @@ describe('ChatMessage', () => {
     expect(fallback).toBeInTheDocument();
     expect(fallback).toHaveAttribute('title', 'Unknown x');
   });
+
+  test('renders youtube badge thumbnails when provided', () => {
+    const message: Message = {
+      author: 'YTUser',
+      message: 'hello',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [],
+      badges_raw: {
+        youtube: {
+          authorBadges: [
+            {
+              liveChatAuthorBadgeRenderer: {
+                customThumbnail: {
+                  thumbnails: [
+                    { url: 'https://example.com/badge-small.png', width: 16, height: 16 },
+                    { url: 'https://example.com/badge-large.png', width: 32, height: 32 }
+                  ]
+                },
+                tooltip: 'Member badge'
+              }
+            }
+          ]
+        }
+      },
+      emotes: [],
+      fragments: []
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const badgeImg = screen.getByAltText('Member badge') as HTMLImageElement;
+    expect(badgeImg).toBeInTheDocument();
+    expect(badgeImg.src).toContain('https://example.com/badge-small.png');
+  });
 });

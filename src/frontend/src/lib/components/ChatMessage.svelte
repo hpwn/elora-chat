@@ -33,7 +33,14 @@
     icon: ReturnType<typeof resolveBadgeIcon>;
   };
 
+  type YoutubeBadgeImage = {
+    key: string;
+    src: string;
+    alt: string;
+  };
+
   let badgeViews = $state<DisplayBadge[]>([]);
+  let youtubeBadges = $state<YoutubeBadgeImage[]>([]);
 
   $effect(() => {
     const rawBadges = Array.isArray(message.badges) ? message.badges : [];
@@ -53,6 +60,8 @@
         }
       ];
     });
+
+    youtubeBadges = message.source === 'YouTube' ? extractYoutubeBadges(message.badges_raw) : [];
   });
 
   function badgeImageSource(src: string | undefined): string | undefined {
@@ -61,6 +70,31 @@
       return src;
     }
     return loadImage(src);
+  }
+
+  function extractYoutubeBadges(raw: unknown): YoutubeBadgeImage[] {
+    const youtube = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).youtube : undefined;
+    if (!youtube || typeof youtube !== 'object') return [];
+    const authorBadgesRaw = (youtube as Record<string, unknown>).authorBadges;
+    const authorBadges = Array.isArray(authorBadgesRaw) ? authorBadgesRaw : [];
+
+    const out: YoutubeBadgeImage[] = [];
+    for (let i = 0; i < authorBadges.length; i += 1) {
+      const entry = authorBadges[i];
+      if (!entry || typeof entry !== 'object') continue;
+      const renderer = (entry as Record<string, any>).liveChatAuthorBadgeRenderer;
+      if (!renderer || typeof renderer !== 'object') continue;
+      const thumbnails = renderer.customThumbnail?.thumbnails;
+      if (!Array.isArray(thumbnails) || thumbnails.length === 0) continue;
+      const firstThumb = thumbnails[0];
+      const url = typeof firstThumb?.url === 'string' && firstThumb.url.trim().length > 0 ? firstThumb.url : undefined;
+      if (!url) continue;
+      const alt = typeof renderer.tooltip === 'string' && renderer.tooltip.trim().length > 0
+        ? renderer.tooltip
+        : `Badge ${i + 1}`;
+      out.push({ key: `yt-${i}-${url}`, src: url, alt });
+    }
+    return out;
   }
 
   function toggleVisible() {
@@ -114,20 +148,33 @@
         </span>
       {/if}
 
-      {#each badgeViews as badge (badge.key)}
-        {#if badge.icon.src}
+      {#if message.source === 'YouTube'}
+        {#each youtubeBadges as badge (badge.key)}
           <img
             class="badge-icon"
-            src={badgeImageSource(badge.icon.src)}
-            title={badge.icon.alt}
-            alt={badge.icon.alt}
+            src={badgeImageSource(badge.src)}
+            title={badge.alt}
+            alt={badge.alt}
           />
-        {:else}
-          <span class="badge-label" title={badge.icon.alt} aria-label={badge.icon.alt}>
-            {badge.icon.label}
-          </span>
-        {/if}
-      {/each}
+        {/each}
+      {/if}
+
+      {#if message.source !== 'YouTube' || youtubeBadges.length === 0}
+        {#each badgeViews as badge (badge.key)}
+          {#if badge.icon.src}
+            <img
+              class="badge-icon"
+              src={badgeImageSource(badge.icon.src)}
+              title={badge.icon.alt}
+              alt={badge.icon.alt}
+            />
+          {:else}
+            <span class="badge-label" title={badge.icon.alt} aria-label={badge.icon.alt}>
+              {badge.icon.label}
+            </span>
+          {/if}
+        {/each}
+      {/if}
       <span class="message-username" style="color: {message.colour}">
         {message.author}:
       </span>

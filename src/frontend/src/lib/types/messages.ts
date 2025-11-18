@@ -8,6 +8,7 @@ interface Image {
 interface Badge {
   id: string;
   version?: string;
+  platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string;
 }
 
 export interface Emote {
@@ -34,11 +35,12 @@ export interface Fragment {
 export interface Message {
   author: string;
   badges: Badge[];
+  badges_raw?: unknown;
   colour: string;
   message: string;
   fragments: Fragment[];
   emotes: Emote[];
-  source: 'YouTube' | 'Twitch' | 'Test';
+  source: 'YouTube' | 'Twitch' | 'Test' | 'youtube' | 'twitch';
 }
 
 export interface Keymods {

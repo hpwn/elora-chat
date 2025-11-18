@@ -24,6 +24,7 @@ describe('normalizeWsPayload', () => {
       text: 'hello',
       emotes_json: '[]',
       badges_json: '["subscriber/42","bits/100"]',
+      badges_raw: { youtube: { authorBadges: [{ id: 1 }] } },
       raw_json: '{}'
     };
     const out = normalizeWsPayload(obj);
@@ -36,6 +37,7 @@ describe('normalizeWsPayload', () => {
       { id: 'subscriber', version: '42' },
       { id: 'bits', version: '100' }
     ]);
+    expect(out?.badges_raw).toEqual(obj.badges_raw);
     expect(out && out.ts > 1000000000000).toBe(true);
   });
 
