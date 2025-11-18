@@ -197,4 +197,45 @@ describe('ChatMessage', () => {
     expect((badgeIcon as HTMLImageElement).src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
+
+  test('renders youtube moderator wrench badge from normalized display badges', () => {
+    const message: Message = {
+      author: 'ModUser',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [],
+      displayBadges: [
+        {
+          id: 'moderator',
+          platform: 'youtube',
+          imageUrl: '/assets/badges/yt-mod-wrench.svg',
+          images: [{ url: '/assets/badges/yt-mod-wrench.svg', width: 16, height: 16 }],
+          title: 'Moderator'
+        }
+      ],
+      emotes: [],
+      fragments: [{ type: 'text', text: 'hi', emote: null }]
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const badgeImg = screen.getByAltText('Moderator') as HTMLImageElement;
+    expect(badgeImg).toBeInTheDocument();
+    expect(badgeImg.src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
+  });
 });

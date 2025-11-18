@@ -87,6 +87,15 @@ describe('normalizeWsPayload', () => {
     expect(normalizeWsPayload(obj)).toBeNull();
   });
 
+  it('synthesizes a text fragment when only message text is provided', () => {
+    const obj = { author: 'BotRix', message: 'Automated message', fragments: [] };
+    const out = normalizeWsPayload(obj);
+
+    expect(out?.fragments).toEqual([
+      { type: 'text', text: 'Automated message', emote: null }
+    ]);
+  });
+
   it('maps youtube member badges to image urls', () => {
     const obj = {
       author: 'MemberUser',
