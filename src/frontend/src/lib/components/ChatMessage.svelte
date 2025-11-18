@@ -86,6 +86,9 @@
     if (src.startsWith('data:')) {
       return src;
     }
+    if (src.startsWith('/')) {
+      return src;
+    }
     return loadImage(src);
   }
 

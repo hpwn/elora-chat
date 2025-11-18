@@ -194,7 +194,7 @@ describe('ChatMessage', () => {
 
     const badgeIcon = screen.getByAltText('Moderator');
     expect(badgeIcon.tagName).toBe('IMG');
-    expect((badgeIcon as HTMLImageElement).src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
+    expect((badgeIcon as HTMLImageElement).src).toContain('/assets/badges/yt-mod-wrench.svg');
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 
@@ -236,7 +236,7 @@ describe('ChatMessage', () => {
 
     const badgeImg = screen.getByAltText('Moderator') as HTMLImageElement;
     expect(badgeImg).toBeInTheDocument();
-    expect(badgeImg.src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
+    expect(badgeImg.src).toContain('/assets/badges/yt-mod-wrench.svg');
   });
 
   test('falls back to local wrench icon when youtube moderator badge lacks images', () => {
@@ -274,7 +274,7 @@ describe('ChatMessage', () => {
 
     const badgeImg = screen.getByAltText('Moderator') as HTMLImageElement;
     expect(badgeImg).toBeInTheDocument();
-    expect(badgeImg.src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
+    expect(badgeImg.src).toContain('/assets/badges/yt-mod-wrench.svg');
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 });
