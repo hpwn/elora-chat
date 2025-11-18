@@ -5,7 +5,13 @@
 // - Coerces ts to ms epoch (handles seconds and ISO-8601 text)
 // - Drops completely empty messages
 export type Emote = { id?: string; name?: string; images?: any[]; [k: string]: any };
-export type Badge = { id: string; version?: string | null; platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string };
+export type BadgeImage = { url: string; width?: number; height?: number; id?: string };
+export type Badge = {
+  id: string;
+  version?: string | null;
+  platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string;
+  images?: BadgeImage[];
+};
 
 export interface ChatMessage {
   id: string;
@@ -161,15 +167,32 @@ function normalizeBadges(badges: unknown[]): Badge[] {
     const versionRaw = record.version ?? record.badgeVersion ?? record.tier ?? record.slot;
     const version = typeof versionRaw === 'string' ? versionRaw.trim() : undefined;
     const platform = typeof record.platform === 'string' ? record.platform : undefined;
-    out.push(
+    const imagesRaw = Array.isArray(record.images) ? record.images : [];
+    const images: BadgeImage[] = imagesRaw.flatMap((img) => {
+      if (!img || typeof img !== 'object') return [] as BadgeImage[];
+      const imageRecord = img as Record<string, any>;
+      const url = typeof imageRecord.url === 'string' && imageRecord.url.trim().length > 0 ? imageRecord.url : undefined;
+      if (!url) return [] as BadgeImage[];
+      return [
+        {
+          url,
+          id: typeof imageRecord.id === 'string' ? imageRecord.id : undefined,
+          width: typeof imageRecord.width === 'number' ? imageRecord.width : undefined,
+          height: typeof imageRecord.height === 'number' ? imageRecord.height : undefined
+        }
+      ];
+    });
+
+    const base =
       version
         ? platform
           ? { id, version, platform }
           : { id, version }
         : platform
           ? { id, platform }
-          : { id }
-    );
+          : { id };
+
+    out.push(images.length > 0 ? { ...base, images } : base);
   }
   return out;
 }

@@ -9,6 +9,7 @@ interface Badge {
   id: string;
   version?: string;
   platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string;
+  images?: Image[];
 }
 
 export interface Emote {

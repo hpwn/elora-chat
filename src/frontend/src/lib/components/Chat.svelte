@@ -194,15 +194,32 @@
       const version = typeof versionCandidate === 'string' ? versionCandidate.trim() : undefined;
       const platformCandidate = record.platform;
       const platform = typeof platformCandidate === 'string' ? platformCandidate : undefined;
-      out.push(
+      const imagesRaw = Array.isArray(record.images) ? record.images : [];
+      const images = imagesRaw.flatMap((img) => {
+        if (!img || typeof img !== 'object') return [] as Message['badges'][number]['images'];
+        const imageRecord = img as Record<string, unknown>;
+        const url = typeof imageRecord.url === 'string' ? imageRecord.url : undefined;
+        if (!url) return [] as Message['badges'][number]['images'];
+        return [
+          {
+            id: typeof imageRecord.id === 'string' ? imageRecord.id : `${id}-${url}`,
+            url,
+            width: typeof imageRecord.width === 'number' ? imageRecord.width : 0,
+            height: typeof imageRecord.height === 'number' ? imageRecord.height : 0
+          }
+        ];
+      });
+
+      const base =
         version
           ? platform
             ? { id, version, platform }
             : { id, version }
           : platform
             ? { id, platform }
-            : { id }
-      );
+            : { id };
+
+      out.push(images.length > 0 ? { ...base, images } : base);
     }
     return out;
   }

@@ -74,6 +74,49 @@ describe('ChatMessage', () => {
     expect(fallback).toHaveAttribute('title', 'Unknown x');
   });
 
+  test('renders badge images when provided in payload', () => {
+    const message: Message = {
+      author: 'BadgeIcons',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'Twitch',
+      badges: [
+        {
+          id: 'subscriber',
+          version: '6',
+          images: [{ id: 'sub', url: 'https://example.com/sub.png', width: 18, height: 18 }]
+        },
+        {
+          id: 'moderator',
+          images: [{ id: 'mod', url: 'https://example.com/mod.png', width: 18, height: 18 }]
+        }
+      ],
+      emotes: [],
+      fragments: []
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const subBadge = screen.getByAltText('Subscriber 6') as HTMLImageElement;
+    expect(subBadge.src).toContain(encodeURIComponent('https://example.com/sub.png'));
+    const modBadge = screen.getByAltText('Moderator') as HTMLImageElement;
+    expect(modBadge.src).toContain(encodeURIComponent('https://example.com/mod.png'));
+  });
+
   test('renders youtube badge thumbnails when provided', () => {
     const message: Message = {
       author: 'YTUser',
@@ -120,6 +163,6 @@ describe('ChatMessage', () => {
 
     const badgeImg = screen.getByAltText('Member badge') as HTMLImageElement;
     expect(badgeImg).toBeInTheDocument();
-    expect(badgeImg.src).toContain('https://example.com/badge-small.png');
+    expect(badgeImg.src).toContain(encodeURIComponent('https://example.com/badge-small.png'));
   });
 });

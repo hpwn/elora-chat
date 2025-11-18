@@ -31,6 +31,7 @@
     id: string;
     version?: string;
     icon: ReturnType<typeof resolveBadgeIcon>;
+    src?: string;
   };
 
   type YoutubeBadgeImage = {
@@ -51,12 +52,15 @@
       const version =
         typeof badge.version === 'string' && badge.version.trim().length > 0 ? badge.version.trim() : undefined;
       const icon = resolveBadgeIcon(id, version);
+      const badgeImages = Array.isArray((badge as any).images) ? (badge as any).images : [];
+      const badgeSrc = badgeImages.find((img: any) => typeof img?.url === 'string' && img.url.trim().length > 0)?.url;
       return [
         {
           key: `${id}-${version ?? 'default'}`,
           id,
           version,
-          icon
+          icon,
+          src: badgeSrc ?? icon.src
         }
       ];
     });
@@ -160,7 +164,14 @@
       {/if}
 
       {#each badgeViews as badge (badge.key)}
-        {#if badge.icon.src}
+        {#if badge.src}
+          <img
+            class="badge-icon"
+            src={badgeImageSource(badge.src)}
+            title={badge.icon.alt}
+            alt={badge.icon.alt}
+          />
+        {:else if badge.icon.src}
           <img
             class="badge-icon"
             src={badgeImageSource(badge.icon.src)}
