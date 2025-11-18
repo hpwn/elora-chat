@@ -32,6 +32,7 @@
     version?: string;
     icon: ReturnType<typeof resolveBadgeIcon>;
     src?: string;
+    fallbackSrc?: string;
     alt: string;
   };
 
@@ -59,8 +60,13 @@
         typeof (badge as any).imageUrl === 'string' && (badge as any).imageUrl.trim().length > 0
           ? (badge as any).imageUrl
           : undefined;
+      const platform = typeof (badge as any).platform === 'string' ? (badge as any).platform : undefined;
+      const isYoutubeModerator = platform?.toLowerCase() === 'youtube' && id.toLowerCase() === 'moderator';
       const badgeSrc =
-        imageUrl ?? badgeImages.find((img: any) => typeof img?.url === 'string' && img.url.trim().length > 0)?.url;
+        imageUrl ??
+        badgeImages.find((img: any) => typeof img?.url === 'string' && img.url.trim().length > 0)?.url ??
+        (isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined);
+      const fallbackSrc = isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined;
       return [
         {
           key: `${id}-${version ?? 'default'}`,
@@ -68,6 +74,7 @@
           version,
           icon,
           src: badgeSrc,
+          fallbackSrc,
           alt: title ?? icon.alt
         }
       ];
@@ -141,10 +148,10 @@
             title={badge.alt}
             alt={badge.alt}
           />
-        {:else if badge.icon.src}
+        {:else if badge.icon.src || badge.fallbackSrc}
           <img
             class="badge-icon"
-            src={badgeImageSource(badge.icon.src)}
+            src={badgeImageSource(badge.icon.src ?? badge.fallbackSrc)}
             title={badge.alt}
             alt={badge.alt}
           />

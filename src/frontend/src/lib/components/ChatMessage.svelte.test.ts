@@ -238,4 +238,43 @@ describe('ChatMessage', () => {
     expect(badgeImg).toBeInTheDocument();
     expect(badgeImg.src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
   });
+
+  test('falls back to local wrench icon when youtube moderator badge lacks images', () => {
+    const message: Message = {
+      author: 'FallbackMod',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [],
+      displayBadges: [
+        {
+          id: 'moderator',
+          platform: 'youtube'
+        }
+      ],
+      emotes: [],
+      fragments: [{ type: 'text', text: 'hi', emote: null }]
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const badgeImg = screen.getByAltText('Moderator') as HTMLImageElement;
+    expect(badgeImg).toBeInTheDocument();
+    expect(badgeImg.src).toContain(encodeURIComponent('/assets/badges/yt-mod-wrench.svg'));
+    expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
+  });
 });
