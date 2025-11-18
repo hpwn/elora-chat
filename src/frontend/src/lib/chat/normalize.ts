@@ -5,16 +5,18 @@
 // - Coerces ts to ms epoch (handles seconds and ISO-8601 text)
 // - Drops completely empty messages
 export type Emote = { id?: string; name?: string; images?: any[]; [k: string]: any };
-export type Badge = { id: string; version?: string | null };
+export type Badge = { id: string; version?: string | null; platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string };
 
 export interface ChatMessage {
   id: string;
   ts: number; // ms since epoch
   username: string;
-  platform: string;
+  platform: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | 'Test' | string;
   text: string;
   emotes: Emote[];
   badges: Badge[];
+  badges_raw?: unknown;
+  fragments?: any[];
   colour?: string;
   raw?: unknown;
 }
@@ -105,9 +107,13 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const colour = typeof colourRaw === 'string' && colourRaw.trim() ? colourRaw : undefined;
 
   const emotes = coerceArray(obj.emotes, obj.emotes_json);
-    const fragments = coerceArray((obj as any).fragments, (obj as any).fragments_json ?? (obj as any).tokens ?? (obj as any).tokens_json);
+  const fragments = coerceArray(
+    (obj as any).fragments,
+    (obj as any).fragments_json ?? (obj as any).tokens ?? (obj as any).tokens_json
+  );
   const badgesRaw = coerceArray(obj.badges, obj.badges_json);
   const badges = normalizeBadges(badgesRaw);
+  const badgesRawPayload = coerceRawBadges((obj as any).badges_raw ?? (obj as any).badgesRaw ?? null);
 
   const ts = coerceTimestamp(obj.ts ?? obj.timestamp ?? obj.created_at ?? obj.time ?? null);
 
@@ -123,9 +129,10 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     username,
     platform,
     text,
-          fragments,
-      emotes,
+    fragments,
+    emotes,
     badges,
+    badges_raw: badgesRawPayload,
     colour,
     raw
   } satisfies ChatMessage;
@@ -153,9 +160,30 @@ function normalizeBadges(badges: unknown[]): Badge[] {
     if (!id) continue;
     const versionRaw = record.version ?? record.badgeVersion ?? record.tier ?? record.slot;
     const version = typeof versionRaw === 'string' ? versionRaw.trim() : undefined;
-    out.push(version ? { id, version } : { id });
+    const platform = typeof record.platform === 'string' ? record.platform : undefined;
+    out.push(
+      version
+        ? platform
+          ? { id, version, platform }
+          : { id, version }
+        : platform
+          ? { id, platform }
+          : { id }
+    );
   }
   return out;
+}
+
+function coerceRawBadges(input: unknown): unknown {
+  if (typeof input === 'string') {
+    const parsed = safeJson<unknown | undefined>(input, undefined);
+    if (parsed !== undefined) return parsed;
+    return undefined;
+  }
+  if (input && typeof input === 'object') {
+    return input;
+  }
+  return undefined;
 }
 
 function coerceArray(primary: unknown, fallbackJson: unknown): any[] {

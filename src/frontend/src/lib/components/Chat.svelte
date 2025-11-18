@@ -38,10 +38,23 @@
   setContext('keymods', keymods);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
-      console.debug("[convertIncomingMessage]", { fragments: (message as any).fragments, emotes: (message as any).emotes, text: (message as any).text, platform: (message as any).platform, username: (message as any).username });
-let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
+    console.debug('[convertIncomingMessage]', {
+      fragments: (message as any).fragments,
+      emotes: (message as any).emotes,
+      text: (message as any).text,
+      platform: (message as any).platform,
+      username: (message as any).username
+    });
+
+    let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const text = typeof message.text === 'string' ? message.text : '';
-    if (!text && (!Array.isArray(message.emotes) || message.emotes.length === 0) && (!Array.isArray((message as any).fragments) || (message as any).fragments.length === 0)) { return null; }
+    if (
+      !text &&
+      (!Array.isArray(message.emotes) || message.emotes.length === 0) &&
+      (!Array.isArray((message as any).fragments) || (message as any).fragments.length === 0)
+    ) {
+      return null;
+    }
 
     const rawColour = typeof message.colour === 'string' ? message.colour : '';
     const colour = rawColour && rawColour.trim().length > 0 ? rawColour : DEFAULT_COLOUR;
@@ -56,6 +69,7 @@ let author = message.username && message.username.trim().length > 0 ? message.us
     const fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments) : [];
 
     const badges = showBadges ? coerceBadges(message.badges) : [];
+    const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
 
     return {
       author,
@@ -64,7 +78,8 @@ let author = message.username && message.username.trim().length > 0 ? message.us
       source,
       fragments,
       emotes,
-      badges
+      badges,
+      badges_raw
     } satisfies Message;
   }
 
@@ -177,7 +192,17 @@ let author = message.username && message.username.trim().length > 0 ? message.us
       if (!id) continue;
       const versionCandidate = record.version ?? record.tier ?? record.slot;
       const version = typeof versionCandidate === 'string' ? versionCandidate.trim() : undefined;
-      out.push(version ? { id, version } : { id });
+      const platformCandidate = record.platform;
+      const platform = typeof platformCandidate === 'string' ? platformCandidate : undefined;
+      out.push(
+        version
+          ? platform
+            ? { id, version, platform }
+            : { id, version }
+          : platform
+            ? { id, platform }
+            : { id }
+      );
     }
     return out;
   }
