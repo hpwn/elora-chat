@@ -32,7 +32,7 @@ export interface ChatMessage {
   raw?: unknown;
 }
 
-const YOUTUBE_MODERATOR_ICON = '/images/youtube-moderator.svg';
+const YOUTUBE_MODERATOR_ICON = '/assets/badges/yt-mod-wrench.svg';
 
 export const KEEPALIVE = '__keepalive__';
 
