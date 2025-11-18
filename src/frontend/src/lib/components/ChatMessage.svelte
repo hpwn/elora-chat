@@ -32,19 +32,18 @@
     version?: string;
     icon: ReturnType<typeof resolveBadgeIcon>;
     src?: string;
-  };
-
-  type YoutubeBadgeImage = {
-    key: string;
-    src: string;
     alt: string;
   };
 
   let badgeViews = $state<DisplayBadge[]>([]);
-  let youtubeBadges = $state<YoutubeBadgeImage[]>([]);
 
   $effect(() => {
-    const rawBadges = Array.isArray(message.badges) ? message.badges : [];
+    const rawBadges =
+      Array.isArray(message.displayBadges) && message.displayBadges.length > 0
+        ? message.displayBadges
+        : Array.isArray(message.badges)
+          ? message.badges
+          : [];
     badgeViews = rawBadges.flatMap((badge) => {
       if (!badge || typeof badge !== 'object') return [] as DisplayBadge[];
       const id = typeof badge.id === 'string' ? badge.id.trim() : '';
@@ -52,20 +51,27 @@
       const version =
         typeof badge.version === 'string' && badge.version.trim().length > 0 ? badge.version.trim() : undefined;
       const icon = resolveBadgeIcon(id, version);
+      const title = typeof (badge as any).title === 'string' && (badge as any).title.trim().length > 0
+        ? (badge as any).title
+        : undefined;
       const badgeImages = Array.isArray((badge as any).images) ? (badge as any).images : [];
-      const badgeSrc = badgeImages.find((img: any) => typeof img?.url === 'string' && img.url.trim().length > 0)?.url;
+      const imageUrl =
+        typeof (badge as any).imageUrl === 'string' && (badge as any).imageUrl.trim().length > 0
+          ? (badge as any).imageUrl
+          : undefined;
+      const badgeSrc =
+        imageUrl ?? badgeImages.find((img: any) => typeof img?.url === 'string' && img.url.trim().length > 0)?.url;
       return [
         {
           key: `${id}-${version ?? 'default'}`,
           id,
           version,
           icon,
-          src: badgeSrc ?? icon.src
+          src: badgeSrc,
+          alt: title ?? icon.alt
         }
       ];
     });
-
-    youtubeBadges = message.source === 'YouTube' ? extractYoutubeBadges(message.badges_raw) : [];
   });
 
   function badgeImageSource(src: string | undefined): string | undefined {
@@ -74,31 +80,6 @@
       return src;
     }
     return loadImage(src);
-  }
-
-  function extractYoutubeBadges(raw: unknown): YoutubeBadgeImage[] {
-    const youtube = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).youtube : undefined;
-    if (!youtube || typeof youtube !== 'object') return [];
-    const authorBadgesRaw = (youtube as Record<string, unknown>).authorBadges;
-    const authorBadges = Array.isArray(authorBadgesRaw) ? authorBadgesRaw : [];
-
-    const out: YoutubeBadgeImage[] = [];
-    for (let i = 0; i < authorBadges.length; i += 1) {
-      const entry = authorBadges[i];
-      if (!entry || typeof entry !== 'object') continue;
-      const renderer = (entry as Record<string, any>).liveChatAuthorBadgeRenderer;
-      if (!renderer || typeof renderer !== 'object') continue;
-      const thumbnails = renderer.customThumbnail?.thumbnails;
-      if (!Array.isArray(thumbnails) || thumbnails.length === 0) continue;
-      const firstThumb = thumbnails[0];
-      const url = typeof firstThumb?.url === 'string' && firstThumb.url.trim().length > 0 ? firstThumb.url : undefined;
-      if (!url) continue;
-      const alt = typeof renderer.tooltip === 'string' && renderer.tooltip.trim().length > 0
-        ? renderer.tooltip
-        : `Badge ${i + 1}`;
-      out.push({ key: `yt-${i}-${url}`, src: url, alt });
-    }
-    return out;
   }
 
   function toggleVisible() {
@@ -152,34 +133,23 @@
         </span>
       {/if}
 
-      {#if message.source === 'YouTube'}
-        {#each youtubeBadges as badge (badge.key)}
+      {#each badgeViews as badge (badge.key)}
+        {#if badge.src}
           <img
             class="badge-icon"
             src={badgeImageSource(badge.src)}
             title={badge.alt}
             alt={badge.alt}
           />
-        {/each}
-      {/if}
-
-      {#each badgeViews as badge (badge.key)}
-        {#if badge.src}
-          <img
-            class="badge-icon"
-            src={badgeImageSource(badge.src)}
-            title={badge.icon.alt}
-            alt={badge.icon.alt}
-          />
         {:else if badge.icon.src}
           <img
             class="badge-icon"
             src={badgeImageSource(badge.icon.src)}
-            title={badge.icon.alt}
-            alt={badge.icon.alt}
+            title={badge.alt}
+            alt={badge.alt}
           />
         {:else}
-          <span class="badge-label" title={badge.icon.alt} aria-label={badge.icon.alt}>
+          <span class="badge-label" title={badge.alt} aria-label={badge.alt}>
             {badge.icon.label}
           </span>
         {/if}

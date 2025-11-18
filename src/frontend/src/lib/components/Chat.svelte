@@ -68,7 +68,8 @@
     const emotes = coerceEmotes(message.emotes);
     const fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments) : [];
 
-    const badges = showBadges ? coerceBadges(message.badges) : [];
+    const badgeInput = message.displayBadges ?? message.badges;
+    const badges = showBadges ? coerceBadges(badgeInput) : [];
     const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
 
     return {
@@ -79,6 +80,7 @@
       fragments,
       emotes,
       badges,
+      displayBadges: badges,
       badges_raw
     } satisfies Message;
   }
@@ -170,7 +172,7 @@
   }
 
 
-  function coerceBadges(badges: WsChatMessage['badges']): Message['badges'] {
+  function coerceBadges(badges: WsChatMessage['badges'] | WsChatMessage['displayBadges']): Message['badges'] {
     if (!Array.isArray(badges)) return [];
     const out: Message['badges'] = [];
     for (const badge of badges) {
@@ -195,6 +197,8 @@
       const platformCandidate = record.platform;
       const platform = typeof platformCandidate === 'string' ? platformCandidate : undefined;
       const imagesRaw = Array.isArray(record.images) ? record.images : [];
+      const imageUrl = typeof (record as any).imageUrl === 'string' ? (record as any).imageUrl : undefined;
+      const title = typeof (record as any).title === 'string' ? (record as any).title : undefined;
       const images = imagesRaw.flatMap((img) => {
         if (!img || typeof img !== 'object') return [] as Message['badges'][number]['images'];
         const imageRecord = img as Record<string, unknown>;
@@ -219,7 +223,14 @@
             ? { id, platform }
             : { id };
 
-      out.push(images.length > 0 ? { ...base, images } : base);
+      const badgeWithImages = images.length > 0 ? { ...base, images } : base;
+      const withMeta = {
+        ...badgeWithImages,
+        ...(imageUrl ? { imageUrl } : {}),
+        ...(title ? { title } : {})
+      };
+
+      out.push(withMeta);
     }
     return out;
   }

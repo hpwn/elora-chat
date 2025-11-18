@@ -86,4 +86,90 @@ describe('normalizeWsPayload', () => {
     const obj = { author: '', message: '', source: 'YouTube' };
     expect(normalizeWsPayload(obj)).toBeNull();
   });
+
+  it('maps youtube member badges to image urls', () => {
+    const obj = {
+      author: 'MemberUser',
+      message: 'hi',
+      platform: 'YouTube',
+      badges: [{ id: 'member', version: '6 months', platform: 'youtube' }],
+      badges_raw: {
+        youtube: {
+          authorBadges: [
+            {
+              liveChatAuthorBadgeRenderer: {
+                tooltip: 'Member (6 months)',
+                customThumbnail: {
+                  thumbnails: [
+                    { url: 'https://example.com/badge-16.png', width: 16, height: 16 },
+                    { url: 'https://example.com/badge-32.png', width: 32, height: 32 }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.displayBadges?.[0]).toMatchObject({
+      id: 'member',
+      platform: 'youtube',
+      imageUrl: 'https://example.com/badge-32.png'
+    });
+  });
+
+  it('uses wrench icon for youtube moderators without thumbnails', () => {
+    const obj = {
+      author: 'ModUser',
+      message: 'hi',
+      platform: 'YouTube',
+      badges: [{ id: 'moderator', platform: 'youtube' }],
+      badges_raw: {
+        youtube: {
+          authorBadges: [
+            {
+              liveChatAuthorBadgeRenderer: {
+                icon: { iconType: 'MODERATOR' },
+                tooltip: 'Moderator'
+              }
+            }
+          ]
+        }
+      }
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.displayBadges?.[0]).toMatchObject({
+      id: 'moderator',
+      platform: 'youtube',
+      imageUrl: '/images/youtube-moderator.svg'
+    });
+    expect(out?.displayBadges?.[0].title).toBe('Moderator');
+  });
+
+  it('retains twitch badges when no images are present', () => {
+    const obj = {
+      author: 'TwitchUser',
+      message: 'hi',
+      platform: 'Twitch',
+      badges: [
+        { id: 'subscriber', version: '17', platform: 'twitch' },
+        { id: 'premium', version: '1', platform: 'twitch' }
+      ],
+      badges_raw: {
+        twitch: {
+          badge_info: 'subscriber/17',
+          badges: 'subscriber/12,premium/1'
+        }
+      }
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.displayBadges).toEqual([
+      { id: 'subscriber', version: '17', platform: 'twitch' },
+      { id: 'premium', version: '1', platform: 'twitch' }
+    ]);
+  });
 });

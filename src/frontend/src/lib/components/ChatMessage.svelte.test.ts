@@ -124,23 +124,14 @@ describe('ChatMessage', () => {
       colour: '#ffffff',
       source: 'YouTube',
       badges: [],
-      badges_raw: {
-        youtube: {
-          authorBadges: [
-            {
-              liveChatAuthorBadgeRenderer: {
-                customThumbnail: {
-                  thumbnails: [
-                    { url: 'https://example.com/badge-small.png', width: 16, height: 16 },
-                    { url: 'https://example.com/badge-large.png', width: 32, height: 32 }
-                  ]
-                },
-                tooltip: 'Member badge'
-              }
-            }
-          ]
+      displayBadges: [
+        {
+          id: 'member',
+          platform: 'YouTube',
+          imageUrl: 'https://example.com/badge-large.png',
+          title: 'Member badge'
         }
-      },
+      ],
       emotes: [],
       fragments: []
     };
@@ -163,6 +154,6 @@ describe('ChatMessage', () => {
 
     const badgeImg = screen.getByAltText('Member badge') as HTMLImageElement;
     expect(badgeImg).toBeInTheDocument();
-    expect(badgeImg.src).toContain(encodeURIComponent('https://example.com/badge-small.png'));
+    expect(badgeImg.src).toContain(encodeURIComponent('https://example.com/badge-large.png'));
   });
 });
