@@ -214,6 +214,9 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
     const baseImages = Array.isArray(badge.images) ? [...badge.images] : [];
     const renderer = isYoutubePlatform(badge.platform) ? youtubeRenderers[youtubeIndex++] : undefined;
 
+    const badgeId = typeof badge.id === 'string' ? badge.id : '';
+    const youtubeModerator = isYoutubePlatform(badge.platform) && badgeId.toLowerCase() === 'moderator';
+
     let imageUrl = badge.imageUrl ?? baseImages.at(-1)?.url;
     let title = badge.title;
 
@@ -234,6 +237,15 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
 
       if (!title && renderer.tooltip) {
         title = renderer.tooltip;
+      }
+    }
+
+    if (youtubeModerator) {
+      if (!imageUrl) {
+        imageUrl = YOUTUBE_MODERATOR_ICON;
+      }
+      if (!title) {
+        title = 'Moderator';
       }
     }
 

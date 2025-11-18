@@ -149,6 +149,23 @@ describe('normalizeWsPayload', () => {
     expect(out?.displayBadges?.[0].title).toBe('Moderator');
   });
 
+  it('uses wrench icon for youtube moderators without raw badge data', () => {
+    const obj = {
+      author: 'ModUser',
+      message: 'hi',
+      platform: 'YouTube',
+      badges: [{ id: 'moderator', platform: 'youtube' }]
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.displayBadges?.[0]).toMatchObject({
+      id: 'moderator',
+      platform: 'youtube',
+      imageUrl: '/images/youtube-moderator.svg',
+      title: 'Moderator'
+    });
+  });
+
   it('retains twitch badges when no images are present', () => {
     const obj = {
       author: 'TwitchUser',
