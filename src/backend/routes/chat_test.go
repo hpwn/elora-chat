@@ -212,6 +212,39 @@ func TestMessagePayloadFromStorageOverridesEmptyRawBadges(t *testing.T) {
 	}
 }
 
+func TestMessagePayloadFromStoragePreservesBadgeImages(t *testing.T) {
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"2","images":[{"url":"https://static.twitchcdn.net/badges/v1/subscriber_1x.png","width":18,"height":18},{"url":"https://static.twitchcdn.net/badges/v1/subscriber_2x.png","width":36,"height":36}]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg struct {
+		Badges []Badge `json:"badges"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+
+	if len(msg.Badges) != 1 {
+		t.Fatalf("expected 1 badge, got %d", len(msg.Badges))
+	}
+	badge := msg.Badges[0]
+	if badge.ID != "subscriber" || badge.Platform != "twitch" || badge.Version != "2" {
+		t.Fatalf("unexpected badge metadata: %#v", badge)
+	}
+	if len(badge.Images) != 2 {
+		t.Fatalf("expected 2 badge images, got %d", len(badge.Images))
+	}
+	if badge.Images[0].URL != "https://static.twitchcdn.net/badges/v1/subscriber_1x.png" || badge.Images[1].URL != "https://static.twitchcdn.net/badges/v1/subscriber_2x.png" {
+		t.Fatalf("unexpected badge images: %#v", badge.Images)
+	}
+}
+
 func TestMaybeEnvelope(t *testing.T) {
 	t.Setenv("ELORA_WS_ENVELOPE", "true")
 
