@@ -227,4 +227,36 @@ describe('normalizeWsPayload', () => {
       { id: 'premium', version: '1', platform: 'twitch' }
     ]);
   });
+
+  it('prefers twitch badge images when provided', () => {
+    const obj = {
+      author: 'TwitchUser',
+      message: 'hi',
+      platform: 'Twitch',
+      badges: [
+        {
+          id: 'subscriber',
+          platform: 'twitch',
+          images: [
+            { url: 'https://static.twitchcdn.net/badge-72.png', width: 72, height: 72 },
+            { url: 'https://static.twitchcdn.net/badge-18.png', width: 18, height: 18 }
+          ]
+        }
+      ],
+      badges_raw: {
+        twitch: {
+          badge_info: 'subscriber/17',
+          badges: 'subscriber/12'
+        }
+      }
+    };
+
+    const out = normalizeWsPayload(obj);
+    expect(out?.displayBadges?.[0]).toMatchObject({
+      id: 'subscriber',
+      platform: 'twitch',
+      imageUrl: 'https://static.twitchcdn.net/badge-18.png'
+    });
+    expect(out?.displayBadges?.[0].images?.length).toBe(2);
+  });
 });

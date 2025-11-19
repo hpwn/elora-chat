@@ -99,9 +99,10 @@ type Emote struct {
 }
 
 type Badge struct {
-	ID       string `json:"id"`
-	Platform string `json:"platform,omitempty"`
-	Version  string `json:"version,omitempty"`
+	ID       string  `json:"id"`
+	Platform string  `json:"platform,omitempty"`
+	Version  string  `json:"version,omitempty"`
+	Images   []Image `json:"images,omitempty"`
 }
 
 func (b *Badge) UnmarshalJSON(data []byte) error {
@@ -156,10 +157,75 @@ func (b *Badge) UnmarshalJSON(data []byte) error {
 		return ""
 	}
 
+	parseImages := func(raw any) []Image {
+		arr, ok := raw.([]any)
+		if !ok {
+			return nil
+		}
+		out := make([]Image, 0, len(arr))
+		for _, entry := range arr {
+			if entry == nil {
+				continue
+			}
+			rec, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			url, _ := rec["url"].(string)
+			url = strings.TrimSpace(url)
+			if url == "" {
+				continue
+			}
+
+			width := 0
+			height := 0
+			switch v := rec["width"].(type) {
+			case json.Number:
+				if i, err := v.Int64(); err == nil {
+					width = int(i)
+				}
+			case float64:
+				width = int(v)
+			case int64:
+				width = int(v)
+			case int:
+				width = v
+			}
+			switch v := rec["height"].(type) {
+			case json.Number:
+				if i, err := v.Int64(); err == nil {
+					height = int(i)
+				}
+			case float64:
+				height = int(v)
+			case int64:
+				height = int(v)
+			case int:
+				height = v
+			}
+
+			id := ""
+			if rawID, ok := rec["id"].(string); ok {
+				id = strings.TrimSpace(rawID)
+			}
+
+			out = append(out, Image{URL: url, Width: width, Height: height, ID: id})
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+
 	id := get("id", "badge_id", "name", "slug", "_id")
 	version := get("version", "badge_version")
 	platform := get("platform")
-	*b = Badge{ID: id, Platform: platform, Version: version}
+	images := parseImages(obj["images"])
+	if len(images) == 0 {
+		*b = Badge{ID: id, Platform: platform, Version: version}
+		return nil
+	}
+	*b = Badge{ID: id, Platform: platform, Version: version, Images: images}
 	return nil
 }
 
@@ -300,6 +366,21 @@ func parseStoredBadges(raw string) ([]Badge, any) {
 			badge.ID = strings.TrimSpace(badge.ID)
 			badge.Platform = strings.TrimSpace(badge.Platform)
 			badge.Version = strings.TrimSpace(badge.Version)
+			if len(badge.Images) > 0 {
+				filtered := make([]Image, 0, len(badge.Images))
+				for _, img := range badge.Images {
+					img.URL = strings.TrimSpace(img.URL)
+					if img.URL == "" {
+						continue
+					}
+					filtered = append(filtered, img)
+				}
+				if len(filtered) == 0 {
+					badge.Images = nil
+				} else {
+					badge.Images = filtered
+				}
+			}
 			if badge.ID == "" {
 				continue
 			}

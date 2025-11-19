@@ -38,6 +38,31 @@
 
   let badgeViews = $state<DisplayBadge[]>([]);
 
+  function preferredBadgeImageUrl(
+    images: Array<{ url?: string; width?: number; height?: number }>,
+    platform?: string
+  ): string | undefined {
+    const normalized = typeof platform === 'string' ? platform.toLowerCase() : '';
+    const valid = images
+      .filter((img) => img && typeof img === 'object' && typeof img.url === 'string' && img.url.trim().length > 0)
+      .map((img) => ({ ...img, url: (img.url as string).trim() }));
+    if (valid.length === 0) return undefined;
+
+    const fallback = normalized === 'twitch' ? Number.MAX_SAFE_INTEGER : -1;
+    const sorted = [...valid].sort((a, b) => {
+      const widthA = typeof a.width === 'number' && Number.isFinite(a.width) ? a.width : fallback;
+      const widthB = typeof b.width === 'number' && Number.isFinite(b.width) ? b.width : fallback;
+      if (widthA !== widthB) {
+        return normalized === 'twitch' ? widthA - widthB : widthB - widthA;
+      }
+      const heightA = typeof a.height === 'number' && Number.isFinite(a.height) ? a.height : fallback;
+      const heightB = typeof b.height === 'number' && Number.isFinite(b.height) ? b.height : fallback;
+      return normalized === 'twitch' ? heightA - heightB : heightB - heightA;
+    });
+
+    return sorted[0].url;
+  }
+
   $effect(() => {
     const rawBadges =
       Array.isArray(message.displayBadges) && message.displayBadges.length > 0
@@ -64,7 +89,7 @@
       const isYoutubeModerator = platform?.toLowerCase() === 'youtube' && id.toLowerCase() === 'moderator';
       const badgeSrc =
         imageUrl ??
-        badgeImages.find((img: any) => typeof img?.url === 'string' && img.url.trim().length > 0)?.url ??
+        preferredBadgeImageUrl(badgeImages, platform) ??
         (isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined);
       const fallbackSrc = isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined;
       return [

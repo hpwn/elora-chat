@@ -210,6 +210,32 @@ function normalizeBadges(badges: unknown[]): Badge[] {
   return out;
 }
 
+function selectPreferredBadgeImage(images: BadgeImage[], platform?: Badge['platform']): BadgeImage | undefined {
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+  const normalizedPlatform = typeof platform === 'string' ? platform.toLowerCase() : '';
+  const validImages = images.filter((img) => typeof img?.url === 'string' && img.url.trim().length > 0);
+  if (validImages.length === 0) return undefined;
+
+  const getValue = (value: number | undefined, twitchFallback: number, defaultFallback: number) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return normalizedPlatform === 'twitch' ? twitchFallback : defaultFallback;
+  };
+
+  const sorted = [...validImages].sort((a, b) => {
+    const widthA = getValue(a.width, Number.MAX_SAFE_INTEGER, -1);
+    const widthB = getValue(b.width, Number.MAX_SAFE_INTEGER, -1);
+    if (widthA !== widthB) {
+      return normalizedPlatform === 'twitch' ? widthA - widthB : widthB - widthA;
+    }
+
+    const heightA = getValue(a.height, Number.MAX_SAFE_INTEGER, -1);
+    const heightB = getValue(b.height, Number.MAX_SAFE_INTEGER, -1);
+    return normalizedPlatform === 'twitch' ? heightA - heightB : heightB - heightA;
+  });
+
+  return sorted[0];
+}
+
 function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[] {
   const youtubeRenderers = extractYoutubeBadgeRenderers(badgesRaw);
   let youtubeIndex = 0;
@@ -222,7 +248,7 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
     const rendererModerator = renderer?.iconType === 'MODERATOR';
     const youtubeModerator = (isYoutubePlatform(badge.platform) || rendererModerator) && badgeId.toLowerCase() === 'moderator';
 
-    let imageUrl = badge.imageUrl ?? baseImages.at(-1)?.url;
+    let imageUrl = badge.imageUrl ?? selectPreferredBadgeImage(baseImages, badge.platform)?.url;
     let title = badge.title;
 
     if (renderer) {
@@ -257,6 +283,10 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
       if (imageUrl === YOUTUBE_MODERATOR_ICON && !baseImages.some((img) => img.url === imageUrl)) {
         baseImages.push({ url: imageUrl });
       }
+    }
+
+    if (!imageUrl) {
+      imageUrl = selectPreferredBadgeImage(baseImages, badge.platform)?.url;
     }
 
     const display: DisplayBadge = { ...badge };

@@ -277,4 +277,49 @@ describe('ChatMessage', () => {
     expect(badgeImg.src).toContain('/assets/badges/yt-mod-wrench.svg');
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
+
+  test('renders twitch badge images when provided', () => {
+    const message: Message = {
+      author: 'TwitchUser',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'Twitch',
+      badges: [],
+      displayBadges: [
+        {
+          id: 'subscriber',
+          version: '2',
+          platform: 'twitch',
+          imageUrl: 'https://static.twitchcdn.net/badges/v1/subscriber_1x.png',
+          images: [
+            { url: 'https://static.twitchcdn.net/badges/v1/subscriber_1x.png', width: 18, height: 18 },
+            { url: 'https://static.twitchcdn.net/badges/v1/subscriber_2x.png', width: 36, height: 36 }
+          ]
+        }
+      ],
+      emotes: [],
+      fragments: [{ type: 'text', text: 'hi', emote: null }]
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const badgeImg = screen.getByAltText('Subscriber 2') as HTMLImageElement;
+    expect(badgeImg).toBeInTheDocument();
+    expect(badgeImg.tagName).toBe('IMG');
+    expect(badgeImg.src).toContain(encodeURIComponent('https://static.twitchcdn.net/badges/v1/subscriber_1x.png'));
+  });
 });
