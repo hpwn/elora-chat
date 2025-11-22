@@ -5,14 +5,16 @@
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
-  import { hideYouTubeAt, showBadges, wsUrl as configuredWsUrl } from '$lib/config';
+  import { apiPath, hideYouTubeAt, showBadges, wsUrl as configuredWsUrl } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
+  import { normalizeWsPayload } from '$lib/chat/normalize';
   import { SvelteSet } from 'svelte/reactivity';
 
   const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
   const DEFAULT_COLOUR = '#ffffff';
   const DEFAULT_SOURCE: Message['source'] = 'YouTube';
-  const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test']);
+  const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
+  const HISTORY_LIMIT = 200;
 
   let container: HTMLDivElement;
 
@@ -122,6 +124,79 @@
       });
     }
     return out;
+  }
+
+  function safeJsonParse<T>(raw: unknown, fallback: T): T {
+    if (typeof raw !== 'string') return fallback;
+    try {
+      return JSON.parse(raw) as T;
+    } catch (err) {
+      console.error('[chat] failed to parse json', err);
+      return fallback;
+    }
+  }
+
+  function normalizeApiMessage(item: any): WsChatMessage | null {
+    if (!item || typeof item !== 'object') return null;
+
+    const rawPayload = typeof item.raw_json === 'string' ? safeJsonParse<Record<string, unknown> | null>(item.raw_json, null) : null;
+    const normalizedFromRaw = rawPayload ? normalizeWsPayload(rawPayload) : null;
+    if (normalizedFromRaw) {
+      return normalizedFromRaw;
+    }
+
+    const text = typeof item.text === 'string' ? item.text : '';
+    if (!text.trim()) return null;
+
+    const tsCandidate = typeof item.ts === 'string' ? Date.parse(item.ts) : Number(item.ts);
+    const ts = Number.isFinite(tsCandidate) ? tsCandidate : Date.now();
+
+    const idCandidate = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id : `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const emotes = safeJsonParse<any[]>(item.emotes_json, []);
+
+    return {
+      id: idCandidate,
+      ts,
+      username: typeof item.username === 'string' && item.username.trim().length > 0 ? item.username : '(unknown)',
+      platform: typeof item.platform === 'string' && item.platform.trim().length > 0 ? item.platform : DEFAULT_SOURCE,
+      text,
+      fragments: text ? [{ type: 'text', text, emote: null }] : [],
+      emotes,
+      badges: [],
+      colour: undefined
+    } satisfies WsChatMessage;
+  }
+
+  async function fetchRecentMessages() {
+    try {
+      const params = new URLSearchParams({ limit: HISTORY_LIMIT.toString() });
+      const response = await fetch(apiPath(`/api/messages?${params.toString()}`));
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      const normalizedMessages = items
+        .map(normalizeApiMessage)
+        .filter((m): m is WsChatMessage => m !== null)
+        .map((m) => convertIncomingMessage(m))
+        .filter((m): m is Message => m !== null);
+
+      console.log('[chat] fetched recent messages', {
+        count: normalizedMessages.length,
+        sample: normalizedMessages.slice(0, 5).map((m) => m.author)
+      });
+
+      if (normalizedMessages.length > 0) {
+        messages = normalizedMessages.reverse();
+        setTimeout(() => {
+          container.scrollTop = container.scrollHeight;
+        }, 0);
+      }
+    } catch (err) {
+      console.error('[chat] failed to load recent messages', err);
+    }
   }
 
   function coerceFragments(fragments: any): Message['fragments'] {
@@ -340,6 +415,7 @@
   }
 
   onMount(() => {
+    fetchRecentMessages();
     initializeWebSocket();
 
     document.addEventListener('keydown', (e) => {
