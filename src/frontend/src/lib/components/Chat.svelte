@@ -189,7 +189,14 @@
       });
 
       if (normalizedMessages.length > 0) {
-        messages = normalizedMessages.reverse();
+        const history = normalizedMessages.reverse();
+        if (messages.length === 0) {
+          messages = history;
+        } else {
+          const existingIds = new Set(messages.map((m) => m.id));
+          const mergedHistory = history.filter((m) => !existingIds.has(m.id));
+          messages = [...mergedHistory, ...messages];
+        }
         setTimeout(() => {
           container.scrollTop = container.scrollHeight;
         }, 0);
