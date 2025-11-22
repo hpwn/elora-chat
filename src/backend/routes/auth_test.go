@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -168,7 +169,7 @@ func TestTwitchCallbackWritesGnastyTokens(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, "Connected") {
+	if body := rr.Body.String(); !strings.Contains(body, "redirecting back to Elora") || !strings.Contains(body, "window.location.href") {
 		t.Fatalf("unexpected body: %q", body)
 	}
 
@@ -261,7 +262,7 @@ func TestTwitchCallbackHandlesExchangeFailure(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, "Connected") {
+	if body := rr.Body.String(); !strings.Contains(body, "redirecting back to Elora") || !strings.Contains(body, "window.location.href") {
 		t.Fatalf("unexpected body: %q", body)
 	}
 
@@ -354,12 +355,87 @@ func TestTwitchCallbackReloadsWhenURLSetOnExchangeFailure(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, "Connected") {
+	if body := rr.Body.String(); !strings.Contains(body, "redirecting back to Elora") || !strings.Contains(body, "window.location.href") {
 		t.Fatalf("unexpected body: %q", body)
 	}
 
 	if calls != 1 {
 		t.Fatalf("expected 1 gnasty call, got %d", calls)
+	}
+}
+
+func TestTwitchCallbackReloadDialErrorDoesNotFail(t *testing.T) {
+	prevStore := chatStore
+	store := newStubStore()
+	chatStore = store
+	t.Cleanup(func() { chatStore = prevStore })
+
+	state := "dialerror"
+	if err := storeOAuthState(context.Background(), state); err != nil {
+		t.Fatalf("storeOAuthState: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"access_token":"abc","refresh_token":"ref","expires_in":3600,"token_type":"bearer"}`)
+		case "/helix/users":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"data":[{"id":"1"}]}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prevConfig := twitchOAuthConfig
+	twitchOAuthConfig = &oauth2.Config{
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		RedirectURL:  "https://example.com/callback",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  server.URL + "/oauth2/authorize",
+			TokenURL: server.URL + "/oauth2/token",
+		},
+	}
+	t.Cleanup(func() { twitchOAuthConfig = prevConfig })
+
+	prevUserInfo := twitchUserInfoURL
+	twitchUserInfoURL = server.URL + "/helix/users"
+	t.Cleanup(func() { twitchUserInfoURL = prevUserInfo })
+
+	prevHTTPClient := twitchHTTPClient
+	twitchHTTPClient = server.Client()
+	t.Cleanup(func() { twitchHTTPClient = prevHTTPClient })
+
+	prevGnastyClient := gnastyHTTPClient
+	gnastyHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: "gnasty", IsNotFound: true}
+	})}
+	t.Cleanup(func() { gnastyHTTPClient = prevGnastyClient })
+
+	dataDir := t.TempDir()
+	t.Setenv("ELORA_DATA_DIR", dataDir)
+	t.Setenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS", "1")
+
+	router := mux.NewRouter()
+	SetupAuthRoutes(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/callback/twitch?state="+state+"&code=ok", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", rr.Code, http.StatusOK)
+	}
+
+	if _, err := os.Stat(filepath.Join(dataDir, "twitch_irc.pass")); err != nil {
+		t.Fatalf("access token file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "twitch_refresh.pass")); err != nil {
+		t.Fatalf("refresh token file: %v", err)
 	}
 }
 

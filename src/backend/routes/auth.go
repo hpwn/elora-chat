@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,14 +54,15 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	// Generate a new random state for the OAuth flow
 	state, err := generateState()
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("auth: failed to generate oauth state: %v", err)
+		writeTwitchLoginFailure(w, r)
 		return
 	}
 
 	// Store the state via the backing store with an expiration window.
 	if err := storeOAuthState(r.Context(), state); err != nil {
-		log.Printf("auth: failed to persist oauth state: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("auth: failed to persist oauth state via main db: %v", err)
+		writeTwitchLoginFailure(w, r)
 		return
 	}
 
@@ -170,13 +172,20 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("auth: failed to persist gnasty tokens: %v", err)
 		}
 		if wrote || strings.TrimSpace(os.Getenv("ELORA_GNASTY_RELOAD_URL")) != "" {
-			triggerGnastyReload(r.Context())
+			reloadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			if err := triggerGnastyReload(reloadCtx); err != nil {
+				if isDialOrHostError(err) {
+					log.Printf("auth: gnasty reload warning: %v", err)
+				} else {
+					log.Printf("auth: gnasty reload failed: %v", err)
+				}
+			}
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("<!DOCTYPE html><html><body>Connected ✔</body></html>"))
+	writeTwitchConnectedPage(w)
 }
 
 func updateSessionDataForService(w http.ResponseWriter, userData map[string]any, service string, sessionToken string) {
@@ -310,7 +319,11 @@ func persistGnastyTokens(token *oauth2.Token) (bool, error) {
 	return wrote, nil
 }
 
-func triggerGnastyReload(ctx context.Context) {
+func triggerGnastyReload(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	url := strings.TrimSpace(os.Getenv("ELORA_GNASTY_RELOAD_URL"))
 	if url == "" {
 		port := strings.TrimSpace(os.Getenv("GNASTY_HTTP_PORT"))
@@ -320,7 +333,7 @@ func triggerGnastyReload(ctx context.Context) {
 		url = fmt.Sprintf("http://gnasty:%s/admin/twitch/reload", port)
 	}
 	if url == "" {
-		return
+		return nil
 	}
 
 	client := gnastyHTTPClient
@@ -330,20 +343,19 @@ func triggerGnastyReload(ctx context.Context) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		log.Printf("auth: failed to build gnasty reload request: %v", err)
-		return
+		return fmt.Errorf("auth: failed to build gnasty reload request: %w", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("auth: gnasty reload request failed: %v", err)
-		return
+		return fmt.Errorf("auth: gnasty reload request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode >= 400 {
-		log.Printf("auth: gnasty reload returned %s", resp.Status)
+		return fmt.Errorf("auth: gnasty reload returned %s", resp.Status)
 	}
+	return nil
 }
 
 // Helper function to check if a service is already in the services slice
@@ -573,9 +585,9 @@ func storeOAuthState(c context.Context, state string) error {
 	if chatStore == nil {
 		return errors.New("storage not configured")
 	}
-	if c == nil {
-		c = context.Background()
-	}
+
+	ctx, cancel := durableContext(c, 5*time.Second)
+	defer cancel()
 
 	payload, err := json.Marshal(map[string]any{"state": "valid"})
 	if err != nil {
@@ -583,7 +595,7 @@ func storeOAuthState(c context.Context, state string) error {
 	}
 
 	now := time.Now().UTC()
-	return chatStore.UpsertSession(c, &storage.Session{
+	return chatStore.UpsertSession(ctx, &storage.Session{
 		Token:       oauthStateKey(state),
 		Service:     "oauth",
 		DataJSON:    string(payload),
@@ -592,8 +604,56 @@ func storeOAuthState(c context.Context, state string) error {
 	})
 }
 
+func durableContext(parent context.Context, minTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), minTimeout)
+	}
+
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) >= minTimeout {
+		return parent, func() {}
+	}
+
+	return context.WithTimeout(context.Background(), minTimeout)
+}
+
 func oauthStateKey(state string) string {
 	return "oauth-state:" + state
+}
+
+func writeTwitchLoginFailure(w http.ResponseWriter, r *http.Request) {
+	message := "Twitch login failed, please try again."
+	status := http.StatusBadGateway
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": message})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte("<!DOCTYPE html><html><body><p>Twitch login failed, please try again.</p></body></html>"))
+}
+
+func writeTwitchConnectedPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<!DOCTYPE html><html><body>Connected ✔, redirecting back to Elora…<script>setTimeout(function(){ window.location.href = "/"; }, 1500);</script></body></html>`))
+}
+
+func isDialOrHostError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
 }
 
 func loadSession(c context.Context, token string) (*storage.Session, map[string]any, error) {
