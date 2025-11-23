@@ -132,6 +132,67 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	}
 }
 
+func TestSQLiteDebugRawMessages(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	msgs := []struct {
+		id       string
+		platform string
+		ts       time.Time
+	}{
+		{id: "a", platform: "twitch", ts: base},
+		{id: "b", platform: "youtube", ts: base.Add(500 * time.Millisecond)},
+		{id: "c", platform: "twitch", ts: base.Add(time.Second)},
+	}
+
+	for _, m := range msgs {
+		msg := &storage.Message{ID: m.id, Platform: m.platform, Username: "u", Text: m.id, Timestamp: m.ts}
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage %s returned error: %v", m.id, err)
+		}
+	}
+
+	rows, err := store.DebugRawMessages(ctx, DebugRawQueryOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("DebugRawMessages returned error: %v", err)
+	}
+	if len(rows) != len(msgs) {
+		t.Fatalf("expected %d rows, got %d", len(msgs), len(rows))
+	}
+	if rows[0].RowID <= rows[1].RowID {
+		t.Fatalf("expected descending rowid order, got %d then %d", rows[0].RowID, rows[1].RowID)
+	}
+
+	platformRows, err := store.DebugRawMessages(ctx, DebugRawQueryOpts{Platform: "youtube", Limit: 5})
+	if err != nil {
+		t.Fatalf("DebugRawMessages platform filter error: %v", err)
+	}
+	if len(platformRows) != 1 || platformRows[0].Platform != "youtube" {
+		t.Fatalf("expected single youtube row, got %#v", platformRows)
+	}
+
+	after := msgs[0].ts.UnixMilli()
+	before := msgs[2].ts.UnixMilli()
+	between, err := store.DebugRawMessages(ctx, DebugRawQueryOpts{AfterTS: &after, BeforeTS: &before, Limit: 5})
+	if err != nil {
+		t.Fatalf("DebugRawMessages between filter error: %v", err)
+	}
+	if len(between) != 1 || between[0].Platform != "youtube" {
+		t.Fatalf("expected filtered middle row, got %#v", between)
+	}
+}
+
 func TestSQLiteTailNextIncludesBadges(t *testing.T) {
 	store := New(Config{})
 	ctx := context.Background()
