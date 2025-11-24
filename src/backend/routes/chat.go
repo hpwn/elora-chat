@@ -679,9 +679,12 @@ func broadcastChatMessage(msg []byte) {
 	for _, ch := range targets {
 		payload := make([]byte, len(msg))
 		copy(payload, msg)
+
 		select {
 		case ch <- payload:
-		default:
+		case <-time.After(2 * time.Second):
+			log.Printf("ws: subscriber stalled; dropping connection")
+			removeSubscriber(ch)
 		}
 	}
 }

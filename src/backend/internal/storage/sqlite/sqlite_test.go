@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 )
 
@@ -127,7 +128,7 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(got))
 	}
-	if got[0].ID != "msg-4" || got[1].ID != "msg-3" {
+	if got[0].ID != "msg-3" || got[1].ID != "msg-2" {
 		t.Fatalf("unexpected IDs: %#v", got)
 	}
 }
@@ -274,6 +275,64 @@ func TestSQLiteGetRecentStableOrdering(t *testing.T) {
 		if got[i].ID != want {
 			t.Fatalf("expected ID %q at index %d, got %q", want, i, got[i].ID)
 		}
+	}
+}
+
+func TestSQLiteTailNextStableOrderingWithSharedTimestamps(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	fixtures := []storage.Message{
+		{ID: "yt-1", Timestamp: ts, Username: "yt-1", Platform: "youtube", Text: "hello a"},
+		{ID: "tw-1", Timestamp: ts, Username: "tw-1", Platform: "twitch", Text: "hello b"},
+		{ID: "yt-2", Timestamp: ts, Username: "yt-2", Platform: "youtube", Text: "hello c"},
+		{ID: "tw-2", Timestamp: ts, Username: "tw-2", Platform: "twitch", Text: "hello d"},
+	}
+
+	for i := range fixtures {
+		if err := store.InsertMessage(ctx, &fixtures[i]); err != nil {
+			t.Fatalf("InsertMessage(%q) returned error: %v", fixtures[i].ID, err)
+		}
+	}
+
+	pos := storage.TailPosition{}
+	seen := make([]string, 0, len(fixtures))
+
+	for {
+		batch, nextPos, err := store.TailNext(ctx, pos, 2)
+		if err != nil {
+			t.Fatalf("TailNext returned error: %v", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, m := range batch {
+			seen = append(seen, m.ID)
+		}
+		pos = nextPos
+	}
+
+	if len(seen) != len(fixtures) {
+		t.Fatalf("expected %d messages, got %d: %v", len(fixtures), len(seen), seen)
+	}
+
+	expectedOrder := []string{"yt-1", "tw-1", "yt-2", "tw-2"}
+	if diff := cmp.Diff(expectedOrder, seen); diff != "" {
+		t.Fatalf("unexpected ordering (-want +got):\n%s", diff)
+	}
+
+	if pos.TS == 0 || pos.RowID == 0 {
+		t.Fatalf("expected tail position to advance, got ts=%d rowid=%d", pos.TS, pos.RowID)
 	}
 }
 
