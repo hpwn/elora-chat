@@ -3,6 +3,7 @@ module github.com/hpwn/EloraChat/src/backend
 go 1.24.2
 
 require (
+	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1

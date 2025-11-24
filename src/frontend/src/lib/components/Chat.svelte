@@ -16,6 +16,18 @@
   const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
   const HISTORY_LIMIT = 200;
 
+  type PlatformCounter = Map<Message['source'] | 'unknown', number>;
+  const debugCounters = {
+    wsReceived: 0,
+    enqueued: 0,
+    appended: 0,
+    trimmed: 0,
+    wsBySource: new Map() as PlatformCounter,
+    queueBySource: new Map() as PlatformCounter,
+    appendedBySource: new Map() as PlatformCounter,
+    trimmedBySource: new Map() as PlatformCounter
+  };
+
   let container: HTMLDivElement;
 
   let ws: WebSocket | null = $state(null);
@@ -38,6 +50,31 @@
 
   setContext('blacklist', blacklist);
   setContext('keymods', keymods);
+
+  function incrementCounter(map: PlatformCounter, platform: Message['source'] | 'unknown', delta = 1) {
+    const current = map.get(platform) ?? 0;
+    map.set(platform, current + delta);
+  }
+
+  function normalizeSourceValue(raw: unknown): Message['source'] | 'unknown' {
+    if (typeof raw !== 'string') return 'unknown';
+    const trimmed = raw.trim() as Message['source'];
+    return ALLOWED_SOURCES.has(trimmed) ? trimmed : 'unknown';
+  }
+
+  function logDebug(stage: string) {
+    if (!CHAT_DEBUG) return;
+    console.debug('[chat-debug]', stage, {
+      wsReceived: debugCounters.wsReceived,
+      enqueued: debugCounters.enqueued,
+      appended: debugCounters.appended,
+      trimmed: debugCounters.trimmed,
+      wsBySource: Object.fromEntries(debugCounters.wsBySource),
+      queueBySource: Object.fromEntries(debugCounters.queueBySource),
+      appendedBySource: Object.fromEntries(debugCounters.appendedBySource),
+      trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource)
+    });
+  }
 
   interface MessagesResponse {
     items?: any[];
@@ -439,42 +476,79 @@
     }
   }
 
-  function processMessageQueue() {
-    // console.log("Processing message queue", messageQueue);
-    if (messageQueue.length === 0) {
-      processing = false;
-      return;
-    }
+  function trimHistory(limit = HISTORY_LIMIT) {
+    if (messages.length <= limit) return;
+    const overflow = messages.length - limit;
+    const trimmed = messages.slice(0, overflow);
+    messages = messages.slice(overflow);
 
-    const N = 200;
-    if (messageQueue.length > N) {
-      messageQueue = messageQueue.slice(-N);
+    if (CHAT_DEBUG) {
+      debugCounters.trimmed += trimmed.length;
+      for (const m of trimmed) {
+        incrementCounter(debugCounters.trimmedBySource, m.source ?? 'unknown');
+      }
+      console.warn('[chat] trimmed chat history', {
+        overflow,
+        trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource),
+        remaining: messages.length
+      });
+      logDebug('trim');
+    }
+  }
+
+  function processMessageQueue() {
+    if (processing) {
+      return;
     }
 
     processing = true;
 
-    const [next, ...rest] = messageQueue;
-    messageQueue = rest;
+    let processed = 0;
 
-    if (!next) {
+    while (messageQueue.length > 0) {
+      const next = messageQueue.shift();
+      if (!next) {
+        continue;
+      }
+
+      if (next.colour === '#000000') next.colour = '#CCCCCC';
+
+      messages = [...messages, next];
+      processed++;
+
+      if (CHAT_DEBUG) {
+        debugCounters.appended++;
+        incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
+      }
+
+      trimHistory();
+    }
+
+    if (processed === 0) {
       processing = false;
       return;
     }
 
-    if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-    messages = [...messages, next];
-
-    if (!paused) {
-      setTimeout(() => {
-        container.scrollTop = container.scrollHeight;
-        newMessageCount = 0;
-      }, 0);
-    } else {
-      newMessageCount = newMessageCount + 1;
+    if (CHAT_DEBUG) {
+      logDebug('append');
     }
 
-    setTimeout(processMessageQueue, 0);
+    if (!paused) {
+      requestAnimationFrame(() => {
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        }
+        newMessageCount = 0;
+      });
+    } else {
+      newMessageCount = newMessageCount + processed;
+    }
+
+    processing = false;
+
+    if (messageQueue.length > 0) {
+      setTimeout(processMessageQueue, 0);
+    }
   }
 
   function handleScroll() {
@@ -496,10 +570,26 @@
 
     if (CHAT_DEBUG) console.log('[chat] url:', wsUrl);
     ws = connectChat((incoming) => {
+      if (CHAT_DEBUG) {
+        const platform = normalizeSourceValue((incoming as any)?.platform);
+        debugCounters.wsReceived += 1;
+        incrementCounter(debugCounters.wsBySource, platform);
+      }
+
       const normalized = convertIncomingMessage(incoming);
-      if (!normalized) return;
+      if (!normalized) {
+        if (CHAT_DEBUG) {
+          logDebug('ws-drop');
+        }
+        return;
+      }
 
       messageQueue = [...messageQueue, normalized];
+      if (CHAT_DEBUG) {
+        debugCounters.enqueued += 1;
+        incrementCounter(debugCounters.queueBySource, normalized.source ?? 'unknown');
+        logDebug('enqueue');
+      }
       if (!processing) processMessageQueue();
     }, wsUrl);
 
