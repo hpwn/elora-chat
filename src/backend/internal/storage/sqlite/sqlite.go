@@ -325,14 +325,15 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		clauses = append(clauses, "ts >= ?")
 		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
-	if q.BeforeTS != nil {
-		rowIDBound := int64(math.MaxInt64)
-		if q.BeforeRowID != nil {
-			rowIDBound = *q.BeforeRowID
-		}
-		clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
-		args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), rowIDBound)
-	}
+       if q.BeforeTS != nil {
+               if q.BeforeRowID != nil {
+                       clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
+                       args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
+               } else {
+                       clauses = append(clauses, "ts < ?")
+                       args = append(args, q.BeforeTS.UTC().UnixMilli())
+               }
+       }
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
