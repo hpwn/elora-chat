@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -311,8 +312,11 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	if q.SinceTS != nil && q.BeforeTS != nil {
 		return nil, errors.New("sqlite: since_ts and before_ts are mutually exclusive")
 	}
+	if q.BeforeRowID != nil && q.BeforeTS == nil {
+		return nil, errors.New("sqlite: before_rowid requires before_ts")
+	}
 
-	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, '') FROM messages`
+	query := `SELECT rowid, id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, '') FROM messages`
 	var (
 		clauses []string
 		args    []any
@@ -321,14 +325,19 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		clauses = append(clauses, "ts >= ?")
 		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
-	if q.BeforeTS != nil {
-		clauses = append(clauses, "ts < ?")
-		args = append(args, q.BeforeTS.UTC().UnixMilli())
-	}
+       if q.BeforeTS != nil {
+               if q.BeforeRowID != nil {
+                       clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
+                       args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
+               } else {
+                       clauses = append(clauses, "ts < ?")
+                       args = append(args, q.BeforeTS.UTC().UnixMilli())
+               }
+       }
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY ts DESC, CAST(id AS INTEGER) DESC, id DESC"
+	query += " ORDER BY ts DESC, rowid DESC"
 	if q.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, q.Limit)
@@ -346,7 +355,7 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 			msg storage.Message
 			ts  int64
 		)
-		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.BadgesJSON, &msg.RawJSON); err != nil {
+		if err := rows.Scan(&msg.RowID, &msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.BadgesJSON, &msg.RawJSON); err != nil {
 			return nil, fmt.Errorf("sqlite: scan message: %w", err)
 		}
 		msg.Timestamp = time.UnixMilli(ts).UTC()

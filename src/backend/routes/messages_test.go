@@ -32,6 +32,7 @@ type recentMessageResponse struct {
 type messagesAPIPayload struct {
 	Items        []recentMessageResponse `json:"items"`
 	NextBeforeTS *int64                  `json:"next_before_ts"`
+	NextBeforeID *int64                  `json:"next_before_rowid"`
 }
 
 func withSQLiteStore(t *testing.T) func() {
@@ -264,7 +265,11 @@ func TestHandleGetRecentMessages_BeforeTS(t *testing.T) {
 		t.Fatalf("expected most recent message, got %q", first.Items[0].ID)
 	}
 
-	nextURL := fmt.Sprintf("/api/messages?limit=2&before_ts=%s", strconv.FormatInt(*first.NextBeforeTS, 10))
+	if first.NextBeforeID == nil {
+		t.Fatalf("expected next_before_rowid on first page")
+	}
+
+	nextURL := fmt.Sprintf("/api/messages?limit=2&before_ts=%s&before_rowid=%d", strconv.FormatInt(*first.NextBeforeTS, 10), *first.NextBeforeID)
 	req2 := httptest.NewRequest(http.MethodGet, nextURL, nil)
 	rr2 := httptest.NewRecorder()
 	router.ServeHTTP(rr2, req2)
@@ -289,6 +294,79 @@ func TestHandleGetRecentMessages_BeforeTS(t *testing.T) {
 	}
 }
 
+func TestHandleGetRecentMessages_PaginationStableAcrossIdenticalTimestamps(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	seeds := []storage.Message{
+		{ID: "msg-1", Timestamp: base, Username: "user-a", Platform: "youtube", Text: "one"},
+		{ID: "msg-2", Timestamp: base, Username: "user-b", Platform: "twitch", Text: "two"},
+		{ID: "msg-3", Timestamp: base, Username: "user-c", Platform: "youtube", Text: "three"},
+		{ID: "msg-4", Timestamp: base, Username: "user-d", Platform: "twitch", Text: "four"},
+	}
+
+	for i := range seeds {
+		if err := chatStore.InsertMessage(context.Background(), &seeds[i]); err != nil {
+			t.Fatalf("insert message %d: %v", i, err)
+		}
+	}
+
+	router := newMessagesRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?limit=2", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status for page 1: %d", rr.Code)
+	}
+
+	var first messagesAPIPayload
+	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode page 1: %v", err)
+	}
+
+	if len(first.Items) != 2 {
+		t.Fatalf("expected 2 items on first page, got %d", len(first.Items))
+	}
+	if first.NextBeforeTS == nil || first.NextBeforeID == nil {
+		t.Fatalf("expected cursor including both timestamp and rowid on first page")
+	}
+
+	nextURL := fmt.Sprintf("/api/messages?limit=2&before_ts=%d&before_rowid=%d", *first.NextBeforeTS, *first.NextBeforeID)
+	req2 := httptest.NewRequest(http.MethodGet, nextURL, nil)
+	rr2 := httptest.NewRecorder()
+	router.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("unexpected status for page 2: %d", rr2.Code)
+	}
+
+	var second messagesAPIPayload
+	if err := json.Unmarshal(rr2.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+
+	if second.NextBeforeTS != nil || second.NextBeforeID != nil {
+		t.Fatalf("expected no further cursors after consuming all items")
+	}
+
+	if len(second.Items) != 2 {
+		t.Fatalf("expected 2 items on second page, got %d", len(second.Items))
+	}
+
+	seen := make(map[string]struct{})
+	for _, it := range append(first.Items, second.Items...) {
+		seen[it.ID] = struct{}{}
+	}
+	for _, msg := range seeds {
+		if _, ok := seen[msg.ID]; !ok {
+			t.Fatalf("missing message %s across paginated results", msg.ID)
+		}
+	}
+}
+
 func TestHandleGetRecentMessages_ConflictingCursors(t *testing.T) {
 	cleanup := withSQLiteStore(t)
 	defer cleanup()
@@ -303,6 +381,23 @@ func TestHandleGetRecentMessages_ConflictingCursors(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetRecentMessages_RowIDWithoutTimestamp(t *testing.T) {
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	_ = seedRecentMessages(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?before_rowid=5", nil)
+	rr := httptest.NewRecorder()
+
+	router := newMessagesRouter()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 when before_rowid is provided without before_ts, got %d", rr.Code)
 	}
 }
 

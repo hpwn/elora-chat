@@ -39,6 +39,22 @@
   setContext('blacklist', blacklist);
   setContext('keymods', keymods);
 
+  interface MessagesResponse {
+    items?: any[];
+    next_before_ts?: number | null;
+    next_before_rowid?: number | null;
+  }
+
+  type MessageCursor = {
+    beforeTs: number;
+    beforeRowID: number | null;
+  };
+
+  let nextBeforeTs: number | null = $state(null);
+  let nextBeforeRowID: number | null = $state(null);
+  let loadingHistory = $state(false);
+  let historyExhausted = $state(false);
+
   function convertIncomingMessage(message: WsChatMessage): Message | null {
     console.debug('[convertIncomingMessage]', {
       fragments: (message as any).fragments,
@@ -49,6 +65,12 @@
     });
 
     let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
+    const tsCandidate = typeof message.ts === 'number' ? message.ts : Number(message.ts);
+    const ts = Number.isFinite(tsCandidate) ? tsCandidate : Date.now();
+
+    const idCandidate = typeof message.id === 'string' && message.id.trim().length > 0 ? message.id : '';
+    const id = idCandidate || `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+
     const text = typeof message.text === 'string' ? message.text : '';
     if (
       !text &&
@@ -79,6 +101,8 @@
     const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
 
     return {
+      id,
+      ts,
       author,
       message: text,
       colour,
@@ -167,15 +191,69 @@
     } satisfies WsChatMessage;
   }
 
-  async function fetchRecentMessages() {
+  function parseCursorValue(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  function applyHistoryToState(history: Message[], cursor?: MessageCursor) {
+    if (history.length === 0) return;
+
+    const ordered = history.reverse();
+    const existingIds = new Set(messages.map((m) => m.id ?? ''));
+    const mergedHistory = ordered.filter((m) => {
+      const id = m.id ?? '';
+      if (!id) return true;
+      return !existingIds.has(id);
+    });
+
+    if (mergedHistory.length === 0) return;
+
+    if (cursor) {
+      const prevScrollHeight = container?.scrollHeight ?? 0;
+      messages = [...mergedHistory, ...messages];
+      // Keep the user's place when prepending older messages.
+      requestAnimationFrame(() => {
+        if (!container) return;
+        const newHeight = container.scrollHeight;
+        container.scrollTop = container.scrollTop + (newHeight - prevScrollHeight);
+      });
+    } else {
+      if (messages.length === 0) {
+        messages = mergedHistory;
+      } else {
+        messages = [...mergedHistory, ...messages];
+      }
+      setTimeout(() => {
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        }
+      }, 0);
+    }
+  }
+
+  async function fetchMessagesPage(cursor?: MessageCursor) {
     try {
       const params = new URLSearchParams({ limit: HISTORY_LIMIT.toString() });
+      if (cursor?.beforeTs != null) {
+        params.set('before_ts', cursor.beforeTs.toString());
+        if (cursor.beforeRowID != null) {
+          params.set('before_rowid', cursor.beforeRowID.toString());
+        }
+      }
+
+      // Use (ts, rowid) as a stable pagination cursor when available to avoid skipping
+      // or repeating messages that share the same timestamp between pages.
       const response = await fetch(apiPath(`/api/messages?${params.toString()}`));
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const payload = await response.json();
+      const payload = (await response.json()) as MessagesResponse;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       const normalizedMessages = items
         .map(normalizeApiMessage)
@@ -183,27 +261,31 @@
         .map((m) => convertIncomingMessage(m))
         .filter((m): m is Message => m !== null);
 
-      console.log('[chat] fetched recent messages', {
+      nextBeforeTs = parseCursorValue(payload?.next_before_ts);
+      nextBeforeRowID = parseCursorValue(payload?.next_before_rowid);
+      historyExhausted = nextBeforeTs === null;
+
+      console.log('[chat] fetched messages page', {
         count: normalizedMessages.length,
-        sample: normalizedMessages.slice(0, 5).map((m) => m.author)
+        before_ts: cursor?.beforeTs,
+        before_rowid: cursor?.beforeRowID,
+        next_before_ts: nextBeforeTs,
+        next_before_rowid: nextBeforeRowID
       });
 
       if (normalizedMessages.length > 0) {
-        const history = normalizedMessages.reverse();
-        if (messages.length === 0) {
-          messages = history;
-        } else {
-          const existingIds = new Set(messages.map((m) => m.id));
-          const mergedHistory = history.filter((m) => !existingIds.has(m.id));
-          messages = [...mergedHistory, ...messages];
-        }
-        setTimeout(() => {
-          container.scrollTop = container.scrollHeight;
-        }, 0);
+        applyHistoryToState(normalizedMessages, cursor);
       }
     } catch (err) {
-      console.error('[chat] failed to load recent messages', err);
+      console.error('[chat] failed to load messages', err);
     }
+  }
+
+  async function loadOlderMessages() {
+    if (loadingHistory || historyExhausted || nextBeforeTs === null) return;
+    loadingHistory = true;
+    await fetchMessagesPage({ beforeTs: nextBeforeTs, beforeRowID: nextBeforeRowID });
+    loadingHistory = false;
   }
 
   function coerceFragments(fragments: any): Message['fragments'] {
@@ -395,6 +477,13 @@
     setTimeout(processMessageQueue, 0);
   }
 
+  function handleScroll() {
+    if (!container) return;
+    if (container.scrollTop <= 50) {
+      loadOlderMessages();
+    }
+  }
+
   function initializeWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const localUrl = `${wsProtocol}://${window.location.host}/ws/chat`;
@@ -422,7 +511,7 @@
   }
 
   onMount(() => {
-    fetchRecentMessages();
+    fetchMessagesPage();
     initializeWebSocket();
 
     document.addEventListener('keydown', (e) => {
@@ -478,6 +567,7 @@
   role="list"
   onmouseenter={pauseChat}
   onmouseleave={unpauseChat}
+  onscroll={handleScroll}
   bind:this={container}
 >
   {#each messages as message}

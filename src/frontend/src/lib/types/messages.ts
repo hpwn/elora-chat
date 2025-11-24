@@ -36,6 +36,8 @@ export interface Fragment {
 }
 
 export interface Message {
+  id?: string;
+  ts?: number;
   author: string;
   badges: Badge[];
   displayBadges?: Badge[];

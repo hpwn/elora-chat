@@ -31,6 +31,7 @@ type messageResponse struct {
 type messagesEnvelope struct {
 	Items        []messageResponse `json:"items"`
 	NextBeforeTS *int64            `json:"next_before_ts,omitempty"`
+	NextBeforeID *int64            `json:"next_before_rowid,omitempty"`
 }
 
 func SetupMessageRoutes(r *mux.Router) {
@@ -63,8 +64,18 @@ func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	beforeRowID, err := parseRowID(r.URL.Query().Get("before_rowid"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	if since != nil && before != nil {
 		http.Error(w, "since_ts and before_ts are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+	if before == nil && beforeRowID != nil {
+		http.Error(w, "before_rowid requires before_ts", http.StatusBadRequest)
 		return
 	}
 
@@ -74,20 +85,27 @@ func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	messages, err := chatStore.GetRecent(r.Context(), storage.QueryOpts{
-		Limit:    fetchLimit,
-		SinceTS:  since,
-		BeforeTS: before,
+		Limit:       fetchLimit,
+		SinceTS:     since,
+		BeforeTS:    before,
+		BeforeRowID: beforeRowID,
 	})
 	if err != nil {
 		http.Error(w, "failed to fetch messages", http.StatusInternalServerError)
 		return
 	}
 
-	var nextBefore *int64
+	var nextBeforeTS *int64
+	var nextBeforeID *int64
 	if limit > 0 && len(messages) > limit {
 		messages = messages[:limit]
-		oldest := messages[len(messages)-1].Timestamp.UTC().UnixMilli() - 1
-		nextBefore = &oldest
+		oldest := messages[len(messages)-1]
+		ts := oldest.Timestamp.UTC().UnixMilli()
+		nextBeforeTS = &ts
+		if oldest.RowID > 0 {
+			rowID := oldest.RowID
+			nextBeforeID = &rowID
+		}
 	}
 
 	resp := make([]messageResponse, 0, len(messages))
@@ -103,7 +121,7 @@ func handleGetRecentMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	payload := messagesEnvelope{Items: resp, NextBeforeTS: nextBefore}
+	payload := messagesEnvelope{Items: resp, NextBeforeTS: nextBeforeTS, NextBeforeID: nextBeforeID}
 
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
@@ -150,4 +168,19 @@ func parseCursor(raw, param string) (*time.Time, error) {
 	}
 	t := time.UnixMilli(ms).UTC()
 	return &t, nil
+}
+
+func parseRowID(raw string) (*int64, error) {
+	if raw == "" {
+		return nil, nil
+	}
+
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil, errors.New("invalid before_rowid")
+	}
+	if v <= 0 {
+		return nil, errors.New("invalid before_rowid")
+	}
+	return &v, nil
 }
