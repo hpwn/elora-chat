@@ -127,7 +127,7 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(got))
 	}
-	if got[0].ID != "msg-3" || got[1].ID != "msg-2" {
+	if got[0].ID != "msg-4" || got[1].ID != "msg-3" {
 		t.Fatalf("unexpected IDs: %#v", got)
 	}
 }

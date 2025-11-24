@@ -8,6 +8,7 @@ import (
 // Message represents a chat message stored in the backing store.
 type Message struct {
 	ID         string
+	RowID      int64
 	Timestamp  time.Time
 	Username   string
 	Platform   string
@@ -34,9 +35,10 @@ type Session struct {
 
 // QueryOpts defines filters for retrieving stored messages.
 type QueryOpts struct {
-	Limit    int
-	SinceTS  *time.Time // return messages with Timestamp >= SinceTS (newer-than)
-	BeforeTS *time.Time // return messages with Timestamp < BeforeTS (older-than)
+	Limit       int
+	SinceTS     *time.Time // return messages with Timestamp >= SinceTS (newer-than)
+	BeforeTS    *time.Time // return messages with Timestamp < BeforeTS (older-than)
+	BeforeRowID *int64     // when provided with BeforeTS, acts as a stable tie-breaker for pagination
 }
 
 // Store describes a backend capable of persisting chat messages and sessions.
