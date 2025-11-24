@@ -130,6 +130,23 @@ func applyMigrationsIdempotent(ctx context.Context, db *sql.DB, migFS fs.FS, log
 	return nil
 }
 
+// DebugRawQueryOpts controls filtering for DebugRawMessages.
+type DebugRawQueryOpts struct {
+	Limit    int
+	Platform string
+	BeforeTS *int64
+	AfterTS  *int64
+}
+
+// DebugRawMessage represents a raw row fetched directly from SQLite.
+type DebugRawMessage struct {
+	RowID    int64  `json:"rowid"`
+	Platform string `json:"platform"`
+	Username string `json:"username"`
+	Text     string `json:"text"`
+	TS       int64  `json:"ts"`
+}
+
 // Config controls how the SQLite store is configured.
 type Config struct {
 	Mode            string
@@ -338,6 +355,67 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: iterate messages: %w", err)
+	}
+
+	return results, nil
+}
+
+// DebugRawMessages queries the messages table directly with lightweight filters.
+// This is intended for debug tooling only and should not be exposed in production.
+func (s *Store) DebugRawMessages(ctx context.Context, opts DebugRawQueryOpts) ([]DebugRawMessage, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	query := `SELECT rowid, platform, username, text, ts FROM messages`
+	var (
+		clauses []string
+		args    []any
+	)
+	if opts.Platform != "" {
+		clauses = append(clauses, "platform = ?")
+		args = append(args, opts.Platform)
+	}
+	if opts.BeforeTS != nil {
+		clauses = append(clauses, "ts < ?")
+		args = append(args, *opts.BeforeTS)
+	}
+	if opts.AfterTS != nil {
+		clauses = append(clauses, "ts > ?")
+		args = append(args, *opts.AfterTS)
+	}
+
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY ts DESC, rowid DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: debug raw messages query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]DebugRawMessage, 0, limit)
+	for rows.Next() {
+		var row DebugRawMessage
+		if err := rows.Scan(&row.RowID, &row.Platform, &row.Username, &row.Text, &row.TS); err != nil {
+			return nil, fmt.Errorf("sqlite: debug raw messages scan: %w", err)
+		}
+		results = append(results, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: debug raw messages rows: %w", err)
 	}
 
 	return results, nil
