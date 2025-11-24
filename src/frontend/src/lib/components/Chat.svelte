@@ -476,11 +476,16 @@
     }
   }
 
-  function trimHistory(limit = HISTORY_LIMIT) {
-    if (messages.length <= limit) return;
-    const overflow = messages.length - limit;
-    const trimmed = messages.slice(0, overflow);
-    messages = messages.slice(overflow);
+  function trimHistory(limit = HISTORY_LIMIT, pendingCount = 0): number {
+    const projected = messages.length + pendingCount;
+    if (projected <= limit) return 0;
+
+    const overflow = projected - limit;
+    const trimCount = Math.min(overflow, messages.length);
+    if (trimCount <= 0) return 0;
+
+    const trimmed = messages.slice(0, trimCount);
+    messages = messages.slice(trimCount);
 
     if (CHAT_DEBUG) {
       debugCounters.trimmed += trimmed.length;
@@ -489,11 +494,15 @@
       }
       console.warn('[chat] trimmed chat history', {
         overflow,
+        trimCount,
         trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource),
-        remaining: messages.length
+        remaining: messages.length,
+        pendingCount
       });
       logDebug('trim');
     }
+
+    return trimCount;
   }
 
   function processMessageQueue() {
@@ -503,30 +512,36 @@
 
     processing = true;
 
-    let processed = 0;
+    const batch = messageQueue;
+    messageQueue = [];
 
-    while (messageQueue.length > 0) {
-      const next = messageQueue.shift();
-      if (!next) {
-        continue;
-      }
-
-      if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-      messages = [...messages, next];
-      processed++;
-
-      if (CHAT_DEBUG) {
-        debugCounters.appended++;
-        incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
-      }
-
-      trimHistory();
-    }
-
-    if (processed === 0) {
+    if (batch.length === 0) {
       processing = false;
       return;
+    }
+
+    const normalizedBatch = batch.map((msg) => {
+      if (msg.colour === '#000000') {
+        return { ...msg, colour: '#CCCCCC' } satisfies Message;
+      }
+      return msg;
+    });
+
+    const preTrimmed = trimHistory(HISTORY_LIMIT, normalizedBatch.length);
+
+    messages = [...messages, ...normalizedBatch];
+
+    const postTrimmed = trimHistory();
+    const processed = normalizedBatch.length;
+
+    if (CHAT_DEBUG) {
+      debugCounters.appended += processed;
+      for (const next of normalizedBatch) {
+        incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
+      }
+      if (preTrimmed + postTrimmed > 0) {
+        logDebug('trim-after-append');
+      }
     }
 
     if (CHAT_DEBUG) {

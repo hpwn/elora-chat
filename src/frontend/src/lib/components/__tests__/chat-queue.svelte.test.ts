@@ -74,4 +74,28 @@ describe('Chat websocket queue', () => {
     expect(screen.getByText('yt-two')).toBeInTheDocument();
     expect(screen.getByText('tw-one')).toBeInTheDocument();
   });
+
+  it('retains all YouTube messages when interleaved with Twitch bursts sharing timestamps', async () => {
+    await renderChat();
+    const { __pushMockMessage } = await import('$lib/chat/ws');
+
+    const baseTs = Date.now();
+    const incoming: WsChatMessage[] = [];
+
+    for (let i = 0; i < 10; i++) {
+      incoming.push({ id: `yt-${i}`, ts: baseTs, username: `yt-${i}`, platform: 'YouTube', text: `yt-${i}` });
+      incoming.push({ id: `tw-${i}`, ts: baseTs, username: `tw-${i}`, platform: 'Twitch', text: `tw-${i}` });
+    }
+
+    for (const msg of incoming) {
+      __pushMockMessage(msg);
+    }
+
+    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(incoming.length));
+
+    for (let i = 0; i < 10; i++) {
+      expect(screen.getByText(`yt-${i}`)).toBeInTheDocument();
+      expect(screen.getByText(`tw-${i}`)).toBeInTheDocument();
+    }
+  });
 });
