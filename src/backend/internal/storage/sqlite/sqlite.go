@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"math"
 	"net/url"
 	"os"
 	"path/filepath"
