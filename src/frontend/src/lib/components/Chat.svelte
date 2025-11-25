@@ -31,9 +31,7 @@
   let container: HTMLDivElement;
 
   let ws: WebSocket | null = $state(null);
-  let messageQueue: Message[] = $state([]);
   let messages: Message[] = $state([]);
-  let processing = $state(false);
   let paused = $state(false);
   let newMessageCount = $state(0);
   let blacklist = loadBlacklist();
@@ -476,54 +474,6 @@
     }
   }
 
-  function processMessageQueue() {
-    if (messageQueue.length === 0) {
-      processing = false;
-      return;
-    }
-
-    processing = true;
-
-    const [next, ...rest] = messageQueue;
-    messageQueue = rest;
-
-    if (!next) {
-      processing = false;
-      return;
-    }
-
-    if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-    messages = [...messages, next];
-
-    if (messages.length > HISTORY_LIMIT) {
-      messages = messages.slice(-HISTORY_LIMIT);
-    }
-
-    if (CHAT_DEBUG) {
-      debugCounters.appended++;
-      incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
-      logDebug('append');
-    }
-
-    if (!paused) {
-      setTimeout(() => {
-        if (container) {
-          container.scrollTop = container.scrollHeight;
-        }
-        newMessageCount = 0;
-      }, 0);
-    } else {
-      newMessageCount = newMessageCount + 1;
-    }
-
-    if (messageQueue.length > 0) {
-      setTimeout(processMessageQueue, 0);
-    } else {
-      processing = false;
-    }
-  }
-
   function handleScroll() {
     if (!container) return;
     if (container.scrollTop <= 50) {
@@ -557,13 +507,34 @@
         return;
       }
 
-      messageQueue = [...messageQueue, normalized];
-      if (CHAT_DEBUG) {
-        debugCounters.enqueued += 1;
-        incrementCounter(debugCounters.queueBySource, normalized.source ?? 'unknown');
-        logDebug('enqueue');
+      const nextMessage =
+        normalized.colour === '#000000' ? { ...normalized, colour: '#CCCCCC' } : normalized;
+
+      messages = [...messages, nextMessage];
+
+      if (messages.length > HISTORY_LIMIT) {
+        messages = messages.slice(-HISTORY_LIMIT);
+        if (CHAT_DEBUG) {
+          debugCounters.trimmed += 1;
+        }
       }
-      if (!processing) processMessageQueue();
+
+      if (CHAT_DEBUG) {
+        debugCounters.appended += 1;
+        incrementCounter(debugCounters.appendedBySource, nextMessage.source ?? 'unknown');
+        logDebug('append');
+      }
+
+      if (!paused) {
+        setTimeout(() => {
+          if (container) {
+            container.scrollTop = container.scrollHeight;
+          }
+          newMessageCount = 0;
+        }, 0);
+      } else {
+        newMessageCount = newMessageCount + 1;
+      }
     }, wsUrl);
 
     ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
@@ -643,13 +614,13 @@
   {/if}
 </div>
 
-{#if import.meta?.env?.VITE_CHAT_DEBUG}
-  <div
-    style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.25rem .5rem;border-radius:.5rem;z-index:9999"
-  >
-    msgs:{messages.length} q:{messageQueue.length} pause:{String(paused)}
-  </div>
-{/if}
+  {#if import.meta?.env?.VITE_CHAT_DEBUG}
+    <div
+      style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.25rem .5rem;border-radius:.5rem;z-index:9999"
+    >
+      msgs:{messages.length} pause:{String(paused)}
+    </div>
+  {/if}
 
 <style lang="scss">
   #chat-container {
