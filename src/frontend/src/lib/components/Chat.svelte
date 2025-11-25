@@ -476,78 +476,51 @@
     }
   }
 
-  function trimHistory(limit = HISTORY_LIMIT) {
-    if (messages.length <= limit) return;
-    const overflow = messages.length - limit;
-    const trimmed = messages.slice(0, overflow);
-    messages = messages.slice(overflow);
-
-    if (CHAT_DEBUG) {
-      debugCounters.trimmed += trimmed.length;
-      for (const m of trimmed) {
-        incrementCounter(debugCounters.trimmedBySource, m.source ?? 'unknown');
-      }
-      console.warn('[chat] trimmed chat history', {
-        overflow,
-        trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource),
-        remaining: messages.length
-      });
-      logDebug('trim');
-    }
-  }
-
   function processMessageQueue() {
-    if (processing) {
+    if (messageQueue.length === 0) {
+      processing = false;
       return;
     }
 
     processing = true;
 
-    let processed = 0;
+    const [next, ...rest] = messageQueue;
+    messageQueue = rest;
 
-    while (messageQueue.length > 0) {
-      const next = messageQueue.shift();
-      if (!next) {
-        continue;
-      }
-
-      if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-      messages = [...messages, next];
-      processed++;
-
-      if (CHAT_DEBUG) {
-        debugCounters.appended++;
-        incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
-      }
-
-      trimHistory();
-    }
-
-    if (processed === 0) {
+    if (!next) {
       processing = false;
       return;
     }
 
+    if (next.colour === '#000000') next.colour = '#CCCCCC';
+
+    messages = [...messages, next];
+
+    if (messages.length > HISTORY_LIMIT) {
+      messages = messages.slice(-HISTORY_LIMIT);
+    }
+
     if (CHAT_DEBUG) {
+      debugCounters.appended++;
+      incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
       logDebug('append');
     }
 
     if (!paused) {
-      requestAnimationFrame(() => {
+      setTimeout(() => {
         if (container) {
           container.scrollTop = container.scrollHeight;
         }
         newMessageCount = 0;
-      });
+      }, 0);
     } else {
-      newMessageCount = newMessageCount + processed;
+      newMessageCount = newMessageCount + 1;
     }
-
-    processing = false;
 
     if (messageQueue.length > 0) {
       setTimeout(processMessageQueue, 0);
+    } else {
+      processing = false;
     }
   }
 
