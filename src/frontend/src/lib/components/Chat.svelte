@@ -19,11 +19,9 @@
   type PlatformCounter = Map<Message['source'] | 'unknown', number>;
   const debugCounters = {
     wsReceived: 0,
-    enqueued: 0,
     appended: 0,
     trimmed: 0,
     wsBySource: new Map() as PlatformCounter,
-    queueBySource: new Map() as PlatformCounter,
     appendedBySource: new Map() as PlatformCounter,
     trimmedBySource: new Map() as PlatformCounter
   };
@@ -31,9 +29,7 @@
   let container: HTMLDivElement;
 
   let ws: WebSocket | null = $state(null);
-  let messageQueue: Message[] = $state([]);
   let messages: Message[] = $state([]);
-  let processing = $state(false);
   let paused = $state(false);
   let newMessageCount = $state(0);
   let blacklist = loadBlacklist();
@@ -66,11 +62,9 @@
     if (!CHAT_DEBUG) return;
     console.debug('[chat-debug]', stage, {
       wsReceived: debugCounters.wsReceived,
-      enqueued: debugCounters.enqueued,
       appended: debugCounters.appended,
       trimmed: debugCounters.trimmed,
       wsBySource: Object.fromEntries(debugCounters.wsBySource),
-      queueBySource: Object.fromEntries(debugCounters.queueBySource),
       appendedBySource: Object.fromEntries(debugCounters.appendedBySource),
       trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource)
     });
@@ -496,42 +490,20 @@
     }
   }
 
-  function processMessageQueue() {
-    if (processing) {
-      return;
-    }
+  function appendMessage(incoming: Message) {
+    const next = { ...incoming };
+    if (next.colour === '#000000') next.colour = '#CCCCCC';
 
-    processing = true;
-
-    let processed = 0;
-
-    while (messageQueue.length > 0) {
-      const next = messageQueue.shift();
-      if (!next) {
-        continue;
-      }
-
-      if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-      messages = [...messages, next];
-      processed++;
-
-      if (CHAT_DEBUG) {
-        debugCounters.appended++;
-        incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
-      }
-
-      trimHistory();
-    }
-
-    if (processed === 0) {
-      processing = false;
-      return;
-    }
+    // Preserve strict arrival order for live Twitch/YouTube payloads when timestamps tie.
+    messages = [...messages, next];
 
     if (CHAT_DEBUG) {
+      debugCounters.appended++;
+      incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
       logDebug('append');
     }
+
+    trimHistory();
 
     if (!paused) {
       requestAnimationFrame(() => {
@@ -541,13 +513,7 @@
         newMessageCount = 0;
       });
     } else {
-      newMessageCount = newMessageCount + processed;
-    }
-
-    processing = false;
-
-    if (messageQueue.length > 0) {
-      setTimeout(processMessageQueue, 0);
+      newMessageCount = newMessageCount + 1;
     }
   }
 
@@ -584,13 +550,7 @@
         return;
       }
 
-      messageQueue = [...messageQueue, normalized];
-      if (CHAT_DEBUG) {
-        debugCounters.enqueued += 1;
-        incrementCounter(debugCounters.queueBySource, normalized.source ?? 'unknown');
-        logDebug('enqueue');
-      }
-      if (!processing) processMessageQueue();
+      appendMessage(normalized);
     }, wsUrl);
 
     ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
@@ -674,7 +634,7 @@
   <div
     style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.25rem .5rem;border-radius:.5rem;z-index:9999"
   >
-    msgs:{messages.length} q:{messageQueue.length} pause:{String(paused)}
+    msgs:{messages.length} pause:{String(paused)}
   </div>
 {/if}
 
