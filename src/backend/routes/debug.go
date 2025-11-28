@@ -9,10 +9,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
+	"github.com/hpwn/EloraChat/src/backend/internal/ytdebug"
 )
 
 const (
@@ -27,12 +29,23 @@ var (
 
 // SetupDebugRoutes registers debug-only helpers gated by an explicit opt-in flag.
 func SetupDebugRoutes(r *mux.Router) {
-	if r == nil || !debugRawRouteEnabled() {
+	if r == nil {
+		return
+	}
+
+	rawEnabled := debugRawRouteEnabled()
+	ytEnabled := ytdebug.Enabled()
+	if !rawEnabled && !ytEnabled {
 		return
 	}
 
 	sub := r.PathPrefix("/api/debug").Subrouter()
-	sub.HandleFunc("/raw-messages", handleDebugRawMessages).Methods(http.MethodGet)
+	if rawEnabled {
+		sub.HandleFunc("/raw-messages", handleDebugRawMessages).Methods(http.MethodGet)
+	}
+	if ytEnabled {
+		sub.HandleFunc("/yt-latest", handleDebugYouTubeLatest).Methods(http.MethodGet)
+	}
 }
 
 func debugRawRouteEnabled() bool {
@@ -138,4 +151,73 @@ func parseDebugTS(raw, name string) (*int64, error) {
 		return nil, errors.New("invalid " + name)
 	}
 	return &ts, nil
+}
+
+type ytDebugMessage struct {
+	RowID       int64  `json:"rowid"`
+	ID          string `json:"id"`
+	Timestamp   string `json:"ts"`
+	Username    string `json:"username"`
+	Platform    string `json:"platform"`
+	Text        string `json:"text"`
+	ChannelID   string `json:"channel_id,omitempty"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+type ytDebugEnvelope struct {
+	Items []ytDebugMessage `json:"items"`
+}
+
+func handleDebugYouTubeLatest(w http.ResponseWriter, r *http.Request) {
+	provider, ok := chatStore.(*sqlite.Store)
+	if !ok {
+		http.Error(w, "yt debug only supported with sqlite backend", http.StatusNotImplemented)
+		return
+	}
+
+	limit, err := parseDebugLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	usernameSubstring := strings.TrimSpace(r.URL.Query().Get("username_substring"))
+
+	rows, err := provider.DebugYouTubeMessages(r.Context(), sqlite.DebugYouTubeQueryOpts{
+		Limit:             limit,
+		UsernameSubstring: usernameSubstring,
+	})
+	if err != nil {
+		http.Error(w, "failed to fetch youtube debug messages", http.StatusInternalServerError)
+		return
+	}
+
+	resp := ytDebugEnvelope{Items: make([]ytDebugMessage, 0, len(rows))}
+	for _, row := range rows {
+		ts := time.UnixMilli(row.TS).UTC()
+		channelID := ytdebug.ChannelIDFromRaw(row.RawJSON)
+		fp := ytdebug.Fingerprint(ytdebug.FingerprintInput{
+			Platform:  row.Platform,
+			ChannelID: channelID,
+			Username:  row.Username,
+			Text:      row.Text,
+			Timestamp: ts,
+		})
+
+		resp.Items = append(resp.Items, ytDebugMessage{
+			RowID:       row.RowID,
+			ID:          row.ID,
+			Timestamp:   ts.Format(time.RFC3339Nano),
+			Username:    row.Username,
+			Platform:    row.Platform,
+			Text:        row.Text,
+			ChannelID:   channelID,
+			Fingerprint: fp,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(resp)
 }

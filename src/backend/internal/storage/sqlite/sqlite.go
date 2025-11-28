@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
+	"github.com/hpwn/EloraChat/src/backend/internal/ytdebug"
 
 	_ "modernc.org/sqlite"
 )
@@ -145,6 +146,23 @@ type DebugRawMessage struct {
 	Username string `json:"username"`
 	Text     string `json:"text"`
 	TS       int64  `json:"ts"`
+}
+
+// DebugYouTubeQueryOpts controls filtering for the YouTube-specific debug helper.
+type DebugYouTubeQueryOpts struct {
+	Limit             int
+	UsernameSubstring string
+}
+
+// DebugYouTubeMessage mirrors the message schema with row metadata for inspection.
+type DebugYouTubeMessage struct {
+	RowID    int64  `json:"rowid"`
+	ID       string `json:"id"`
+	Platform string `json:"platform"`
+	Username string `json:"username"`
+	Text     string `json:"text"`
+	TS       int64  `json:"ts"`
+	RawJSON  string `json:"raw_json"`
 }
 
 // Config controls how the SQLite store is configured.
@@ -299,6 +317,21 @@ func (s *Store) InsertMessage(ctx context.Context, m *storage.Message) error {
 	if err != nil {
 		return fmt.Errorf("sqlite: insert message: %w", err)
 	}
+
+	if ytdebug.Enabled() && strings.EqualFold(m.Platform, "youtube") {
+		channelID := ytdebug.ChannelIDFromRaw(m.RawJSON)
+		ytdebug.LogMessage("insert_sqlite_ok", ytdebug.FingerprintInput{
+			Platform:  m.Platform,
+			ChannelID: channelID,
+			Username:  m.Username,
+			Text:      m.Text,
+			Timestamp: m.Timestamp,
+		}, map[string]any{
+			"id":     m.ID,
+			"rowid":  0,
+			"source": "insert_message",
+		})
+	}
 	return nil
 }
 
@@ -324,15 +357,15 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		clauses = append(clauses, "ts >= ?")
 		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
-       if q.BeforeTS != nil {
-               if q.BeforeRowID != nil {
-                       clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
-                       args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
-               } else {
-                       clauses = append(clauses, "ts < ?")
-                       args = append(args, q.BeforeTS.UTC().UnixMilli())
-               }
-       }
+	if q.BeforeTS != nil {
+		if q.BeforeRowID != nil {
+			clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
+			args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
+		} else {
+			clauses = append(clauses, "ts < ?")
+			args = append(args, q.BeforeTS.UTC().UnixMilli())
+		}
+	}
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -429,6 +462,50 @@ func (s *Store) DebugRawMessages(ctx context.Context, opts DebugRawQueryOpts) ([
 	return results, nil
 }
 
+// DebugYouTubeMessages fetches recent YouTube messages with lightweight filters.
+func (s *Store) DebugYouTubeMessages(ctx context.Context, opts DebugYouTubeQueryOpts) ([]DebugYouTubeMessage, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	query := `SELECT rowid, id, platform, username, text, ts, COALESCE(raw_json, '') FROM messages WHERE platform = 'YouTube'`
+	var args []any
+	if trimmed := strings.TrimSpace(opts.UsernameSubstring); trimmed != "" {
+		query += " AND LOWER(username) LIKE ?"
+		args = append(args, "%"+strings.ToLower(trimmed)+"%")
+	}
+	query += " ORDER BY ts DESC, rowid DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: debug yt messages query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]DebugYouTubeMessage, 0, limit)
+	for rows.Next() {
+		var row DebugYouTubeMessage
+		if err := rows.Scan(&row.RowID, &row.ID, &row.Platform, &row.Username, &row.Text, &row.TS, &row.RawJSON); err != nil {
+			return nil, fmt.Errorf("sqlite: debug yt messages scan: %w", err)
+		}
+		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: debug yt messages rows: %w", err)
+	}
+
+	return results, nil
+}
+
 // TailHead returns the most recent (ts,rowid) pair from the same row.
 // This avoids the inconsistent MAX(ts)/MAX(rowid) pair that can skip rows.
 func (s *Store) TailHead(ctx context.Context) (storage.TailPosition, error) {
@@ -491,6 +568,7 @@ LIMIT ?`
 			return nil, after, fmt.Errorf("sqlite: tail next scan: %w", err)
 		}
 		msg.Timestamp = time.UnixMilli(ts).UTC()
+		msg.RowID = rowID
 		results = append(results, msg)
 		last = storage.TailPosition{TS: ts, RowID: rowID}
 	}
