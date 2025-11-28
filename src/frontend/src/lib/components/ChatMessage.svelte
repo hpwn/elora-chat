@@ -6,8 +6,12 @@
   import { resolveBadgeIcon } from '$lib/chat/badge-icons';
   import { TwitchIcon, YoutubeIcon } from './icons';
 
+  const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
+
   let { message }: { message: Message } = $props();
-  console.debug("[DBG] ChatMessage fragments", message.fragments);
+  if (CHAT_DEBUG) {
+    console.debug('[DBG] ChatMessage fragments', message.fragments);
+  }
   let visible = $state(true);
 
   const blacklist: SvelteSet<string> = getContext('blacklist');

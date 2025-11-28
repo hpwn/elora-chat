@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Message, Keymods } from '$lib/types/messages';
   import { FragmentType } from '$lib/types/messages';
-  import { onMount, setContext } from 'svelte';
+  import { onDestroy, onMount, setContext } from 'svelte';
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
@@ -27,6 +27,26 @@
     appendedBySource: new Map() as PlatformCounter,
     trimmedBySource: new Map() as PlatformCounter
   };
+
+  type DebugSnapshot = {
+    wsReceived: number;
+    enqueued: number;
+    appended: number;
+    trimmed: number;
+    paused: boolean;
+    messageQueueLength: number;
+    messagesLength: number;
+    wsBySource: Record<string, number>;
+    queueBySource: Record<string, number>;
+    appendedBySource: Record<string, number>;
+    trimmedBySource: Record<string, number>;
+    messagesBySource: Record<string, number>;
+    domBySource?: Record<string, number>;
+    domCount?: number;
+  };
+
+  let debugOverlaySnapshot: DebugSnapshot | null = $state(null);
+  let debugSummaryInterval: number | null = null;
 
   let container: HTMLDivElement;
 
@@ -62,18 +82,70 @@
     return ALLOWED_SOURCES.has(trimmed) ? trimmed : 'unknown';
   }
 
-  function logDebug(stage: string) {
-    if (!CHAT_DEBUG) return;
-    console.debug('[chat-debug]', stage, {
+  function countMessagesBySource(list: Message[]): PlatformCounter {
+    const counts = new Map() as PlatformCounter;
+    for (const item of list) {
+      incrementCounter(counts, item.source ?? 'unknown');
+    }
+    return counts;
+  }
+
+  function collectDomBySource(): { map: PlatformCounter; total: number } {
+    const domCounts = new Map() as PlatformCounter;
+    if (!container) {
+      return { map: domCounts, total: 0 };
+    }
+    const nodes = container.querySelectorAll<HTMLElement>('[data-platform]');
+    for (const node of nodes) {
+      const platform = normalizeSourceValue(node.dataset.platform);
+      incrementCounter(domCounts, platform);
+    }
+    const total = Array.from(domCounts.values()).reduce((acc, count) => acc + count, 0);
+    return { map: domCounts, total };
+  }
+
+  function buildDebugSnapshot(includeDomCounts = false): DebugSnapshot {
+    const messagesBySource = countMessagesBySource(messages);
+    const domCounts = includeDomCounts
+      ? collectDomBySource()
+      : { map: new Map() as PlatformCounter, total: 0 };
+
+    return {
       wsReceived: debugCounters.wsReceived,
       enqueued: debugCounters.enqueued,
       appended: debugCounters.appended,
       trimmed: debugCounters.trimmed,
+      paused,
+      messageQueueLength: messageQueue.length,
+      messagesLength: messages.length,
       wsBySource: Object.fromEntries(debugCounters.wsBySource),
       queueBySource: Object.fromEntries(debugCounters.queueBySource),
       appendedBySource: Object.fromEntries(debugCounters.appendedBySource),
-      trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource)
-    });
+      trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource),
+      messagesBySource: Object.fromEntries(messagesBySource),
+      domBySource: includeDomCounts ? Object.fromEntries(domCounts.map) : undefined,
+      domCount: includeDomCounts ? domCounts.total : undefined
+    };
+  }
+
+  function logDebug(
+    stage: string,
+    { includeDomCounts = false, level = 'debug' }: { includeDomCounts?: boolean; level?: 'debug' | 'info' | 'warn' } = {}
+  ) {
+    if (!CHAT_DEBUG) return;
+    const snapshot = buildDebugSnapshot(includeDomCounts);
+    debugOverlaySnapshot = snapshot;
+    const logger = console[level] ?? console.debug;
+    logger('[chat-debug]', stage, snapshot);
+  }
+
+  function formatSourceCounts(counts?: Record<string, number>): string {
+    if (!counts) return '-';
+    const entries = Object.entries(counts);
+    if (entries.length === 0) return '-';
+    return entries
+      .map(([source, count]) => `${source}:${count}`)
+      .join(' ');
   }
 
   interface MessagesResponse {
@@ -93,13 +165,15 @@
   let historyExhausted = $state(false);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
-    console.debug('[convertIncomingMessage]', {
-      fragments: (message as any).fragments,
-      emotes: (message as any).emotes,
-      text: (message as any).text,
-      platform: (message as any).platform,
-      username: (message as any).username
-    });
+    if (CHAT_DEBUG) {
+      console.debug('[convertIncomingMessage]', {
+        fragments: (message as any).fragments,
+        emotes: (message as any).emotes,
+        text: (message as any).text,
+        platform: (message as any).platform,
+        username: (message as any).username
+      });
+    }
 
     let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const tsCandidate = typeof message.ts === 'number' ? message.ts : Number(message.ts);
@@ -302,13 +376,15 @@
       nextBeforeRowID = parseCursorValue(payload?.next_before_rowid);
       historyExhausted = nextBeforeTs === null;
 
-      console.log('[chat] fetched messages page', {
-        count: normalizedMessages.length,
-        before_ts: cursor?.beforeTs,
-        before_rowid: cursor?.beforeRowID,
-        next_before_ts: nextBeforeTs,
-        next_before_rowid: nextBeforeRowID
-      });
+      if (CHAT_DEBUG) {
+        console.log('[chat] fetched messages page', {
+          count: normalizedMessages.length,
+          before_ts: cursor?.beforeTs,
+          before_rowid: cursor?.beforeRowID,
+          next_before_ts: nextBeforeTs,
+          next_before_rowid: nextBeforeRowID
+        });
+      }
 
       if (normalizedMessages.length > 0) {
         applyHistoryToState(normalizedMessages, cursor);
@@ -492,7 +568,7 @@
         trimmedBySource: Object.fromEntries(debugCounters.trimmedBySource),
         remaining: messages.length
       });
-      logDebug('trim');
+      logDebug('trim', { includeDomCounts: true, level: 'warn' });
     }
   }
 
@@ -530,7 +606,7 @@
     }
 
     if (CHAT_DEBUG) {
-      logDebug('append');
+      logDebug('append', { includeDomCounts: true });
     }
 
     if (!paused) {
@@ -579,7 +655,7 @@
       const normalized = convertIncomingMessage(incoming);
       if (!normalized) {
         if (CHAT_DEBUG) {
-          logDebug('ws-drop');
+          logDebug('ws-drop', { includeDomCounts: true });
         }
         return;
       }
@@ -588,7 +664,7 @@
       if (CHAT_DEBUG) {
         debugCounters.enqueued += 1;
         incrementCounter(debugCounters.queueBySource, normalized.source ?? 'unknown');
-        logDebug('enqueue');
+        logDebug('enqueue', { includeDomCounts: true });
       }
       if (!processing) processMessageQueue();
     }, wsUrl);
@@ -648,6 +724,20 @@
       }
       saveBlacklist();
     });
+
+    if (CHAT_DEBUG) {
+      debugOverlaySnapshot = buildDebugSnapshot(true);
+      debugSummaryInterval = window.setInterval(() => {
+        logDebug('summary', { includeDomCounts: true, level: 'info' });
+      }, 10000);
+    }
+  });
+
+  onDestroy(() => {
+    if (debugSummaryInterval !== null) {
+      window.clearInterval(debugSummaryInterval);
+      debugSummaryInterval = null;
+    }
   });
 </script>
 
@@ -670,11 +760,19 @@
   {/if}
 </div>
 
-{#if import.meta?.env?.VITE_CHAT_DEBUG}
+{#if CHAT_DEBUG && debugOverlaySnapshot}
   <div
-    style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.25rem .5rem;border-radius:.5rem;z-index:9999"
+    style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.35rem .5rem;border-radius:.5rem;z-index:9999;max-width:320px"
   >
-    msgs:{messages.length} q:{messageQueue.length} pause:{String(paused)}
+    <div>
+      ws:{debugOverlaySnapshot.wsReceived} enq:{debugOverlaySnapshot.enqueued} app:{debugOverlaySnapshot.appended} trim:{debugOverlaySnapshot.trimmed}
+    </div>
+    <div>
+      msgs:{debugOverlaySnapshot.messagesLength} dom:{debugOverlaySnapshot.domCount ?? 'n/a'} q:{debugOverlaySnapshot.messageQueueLength} pause:{String(debugOverlaySnapshot.paused)}
+    </div>
+    <div>ws:{formatSourceCounts(debugOverlaySnapshot.wsBySource)}</div>
+    <div>app:{formatSourceCounts(debugOverlaySnapshot.appendedBySource)}</div>
+    <div>dom:{formatSourceCounts(debugOverlaySnapshot.domBySource)}</div>
   </div>
 {/if}
 
