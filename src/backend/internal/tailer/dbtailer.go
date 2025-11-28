@@ -7,12 +7,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
-	"github.com/hpwn/EloraChat/src/backend/internal/ytdebug"
 	"github.com/hpwn/EloraChat/src/backend/routes"
 )
 
@@ -149,19 +147,6 @@ func (r *Runner) tick(ctx context.Context) {
 		}
 		if _, ok := r.seen[msg.ID]; ok {
 			continue
-		}
-		if ytdebug.Enabled() && strings.EqualFold(msg.Platform, "youtube") {
-			channelID := ytdebug.ChannelIDFromRaw(msg.RawJSON)
-			ytdebug.LogMessage("tailer_fanned_in", ytdebug.FingerprintInput{
-				Platform:  msg.Platform,
-				ChannelID: channelID,
-				Username:  msg.Username,
-				Text:      msg.Text,
-				Timestamp: msg.Timestamp,
-			}, map[string]any{
-				"rowid": msg.RowID,
-				"id":    msg.ID,
-			})
 		}
 		r.seen[msg.ID] = struct{}{}
 		toBroadcast = append(toBroadcast, msg)

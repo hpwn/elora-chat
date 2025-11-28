@@ -12,7 +12,6 @@ services:
     environment:
       TZ: ${TZ}
       LOG_LEVEL: ${LOG_LEVEL}
-      ELORA_YT_DEBUG: ${ELORA_YT_DEBUG:-0}
     volumes:
       - ./data:/data
     ports:
@@ -36,7 +35,6 @@ services:
       - .env
     environment:
       TZ: ${TZ}
-      GNASTY_YT_DEBUG: ${GNASTY_YT_DEBUG:-0}
       GNASTY_SINK_SQLITE_PATH: /data/gnasty.db
       GNASTY_YT_URL: ${GNASTY_YT_URL:-https://www.youtube.com/@lofigirl/live}
       GNASTY_YT_POLL_INTERVAL_MS: ${GNASTY_YT_POLL_INTERVAL_MS:-1500}

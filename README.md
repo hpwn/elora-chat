@@ -79,8 +79,6 @@ After the stack is up, run `make configz` to confirm the shared volume paths and
 
 Legacy chatdownloader support has been removed. gnasty-chat is the only supported harvester and all ingest flows run through the shared SQLite volume.
 
-For step-by-step instructions on debugging missing YouTube messages (log gates, fingerprint format, and helper endpoints), see [docs/yt-debug.md](docs/yt-debug.md).
-
 ## Twitch integration (gnasty-chat token handoff)
 
 When `ELORA_TWITCH_TOKEN_FILE` is set, the backend writes the current Twitch IRC token to that file (atomically, mode `0600`).
