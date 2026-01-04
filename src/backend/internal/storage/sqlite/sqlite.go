@@ -224,10 +224,14 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		if s.cfg.MaxConns > 0 {
-			db.SetMaxOpenConns(s.cfg.MaxConns)
-			db.SetMaxIdleConns(s.cfg.MaxConns)
+		// SQLite PRAGMAs are connection-local; keep a single connection by default so
+		// busy_timeout/journal_mode/foreign_keys apply consistently and reduce SQLITE_BUSY.
+		maxConns := s.cfg.MaxConns
+		if maxConns <= 0 {
+			maxConns = 1
 		}
+		db.SetMaxOpenConns(maxConns)
+		db.SetMaxIdleConns(maxConns)
 
 		if err := db.PingContext(ctx); err != nil {
 			_ = db.Close()
@@ -249,7 +253,7 @@ func (s *Store) Init(ctx context.Context) error {
 
 		busy := s.cfg.BusyTimeoutMS
 		if busy <= 0 {
-			busy = 5000
+			busy = 30000
 		}
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", busy)); err != nil {
 			_ = db.Close()
@@ -404,7 +408,7 @@ func (s *Store) DebugRawMessages(ctx context.Context, opts DebugRawQueryOpts) ([
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY ts DESC, rowid DESC LIMIT ?"
+	query += " ORDER BY rowid DESC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -441,7 +445,7 @@ func (s *Store) TailHead(ctx context.Context) (storage.TailPosition, error) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT ts, rowid
 		FROM messages
-		ORDER BY ts DESC, rowid DESC
+		ORDER BY rowid DESC
 		LIMIT 1
 	`).Scan(&pos.TS, &pos.RowID)
 
@@ -468,11 +472,11 @@ func (s *Store) TailNext(ctx context.Context, after storage.TailPosition, limit 
 
 	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, ''), rowid
 FROM messages
-WHERE ts > ? OR (ts = ? AND rowid > ?)
-ORDER BY ts ASC, rowid ASC
+WHERE rowid > ?
+ORDER BY rowid ASC
 LIMIT ?`
 
-	rows, err := s.db.QueryContext(ctx, query, after.TS, after.TS, after.RowID, limit)
+	rows, err := s.db.QueryContext(ctx, query, after.RowID, limit)
 	if err != nil {
 		return nil, after, fmt.Errorf("sqlite: tail next query: %w", err)
 	}

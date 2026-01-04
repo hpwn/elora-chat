@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -25,6 +26,33 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/twitch"
 )
+
+var refreshLocks sync.Map // map[string]*sync.Mutex
+
+func lockRefresh(sessionToken string) func() {
+	if strings.TrimSpace(sessionToken) == "" {
+		return func() {}
+	}
+	muAny, _ := refreshLocks.LoadOrStore(sessionToken, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+var gnastyReloadMu sync.Mutex
+var gnastyReloadUntil time.Time
+
+func triggerGnastyReloadThrottled(ctx context.Context) error {
+	gnastyReloadMu.Lock()
+	now := time.Now()
+	if now.Before(gnastyReloadUntil) {
+		gnastyReloadMu.Unlock()
+		return nil
+	}
+	gnastyReloadUntil = now.Add(1500 * time.Millisecond)
+	gnastyReloadMu.Unlock()
+	return triggerGnastyReload(ctx)
+}
 
 // Twitch OAuth configuration
 func newTwitchOAuthConfigFromEnv() *oauth2.Config {
@@ -229,12 +257,14 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 	existingSessionData["updated_at"] = now.Unix()
 
 	expiry := now.Add(24 * time.Hour)
-	if ts, ok := toUnixSeconds(existingSessionData["token_expiry"]); ok {
-		expiry = time.Unix(ts, 0).UTC()
-	} else if !currentExpiry.IsZero() {
+
+	// never shorten an existing TTL if it's already further out
+	if !currentExpiry.IsZero() && currentExpiry.After(expiry) {
 		expiry = currentExpiry
 	}
-	if expiry.Before(now) {
+
+	// safety floor
+	if expiry.Before(now.Add(5 * time.Minute)) {
 		expiry = now.Add(5 * time.Minute)
 	}
 
@@ -257,7 +287,7 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 		return
 	}
 
-	if service == "twitch" && tokenfile.PathFromEnv() != "" {
+	if service == "twitch" && tokenfile.PathFromEnv() != "" && !shouldWriteGnastyTokens() {
 		if tok, _ := existingSessionData["twitch_token"].(string); strings.TrimSpace(tok) != "" {
 			if err := tokenfile.Save(tok); err != nil {
 				if !errors.Is(err, tokenfile.ErrEmptyToken) {
@@ -494,25 +524,48 @@ func SessionMiddleware(next http.Handler) http.Handler {
 func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session_token")
 	if err != nil {
-		// If the session token is not found, it means the user is not logged in.
-		// Instead of returning an error, return a response indicating no session is active.
-		// log.Println("Session token not found:", err)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"services": []}`)) // Indicate no services are logged in.
+		w.Write([]byte(`{"services": []}`))
 		return
 	}
 
 	sessionToken := cookie.Value
-	sess, _, err := loadSession(r.Context(), sessionToken)
+	sess, sessionData, expired, err := loadSessionAllowExpired(r.Context(), sessionToken)
 	if err != nil || sess == nil {
-		// If session data is not found in the store, it's likely the session has expired or is invalid.
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"services": []}`)) // Similarly, indicate no services are logged in.
+		w.Write([]byte(`{"services": []}`))
 		return
 	}
 
-	// If we reach this point, we have valid session data.
-	// Send the session data back to the client.
+	// If user has Twitch, refresh if needed.
+	if services, ok := sessionData["services"].([]any); ok {
+		for _, s := range services {
+			if name, ok := s.(string); ok && name == "twitch" {
+				if expired {
+					log.Printf("auth: check-session saw expired session ttl; attempting refresh + ttl extend token=%s…", sessionToken[:8])
+				}
+				if err := refreshToken("twitch", sessionToken, sessionData); err != nil {
+					log.Printf("auth: refreshToken in check-session failed: %v", err)
+				}
+				// reload so response is current (even if old ttl was expired)
+				if s2, _, _, err2 := loadSessionAllowExpired(r.Context(), sessionToken); err2 == nil && s2 != nil {
+					sess = s2
+				}
+				break
+			}
+		}
+	}
+
+	// Keep session TTL healthy (separate from OAuth token expiry).
+	if err := maybeExtendSessionTTL(r.Context(), sess, 24*time.Hour); err != nil {
+		log.Printf("auth: failed to extend session ttl: %v", err)
+	} else {
+		// reload once more if ttl update wrote
+		if s2, _, _, err2 := loadSessionAllowExpired(r.Context(), sessionToken); err2 == nil && s2 != nil {
+			sess = s2
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(sess.DataJSON))
 }
@@ -548,35 +601,63 @@ func refreshToken(service string, sessionToken string, sessionData map[string]an
 		return errors.New("session data unavailable")
 	}
 
-	expiryUnix, expiryOk := toUnixSeconds(sessionData["token_expiry"])
-	refreshTokenValue, refreshTokenOk := sessionData["refresh_token"].(string)
-	if !refreshTokenOk {
-		return nil
-	}
-	if expiryOk && time.Now().Unix() < expiryUnix {
-		// Token hasn't expired yet; nothing to do.
+	now := time.Now().Unix()
+	if expiryUnix, ok := toUnixSeconds(sessionData["token_expiry"]); ok && now < expiryUnix {
 		return nil
 	}
 
-	var oauthConfig *oauth2.Config = twitchOAuthConfig
+	unlock := lockRefresh(service + ":" + sessionToken)
+	defer unlock()
 
-	token := &oauth2.Token{
-		RefreshToken: refreshTokenValue,
+	sess, fresh, err := loadSession(context.Background(), sessionToken)
+	if err != nil {
+		return err
 	}
-	ts := oauthConfig.TokenSource(context.Background(), token)
-	newToken, err := ts.Token() // This refreshes the token
+	if sess == nil {
+		return nil
+	}
+	sessionData = fresh
+
+	now = time.Now().Unix()
+	if expiryUnix, ok := toUnixSeconds(sessionData["token_expiry"]); ok && now < expiryUnix {
+		return nil
+	}
+
+	refreshTokenValue, ok := sessionData["refresh_token"].(string)
+	if !ok || strings.TrimSpace(refreshTokenValue) == "" {
+		return nil
+	}
+
+	oauthConfig := twitchOAuthConfig
+	token := &oauth2.Token{RefreshToken: refreshTokenValue}
+	newToken, err := oauthConfig.TokenSource(context.Background(), token).Token()
 	if err != nil {
 		return fmt.Errorf("failed to refresh token: %v", err)
 	}
 
-	userData := map[string]any{
-		fmt.Sprintf("%s_token", service): newToken.AccessToken,
-		"refresh_token":                  newToken.RefreshToken,
-		"token_expiry":                   newToken.Expiry.Unix(),
+	if strings.TrimSpace(newToken.RefreshToken) == "" {
+		newToken.RefreshToken = refreshTokenValue
 	}
 
-	// Use the existing function to update the session data without resetting cookies.
+	userData := map[string]any{
+		fmt.Sprintf("%s_token", service): newToken.AccessToken,
+		"token_expiry":                   newToken.Expiry.Unix(),
+		"refresh_token":                  newToken.RefreshToken,
+	}
 	updateSessionDataForService(nil, userData, service, sessionToken)
+
+	sessionData[fmt.Sprintf("%s_token", service)] = newToken.AccessToken
+	sessionData["token_expiry"] = newToken.Expiry.Unix()
+	sessionData["refresh_token"] = newToken.RefreshToken
+
+	log.Printf("auth: refreshed %s token new_expiry=%d", service, newToken.Expiry.Unix())
+
+	if service == "twitch" && shouldWriteGnastyTokens() {
+		_, perr := persistGnastyTokens(newToken)
+		if perr != nil {
+			log.Printf("auth: failed to persist gnasty tokens (refresh): %v", perr)
+		}
+	}
 
 	return nil
 }
@@ -586,7 +667,7 @@ func storeOAuthState(c context.Context, state string) error {
 		return errors.New("storage not configured")
 	}
 
-	ctx, cancel := durableContext(c, 5*time.Second)
+	ctx, cancel := durableContext(c, 30*time.Second)
 	defer cancel()
 
 	payload, err := json.Marshal(map[string]any{"state": "valid"})
@@ -687,6 +768,56 @@ func loadSession(c context.Context, token string) (*storage.Session, map[string]
 		return sess, nil, err
 	}
 	return sess, data, nil
+}
+
+func loadSessionAllowExpired(c context.Context, token string) (*storage.Session, map[string]any, bool, error) {
+	if chatStore == nil {
+		return nil, nil, false, errors.New("storage not configured")
+	}
+	if c == nil {
+		c = context.Background()
+	}
+
+	sess, err := chatStore.GetSession(c, token)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if sess == nil {
+		return nil, nil, false, nil
+	}
+
+	now := time.Now().UTC()
+	expired := !sess.TokenExpiry.IsZero() && !sess.TokenExpiry.After(now)
+
+	if sess.DataJSON == "" {
+		return sess, map[string]any{}, expired, nil
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(sess.DataJSON), &data); err != nil {
+		return sess, nil, expired, err
+	}
+	return sess, data, expired, nil
+}
+
+func maybeExtendSessionTTL(c context.Context, sess *storage.Session, ttl time.Duration) error {
+	if chatStore == nil || sess == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+
+	target := now.Add(ttl)
+	// throttle writes: only extend when we’re within 6h of expiry (or expiry is zero/expired)
+	if !sess.TokenExpiry.IsZero() && sess.TokenExpiry.After(now.Add(6*time.Hour)) {
+		return nil
+	}
+	if sess.TokenExpiry.After(target) {
+		return nil
+	}
+
+	sess.TokenExpiry = target
+	sess.UpdatedAt = now
+	return chatStore.UpsertSession(c, sess)
 }
 
 func isSessionNotFound(err error) bool {
