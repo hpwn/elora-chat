@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Message, Keymods } from '$lib/types/messages';
   import { FragmentType } from '$lib/types/messages';
-  import { onMount, setContext } from 'svelte';
+  import { onDestroy, onMount, setContext } from 'svelte';
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
@@ -10,17 +10,47 @@
   import { normalizeWsPayload } from '$lib/chat/normalize';
   import { SvelteSet } from 'svelte/reactivity';
 
-  const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
+  const chatDebug =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('chat_debug') === '1';
   const DEFAULT_COLOUR = '#ffffff';
   const DEFAULT_SOURCE: Message['source'] = 'YouTube';
   const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
   const HISTORY_LIMIT = 200;
+  const MESSAGE_LIMIT = HISTORY_LIMIT * 2;
+  const QUEUE_LIMIT = 400;
+  const WS_CONSTANTS =
+    typeof WebSocket !== 'undefined'
+      ? WebSocket
+      : ({
+          CONNECTING: 0,
+          OPEN: 1,
+          CLOSING: 2,
+          CLOSED: 3
+        } as const);
+
+  type MessageWithMeta = Message & { id?: string; ts?: number };
+
+  const microtask =
+    typeof queueMicrotask === 'function'
+      ? queueMicrotask
+      : (fn: () => void) => {
+          Promise.resolve().then(fn);
+        };
 
   let container: HTMLDivElement;
 
   let ws: WebSocket | null = $state(null);
-  let messageQueue: Message[] = $state([]);
-  let messages: Message[] = $state([]);
+  let wsState: number | null = $state(WS_CONSTANTS.CLOSED);
+  let lastWsAt: number | null = $state(null);
+  let reconnectCount = $state(0);
+  let wsReceived = $state(0);
+  let enqueued = $state(0);
+  let appended = $state(0);
+  let trimmed = $state(0);
+  let messageQueue: MessageWithMeta[] = $state([]);
+  let messages: MessageWithMeta[] = $state([]);
+  let renderedDomNodes: number | null = $state(null);
+  let hudNow = $state(Date.now());
   let processing = $state(false);
   let paused = $state(false);
   let newMessageCount = $state(0);
@@ -39,14 +69,18 @@
   setContext('blacklist', blacklist);
   setContext('keymods', keymods);
 
-  function convertIncomingMessage(message: WsChatMessage): Message | null {
-    console.debug('[convertIncomingMessage]', {
-      fragments: (message as any).fragments,
-      emotes: (message as any).emotes,
-      text: (message as any).text,
-      platform: (message as any).platform,
-      username: (message as any).username
-    });
+  function convertIncomingMessage(message: WsChatMessage): MessageWithMeta | null {
+    if (chatDebug) {
+      console.debug('[convertIncomingMessage]', {
+        id: (message as any).id,
+        ts: (message as any).ts,
+        fragments: (message as any).fragments,
+        emotes: (message as any).emotes,
+        text: (message as any).text,
+        platform: (message as any).platform,
+        username: (message as any).username
+      });
+    }
 
     let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const text = typeof message.text === 'string' ? message.text : '';
@@ -77,8 +111,12 @@
     const badgeInput = message.displayBadges ?? message.badges;
     const badges = showBadges ? coerceBadges(badgeInput) : [];
     const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
+    const id = typeof (message as any).id === 'string' ? (message as any).id : undefined;
+    const ts = typeof (message as any).ts === 'number' && Number.isFinite((message as any).ts) ? (message as any).ts : Date.now();
 
     return {
+      id,
+      ts,
       author,
       message: text,
       colour,
@@ -88,7 +126,7 @@
       badges,
       displayBadges: badges,
       badges_raw
-    } satisfies Message;
+    } satisfies MessageWithMeta;
   }
 
   function coerceEmotes(emotes: WsChatMessage['emotes']): Message['emotes'] {
@@ -181,22 +219,18 @@
         .map(normalizeApiMessage)
         .filter((m): m is WsChatMessage => m !== null)
         .map((m) => convertIncomingMessage(m))
-        .filter((m): m is Message => m !== null);
+        .filter((m): m is MessageWithMeta => m !== null);
 
-      console.log('[chat] fetched recent messages', {
-        count: normalizedMessages.length,
-        sample: normalizedMessages.slice(0, 5).map((m) => m.author)
-      });
+      if (chatDebug) {
+        console.log('[chat] fetched recent messages', {
+          count: normalizedMessages.length,
+          sample: normalizedMessages.slice(0, 5).map((m) => m.author)
+        });
+      }
 
       if (normalizedMessages.length > 0) {
         const history = normalizedMessages.reverse();
-        if (messages.length === 0) {
-          messages = history;
-        } else {
-          const existingIds = new Set(messages.map((m) => m.id));
-          const mergedHistory = history.filter((m) => !existingIds.has(m.id));
-          messages = [...mergedHistory, ...messages];
-        }
+        ingestHistory(history);
         setTimeout(() => {
           container.scrollTop = container.scrollHeight;
         }, 0);
@@ -357,31 +391,40 @@
     }
   }
 
-  function processMessageQueue() {
-    // console.log("Processing message queue", messageQueue);
-    if (messageQueue.length === 0) {
-      processing = false;
+  function messageKey(msg: MessageWithMeta): string | null {
+    if (typeof msg.id === 'string' && msg.id.trim().length > 0) {
+      return msg.id;
+    }
+    if (typeof msg.ts === 'number' && Number.isFinite(msg.ts)) {
+      return `ts-${msg.ts}`;
+    }
+    return null;
+  }
+
+  const seenMessageKeys = new Set<string>();
+
+  function trimMessages() {
+    const overflow = messages.length - MESSAGE_LIMIT;
+    if (overflow > 0) {
+      const removed = messages.slice(0, overflow);
+      messages = messages.slice(overflow);
+      trimmed += overflow;
+      for (const msg of removed) {
+        const key = messageKey(msg);
+        if (key) seenMessageKeys.delete(key);
+      }
+    }
+  }
+
+  function appendMessage(msg: MessageWithMeta) {
+    const key = messageKey(msg);
+    if (key && seenMessageKeys.has(key)) {
+      if (chatDebug) console.debug('[chat] dedupe skip', key);
       return;
     }
-
-    const N = 200;
-    if (messageQueue.length > N) {
-      messageQueue = messageQueue.slice(-N);
-    }
-
-    processing = true;
-
-    const [next, ...rest] = messageQueue;
-    messageQueue = rest;
-
-    if (!next) {
-      processing = false;
-      return;
-    }
-
-    if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-    messages = [...messages, next];
+    if (key) seenMessageKeys.add(key);
+    messages = [...messages, msg];
+    appended += 1;
 
     if (!paused) {
       setTimeout(() => {
@@ -392,7 +435,50 @@
       newMessageCount = newMessageCount + 1;
     }
 
-    setTimeout(processMessageQueue, 0);
+    trimMessages();
+  }
+
+  function enqueueMessage(msg: MessageWithMeta) {
+    enqueued += 1;
+    messageQueue = [...messageQueue, msg];
+    if (messageQueue.length > QUEUE_LIMIT) {
+      const overflow = messageQueue.length - QUEUE_LIMIT;
+      messageQueue = messageQueue.slice(-QUEUE_LIMIT);
+      trimmed += overflow;
+      if (chatDebug) console.warn('[chat] queue overflow trimmed', overflow);
+    }
+
+    if (!processing) processMessageQueue();
+  }
+
+  function drainQueue() {
+    try {
+      if (messageQueue.length === 0) {
+        return;
+      }
+
+      const batch = messageQueue;
+      messageQueue = [];
+
+      for (const next of batch) {
+        if (!next) continue;
+        if (next.colour === '#000000') next.colour = '#CCCCCC';
+        appendMessage(next);
+      }
+    } catch (err) {
+      if (chatDebug) console.error('[chat] drain failed', err);
+    } finally {
+      processing = false;
+      if (messageQueue.length > 0) {
+        microtask(processMessageQueue);
+      }
+    }
+  }
+
+  function processMessageQueue() {
+    if (processing) return;
+    processing = true;
+    microtask(drainQueue);
   }
 
   function initializeWebSocket() {
@@ -401,29 +487,44 @@
     const wsUrl = configuredWsUrl || localUrl;
 
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      if (CHAT_DEBUG) console.log('[chat] ws already connected/connecting');
+      if (chatDebug) console.log('[chat] ws already connected/connecting');
       return;
     }
 
-    if (CHAT_DEBUG) console.log('[chat] url:', wsUrl);
+    if (chatDebug) console.log('[chat] url:', wsUrl);
     ws = connectChat((incoming) => {
+      wsReceived += 1;
+      lastWsAt = Date.now();
+
       const normalized = convertIncomingMessage(incoming);
       if (!normalized) return;
 
-      messageQueue = [...messageQueue, normalized];
-      if (!processing) processMessageQueue();
+      enqueueMessage(normalized);
     }, wsUrl);
 
-    ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
+    wsState = ws?.readyState ?? null;
 
-    ws.onerror = (error) => CHAT_DEBUG && console.error('[chat] error:', error);
+    ws.onopen = () => {
+      wsState = ws?.readyState ?? null;
+      if (chatDebug) console.log('[chat] open');
+    };
 
-    ws.onclose = () => CHAT_DEBUG && console.log('[chat] close');
+    ws.onerror = (error) => {
+      wsState = ws?.readyState ?? null;
+      if (chatDebug) console.error('[chat] error:', error);
+    };
+
+    ws.onclose = () => {
+      wsState = ws?.readyState ?? null;
+      reconnectCount += 1;
+      if (chatDebug) console.log('[chat] close');
+    };
   }
 
   onMount(() => {
     fetchRecentMessages();
     initializeWebSocket();
+    const hudInterval = chatDebug ? window.setInterval(() => (hudNow = Date.now()), 1000) : null;
 
     document.addEventListener('keydown', (e) => {
       switch (e.key) {
@@ -469,7 +570,55 @@
       }
       saveBlacklist();
     });
+
+    return () => {
+      if (hudInterval) {
+        clearInterval(hudInterval);
+      }
+    };
   });
+
+  onDestroy(() => {
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+  });
+
+  function ingestHistory(history: MessageWithMeta[]) {
+    if (history.length === 0) return;
+    const deduped = history.filter((msg) => {
+      const key = messageKey(msg);
+      if (key && seenMessageKeys.has(key)) return false;
+      if (key) seenMessageKeys.add(key);
+      return true;
+    });
+    if (deduped.length === 0) return;
+    messages = messages.length === 0 ? deduped : [...deduped, ...messages];
+    appended += deduped.length;
+    trimMessages();
+  }
+
+  $effect(() => {
+    // Track rendered DOM nodes for HUD; depend on messages length for updates.
+    void messages.length;
+    renderedDomNodes = container?.childElementCount ?? null;
+  });
+
+  const wsStateLabel = () => {
+    switch (wsState) {
+      case WS_CONSTANTS.CONNECTING:
+        return 'CONNECTING';
+      case WS_CONSTANTS.OPEN:
+        return 'OPEN';
+      case WS_CONSTANTS.CLOSING:
+        return 'CLOSING';
+      case WS_CONSTANTS.CLOSED:
+        return 'CLOSED';
+      default:
+        return 'N/A';
+    }
+  };
 </script>
 
 <div
@@ -490,11 +639,14 @@
   {/if}
 </div>
 
-{#if import.meta?.env?.VITE_CHAT_DEBUG}
-  <div
-    style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.25rem .5rem;border-radius:.5rem;z-index:9999"
-  >
-    msgs:{messages.length} q:{messageQueue.length} pause:{String(paused)}
+{#if chatDebug}
+  <div class="chat-debug-hud">
+    <div>ws:{wsStateLabel()} rc:{reconnectCount} last:{lastWsAt ? `${hudNow - lastWsAt}ms` : '-'}</div>
+    <div>recv:{wsReceived} enq:{enqueued} app:{appended} trim:{trimmed}</div>
+    <div>queue:{messageQueue.length} processing:{String(processing)} paused:{String(paused)}</div>
+    {#if renderedDomNodes !== null}
+      <div>dom:{renderedDomNodes}</div>
+    {/if}
   </div>
 {/if}
 
@@ -508,5 +660,21 @@
 
     overflow-y: auto;
     scrollbar-width: none;
+  }
+
+  .chat-debug-hud {
+    position: absolute;
+    right: 0.5rem;
+    top: 0.5rem;
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+    font: 12px/1.2 monospace;
+    background: #000c;
+    color: #fff;
+    padding: 0.35rem 0.5rem;
+    border-radius: 0.5rem;
+    z-index: 9999;
+    pointer-events: none;
   }
 </style>
