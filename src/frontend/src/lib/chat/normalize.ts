@@ -1,3 +1,5 @@
+import { FragmentType, type Fragment } from '$lib/types/messages';
+
 // Normalizes incoming websocket payloads into a single shape the UI can render safely.
 // - Ignores keepalives ("__keepalive__")
 // - Tolerates both harvester (author/message/...) and tailer (username/text/...) shapes
@@ -16,6 +18,7 @@ export type Badge = {
 };
 
 export type DisplayBadge = Badge;
+type BadgeLike = Badge | string;
 
 export interface ChatMessage {
   id: string;
@@ -24,9 +27,9 @@ export interface ChatMessage {
   platform: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | 'Test' | string;
   text: string;
   emotes: Emote[];
-  badges: Badge[];
+  badges: BadgeLike[];
   badges_raw?: unknown;
-  displayBadges?: DisplayBadge[];
+  displayBadges?: BadgeLike[];
   fragments?: any[];
   colour?: string;
   raw?: unknown;
@@ -130,7 +133,7 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const displayBadges = buildDisplayBadges(badges, badgesRawPayload);
 
   if ((!Array.isArray(fragments) || fragments.length === 0) && text.trim().length > 0) {
-    fragments = [{ type: 'text', text, emote: null }];
+    fragments = [{ type: FragmentType.Text, text, emote: null }];
   }
 
   const ts = coerceTimestamp(obj.ts ?? obj.timestamp ?? obj.created_at ?? obj.time ?? null);
@@ -467,10 +470,6 @@ function normalizeEmote(input: any): Emote | null {
 
 /** Map string/number fragment types from the socket to the enum the renderer expects */
 function mapFragmentType(t: any): FragmentType | null {
-  if (typeof t === 'number') {
-    // Already an enum value (best effort sanity check)
-    if (t in FragmentType) return t as FragmentType;
-  }
   if (typeof t === 'string') {
     const k = t.toLowerCase();
     switch (k) {

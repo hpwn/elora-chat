@@ -3,7 +3,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import { describe, expect, test, vi } from 'vitest';
 
 import ChatMessage from './ChatMessage.svelte';
-import type { Message } from '$lib/types/messages';
+import { FragmentType, type Message } from '$lib/types/messages';
 
 describe('ChatMessage', () => {
   test('renders fallback text when fragments are empty', () => {
@@ -19,7 +19,7 @@ describe('ChatMessage', () => {
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -53,7 +53,7 @@ describe('ChatMessage', () => {
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -97,7 +97,7 @@ describe('ChatMessage', () => {
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -138,7 +138,7 @@ describe('ChatMessage', () => {
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -178,7 +178,7 @@ describe('ChatMessage', () => {
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -210,17 +210,17 @@ describe('ChatMessage', () => {
           id: 'moderator',
           platform: 'youtube',
           imageUrl: '/assets/badges/yt-mod-wrench.svg',
-          images: [{ url: '/assets/badges/yt-mod-wrench.svg', width: 16, height: 16 }],
+          images: [{ id: 'yt-mod', url: '/assets/badges/yt-mod-wrench.svg', width: 16, height: 16 }],
           title: 'Moderator'
         }
       ],
       emotes: [],
-      fragments: [{ type: 'text', text: 'hi', emote: null }]
+      fragments: [{ type: FragmentType.Text, text: 'hi', emote: null }]
     };
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -253,12 +253,12 @@ describe('ChatMessage', () => {
         }
       ],
       emotes: [],
-      fragments: [{ type: 'text', text: 'hi', emote: null }]
+      fragments: [{ type: FragmentType.Text, text: 'hi', emote: null }]
     };
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',
@@ -292,18 +292,28 @@ describe('ChatMessage', () => {
           platform: 'twitch',
           imageUrl: 'https://static.twitchcdn.net/badges/v1/subscriber_1x.png',
           images: [
-            { url: 'https://static.twitchcdn.net/badges/v1/subscriber_1x.png', width: 18, height: 18 },
-            { url: 'https://static.twitchcdn.net/badges/v1/subscriber_2x.png', width: 36, height: 36 }
+            {
+              id: 'sub-1x',
+              url: 'https://static.twitchcdn.net/badges/v1/subscriber_1x.png',
+              width: 18,
+              height: 18
+            },
+            {
+              id: 'sub-2x',
+              url: 'https://static.twitchcdn.net/badges/v1/subscriber_2x.png',
+              width: 36,
+              height: 36
+            }
           ]
         }
       ],
       emotes: [],
-      fragments: [{ type: 'text', text: 'hi', emote: null }]
+      fragments: [{ type: FragmentType.Text, text: 'hi', emote: null }]
     };
 
     render(ChatMessage, {
       props: { message },
-      context: new Map([
+      context: new Map<string, any>([
         ['blacklist', new SvelteSet<string>()],
         [
           'keymods',

@@ -1,11 +1,18 @@
 import { wsUrl as configuredWsUrl } from '$lib/config';
 import { normalizeWsPayloads, type ChatMessage } from './normalize';
 
+export type { ChatMessage } from './normalize';
+
 export type OnMessage = (m: ChatMessage) => void;
 
 const textDecoder = new TextDecoder();
 
+let __latestOnMessage: OnMessage | null = null;
+export function __pushMockMessage(m: ChatMessage){__latestOnMessage?.(m);}
+
 export function connectChat(onMessage: OnMessage, url = defaultWsUrl()): WebSocket {
+  __latestOnMessage = onMessage;
+
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
 
@@ -25,13 +32,13 @@ function deliverPayload(data: unknown, onMessage: OnMessage): void {
 
   if (ArrayBuffer.isView(data)) {
     const { buffer, byteOffset, byteLength } = data;
-    const slice = buffer.slice(byteOffset, byteOffset + byteLength);
-    emitMessages(normalizeWsPayloads(textDecoder.decode(slice)), onMessage);
+    const view = new Uint8Array(buffer, byteOffset, byteLength);
+    emitMessages(normalizeWsPayloads(textDecoder.decode(view)), onMessage);
     return;
   }
 
   if (data instanceof ArrayBuffer) {
-    emitMessages(normalizeWsPayloads(textDecoder.decode(data)), onMessage);
+    emitMessages(normalizeWsPayloads(textDecoder.decode(new Uint8Array(data))), onMessage);
     return;
   }
 

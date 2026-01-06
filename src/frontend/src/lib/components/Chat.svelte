@@ -380,6 +380,7 @@
   function coerceBadges(badges: WsChatMessage['badges'] | WsChatMessage['displayBadges']): Message['badges'] {
     if (!Array.isArray(badges)) return [];
     const out: Message['badges'] = [];
+    type BadgeImage = NonNullable<Message['badges'][number]['images']>[number];
     for (const badge of badges) {
       if (typeof badge === 'string') {
         const trimmed = badge.trim();
@@ -404,11 +405,11 @@
       const imagesRaw = Array.isArray(record.images) ? record.images : [];
       const imageUrl = typeof (record as any).imageUrl === 'string' ? (record as any).imageUrl : undefined;
       const title = typeof (record as any).title === 'string' ? (record as any).title : undefined;
-      const images = imagesRaw.flatMap((img) => {
-        if (!img || typeof img !== 'object') return [] as Message['badges'][number]['images'];
+      const images: BadgeImage[] = imagesRaw.flatMap((img) => {
+        if (!img || typeof img !== 'object') return [] as BadgeImage[];
         const imageRecord = img as Record<string, unknown>;
         const url = typeof imageRecord.url === 'string' ? imageRecord.url : undefined;
-        if (!url) return [] as Message['badges'][number]['images'];
+        if (!url) return [] as BadgeImage[];
         return [
           {
             id: typeof imageRecord.id === 'string' ? imageRecord.id : `${id}-${url}`,
@@ -660,7 +661,7 @@
   onscroll={handleScroll}
   bind:this={container}
 >
-  {#each messages as message}
+  {#each messages as message (message.id)}
     {#if !blacklist.has(message.author)}
       <ChatMessage {message} />
     {/if}

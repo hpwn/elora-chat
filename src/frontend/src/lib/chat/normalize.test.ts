@@ -150,12 +150,16 @@ describe('normalizeWsPayload', () => {
     };
 
     const out = normalizeWsPayload(obj);
-    expect(out?.displayBadges?.[0]).toMatchObject({
+    const badge = out?.displayBadges?.[0];
+    if (!badge || typeof badge === 'string') {
+      throw new Error('expected display badge object');
+    }
+    expect(badge).toMatchObject({
       id: 'moderator',
       platform: 'youtube',
       imageUrl: '/assets/badges/yt-mod-wrench.svg'
     });
-    expect(out?.displayBadges?.[0].title).toBe('Moderator');
+    expect(badge.title).toBe('Moderator');
   });
 
   it('uses wrench icon for youtube moderators without raw badge data', () => {
@@ -252,11 +256,15 @@ describe('normalizeWsPayload', () => {
     };
 
     const out = normalizeWsPayload(obj);
-    expect(out?.displayBadges?.[0]).toMatchObject({
+    const badge = out?.displayBadges?.[0];
+    if (!badge || typeof badge === 'string') {
+      throw new Error('expected display badge object');
+    }
+    expect(badge).toMatchObject({
       id: 'subscriber',
       platform: 'twitch',
       imageUrl: 'https://static.twitchcdn.net/badge-18.png'
     });
-    expect(out?.displayBadges?.[0].images?.length).toBe(2);
+    expect(badge.images?.length).toBe(2);
   });
 });

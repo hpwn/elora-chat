@@ -7,7 +7,7 @@
   import { TwitchIcon, YoutubeIcon } from './icons';
 
   let { message }: { message: Message } = $props();
-  console.debug("[DBG] ChatMessage fragments", message.fragments);
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug("[DBG] ChatMessage fragments", $state.snapshot(message.fragments));
   let visible = $state(true);
 
   const blacklist: SvelteSet<string> = getContext('blacklist');

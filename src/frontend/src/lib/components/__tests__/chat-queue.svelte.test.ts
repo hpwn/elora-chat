@@ -26,12 +26,12 @@ vi.mock('$lib/chat/ws', () => {
 
 async function renderChat() {
   vi.stubEnv('VITE_CHAT_DEBUG', '1');
-  (global as any).fetch = vi.fn().mockResolvedValue({
+  (globalThis as any).fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ items: [], next_before_ts: null, next_before_rowid: null })
   });
 
-  (global as any).WebSocket = class MockWebSocket {
+  (globalThis as any).WebSocket = class MockWebSocket {
     static OPEN = 1;
     static CONNECTING = 0;
     readyState = 1;
@@ -55,9 +55,9 @@ describe('Chat websocket queue', () => {
 
     const baseTs = Date.now();
     const incoming: WsChatMessage[] = [
-      { id: 'yt-1', ts: baseTs, username: 'yt-a', platform: 'YouTube', text: 'yt-one' },
-      { id: 'tw-1', ts: baseTs, username: 'tw-a', platform: 'Twitch', text: 'tw-one' },
-      { id: 'yt-2', ts: baseTs, username: 'yt-b', platform: 'YouTube', text: 'yt-two' }
+      { id: 'yt-1', ts: baseTs, username: 'yt-a', platform: 'YouTube', text: 'yt-one', emotes: [], badges: [] },
+      { id: 'tw-1', ts: baseTs, username: 'tw-a', platform: 'Twitch', text: 'tw-one', emotes: [], badges: [] },
+      { id: 'yt-2', ts: baseTs, username: 'yt-b', platform: 'YouTube', text: 'yt-two', emotes: [], badges: [] }
     ];
 
     for (const msg of incoming) {
