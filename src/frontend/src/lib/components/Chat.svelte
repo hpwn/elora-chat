@@ -93,14 +93,15 @@
   let historyExhausted = $state(false);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
-    console.debug('[convertIncomingMessage]', {
-      fragments: (message as any).fragments,
-      emotes: (message as any).emotes,
-      text: (message as any).text,
-      platform: (message as any).platform,
-      username: (message as any).username
-    });
-
+    if (CHAT_DEBUG) {
+      console.debug('[convertIncomingMessage]', {
+        fragments: (message as any).fragments,
+        emotes: (message as any).emotes,
+        text: (message as any).text,
+        platform: (message as any).platform,
+        username: (message as any).username
+      });
+    }
     let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const tsCandidate = typeof message.ts === 'number' ? message.ts : Number(message.ts);
     const ts = Number.isFinite(tsCandidate) ? tsCandidate : Date.now();
