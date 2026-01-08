@@ -60,9 +60,7 @@ describe('Chat websocket queue', () => {
       { id: 'yt-2', ts: baseTs, username: 'yt-b', platform: 'YouTube', text: 'yt-two', emotes: [], badges: [] }
     ];
 
-    for (const msg of incoming) {
-      __pushMockMessage(msg);
-    }
+    for (const msg of incoming) __pushMockMessage(msg);
 
     await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(incoming.length));
 
@@ -73,5 +71,29 @@ describe('Chat websocket queue', () => {
     expect(screen.getByText('yt-one')).toBeInTheDocument();
     expect(screen.getByText('yt-two')).toBeInTheDocument();
     expect(screen.getByText('tw-one')).toBeInTheDocument();
+  });
+
+  it('does not drop when Twitch and YouTube share the same upstream id', async () => {
+    await renderChat();
+    const { __pushMockMessage } = await import('$lib/chat/ws');
+
+    const baseTs = Date.now();
+    const incoming: WsChatMessage[] = [
+      { id: 'same-id', ts: baseTs + 1, username: 'yt-a', platform: 'YouTube', text: 'yt-one', emotes: [], badges: [] },
+      { id: 'same-id', ts: baseTs + 2, username: 'tw-a', platform: 'Twitch',  text: 'tw-one', emotes: [], badges: [] },
+      { id: 'same-id-2', ts: baseTs + 3, username: 'yt-b', platform: 'YouTube', text: 'yt-two', emotes: [], badges: [] }
+    ];
+
+    for (const msg of incoming) __pushMockMessage(msg);
+
+    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(incoming.length));
+
+    const rendered = screen.getAllByRole('button');
+    const platforms = rendered.map((node) => node.getAttribute('data-platform'));
+    expect(platforms).toEqual(['YouTube', 'Twitch', 'YouTube']);
+
+    expect(screen.getByText('yt-one')).toBeInTheDocument();
+    expect(screen.getByText('tw-one')).toBeInTheDocument();
+    expect(screen.getByText('yt-two')).toBeInTheDocument();
   });
 });
