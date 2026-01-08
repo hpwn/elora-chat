@@ -105,8 +105,11 @@
     const tsCandidate = typeof message.ts === 'number' ? message.ts : Number(message.ts);
     const ts = Number.isFinite(tsCandidate) ? tsCandidate : Date.now();
 
-    const idCandidate = typeof message.id === 'string' && message.id.trim().length > 0 ? message.id : '';
-    const id = idCandidate || `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const sourceCandidate = typeof message.platform === 'string' ? (message.platform as Message['source']) : DEFAULT_SOURCE;
+    const source = ALLOWED_SOURCES.has(sourceCandidate) ? sourceCandidate : DEFAULT_SOURCE;
+    const idCandidate = typeof message.id === 'string' && message.id.trim().length > 0 ? message.id.trim() : '';
+    const rawId = idCandidate || `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = rawId.startsWith(source + ':') ? rawId : `${source}:${rawId}`;
 
     const text = typeof message.text === 'string' ? message.text : '';
     if (
@@ -120,8 +123,6 @@
     const rawColour = typeof message.colour === 'string' ? message.colour : '';
     const colour = rawColour && rawColour.trim().length > 0 ? rawColour : DEFAULT_COLOUR;
 
-    const sourceCandidate = typeof message.platform === 'string' ? (message.platform as Message['source']) : DEFAULT_SOURCE;
-    const source = ALLOWED_SOURCES.has(sourceCandidate) ? sourceCandidate : DEFAULT_SOURCE;
     if (hideYouTubeAt && source === 'YouTube' && author.startsWith('@')) {
       author = author.slice(1).trim() || author;
     }
@@ -138,7 +139,7 @@
     const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
 
     return {
-      id,
+        id,
       ts,
       author,
       message: text,
@@ -212,14 +213,18 @@
     const tsCandidate = typeof item.ts === 'string' ? Date.parse(item.ts) : Number(item.ts);
     const ts = Number.isFinite(tsCandidate) ? tsCandidate : Date.now();
 
-    const idCandidate = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id : `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const platformCandidate = typeof item.platform === 'string' ? item.platform.trim() : '';
+    const platform = platformCandidate ? platformCandidate : DEFAULT_SOURCE;
+    const source = ALLOWED_SOURCES.has(platform as any) ? (platform as any) : DEFAULT_SOURCE;
+    const idCandidate = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id.trim() : `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = idCandidate.startsWith(source + ':') ? idCandidate : `${source}:${idCandidate}`;
     const emotes = safeJsonParse<any[]>(item.emotes_json, []);
 
     return {
-      id: idCandidate,
+        id,
       ts,
       username: typeof item.username === 'string' && item.username.trim().length > 0 ? item.username : '(unknown)',
-      platform: typeof item.platform === 'string' && item.platform.trim().length > 0 ? item.platform : DEFAULT_SOURCE,
+        platform: source,
       text,
       fragments: text ? [{ type: 'text', text, emote: null }] : [],
       emotes,
