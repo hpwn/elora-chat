@@ -5,7 +5,7 @@
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
-  import { apiPath, hideYouTubeAt, showBadges, wsUrl as configuredWsUrl } from '$lib/config';
+  import { apiPath, hideYouTubeAt, isFetchHistoryOnLoad, showBadges, wsUrl as configuredWsUrl } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { normalizeWsPayload } from '$lib/chat/normalize';
   import { SvelteSet } from 'svelte/reactivity';
@@ -325,6 +325,7 @@
   }
 
   async function loadOlderMessages() {
+    if (!isFetchHistoryOnLoad()) return;
     if (loadingHistory || historyExhausted || nextBeforeTs === null) return;
     loadingHistory = true;
     await fetchMessagesPage({ beforeTs: nextBeforeTs, beforeRowID: nextBeforeRowID });
@@ -560,6 +561,7 @@
 
   function handleScroll() {
     if (!container) return;
+    if (!isFetchHistoryOnLoad()) return;
     if (container.scrollTop <= 50) {
       loadOlderMessages();
     }
@@ -608,7 +610,11 @@
   }
 
   onMount(() => {
-    fetchMessagesPage();
+    if (isFetchHistoryOnLoad()) {
+      fetchMessagesPage();
+    } else {
+      historyExhausted = true;
+    }
     initializeWebSocket();
 
     document.addEventListener('keydown', (e) => {
