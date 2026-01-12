@@ -24,8 +24,9 @@ vi.mock('$lib/chat/ws', () => {
   };
 });
 
-async function renderChat() {
+async function renderChat(opts: { fetchHistoryOnLoad?: boolean } = {}) {
   vi.stubEnv('VITE_CHAT_DEBUG', '1');
+  vi.stubEnv('VITE_PUBLIC_FETCH_HISTORY_ON_LOAD', opts.fetchHistoryOnLoad ? '1' : '0');
   (globalThis as any).fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ items: [], next_before_ts: null, next_before_rowid: null })
@@ -71,6 +72,18 @@ describe('Chat websocket queue', () => {
     expect(screen.getByText('yt-one')).toBeInTheDocument();
     expect(screen.getByText('yt-two')).toBeInTheDocument();
     expect(screen.getByText('tw-one')).toBeInTheDocument();
+  });
+
+  it('does not fetch history by default', async () => {
+    await renderChat();
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('fetches history when enabled', async () => {
+    await renderChat({ fetchHistoryOnLoad: true });
+
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
   });
 
   it('does not drop when Twitch and YouTube share the same upstream id', async () => {

@@ -22,6 +22,13 @@ export const hideYouTubeAt = hideEnv !== '0' && hideEnv !== 'false';
 const showEnv = (import.meta.env.VITE_PUBLIC_SHOW_BADGES ?? '1').toString().trim().toLowerCase();
 export const showBadges = showEnv !== '0' && showEnv !== 'false';
 
+const fetchHistoryTruthyValues = new Set(['1', 'true', 'yes', 'on']);
+export function isFetchHistoryOnLoad(): boolean {
+  const fetchHistoryEnv = (import.meta.env.VITE_PUBLIC_FETCH_HISTORY_ON_LOAD ?? '').toString().trim().toLowerCase();
+  return fetchHistoryTruthyValues.has(fetchHistoryEnv);
+}
+export const fetchHistoryOnLoad = isFetchHistoryOnLoad();
+
 export function apiPath(path: string): string {
   const normalized = path.startsWith('/') ? path : `/${path}`;
   return `${apiBaseUrl}${normalized}`;
