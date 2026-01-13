@@ -1,4 +1,4 @@
-import { wsUrl as configuredWsUrl } from '$lib/config';
+import { isFetchHistoryOnLoad, wsUrl as configuredWsUrl } from '$lib/config';
 import { normalizeWsPayloads, type ChatMessage } from './normalize';
 
 export type { ChatMessage } from './normalize';
@@ -13,7 +13,7 @@ export function __pushMockMessage(m: ChatMessage){__latestOnMessage?.(m);}
 export function connectChat(onMessage: OnMessage, url = defaultWsUrl()): WebSocket {
   __latestOnMessage = onMessage;
 
-  const ws = new WebSocket(url);
+  const ws = new WebSocket(withReplayParam(url));
   ws.binaryType = 'arraybuffer';
 
   ws.onmessage = (evt) => {
@@ -68,4 +68,17 @@ export function defaultWsUrl(): string {
   }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${location.host}/ws/chat`;
+}
+
+function withReplayParam(rawUrl: string): string {
+  const replay = isFetchHistoryOnLoad() ? '1' : '0';
+  try {
+    const base = typeof location !== 'undefined' ? location.origin : 'http://localhost';
+    const url = new URL(rawUrl, base);
+    url.searchParams.set('replay', replay);
+    return url.toString();
+  } catch {
+    const separator = rawUrl.includes('?') ? '&' : '?';
+    return `${rawUrl}${separator}replay=${replay}`;
+  }
 }

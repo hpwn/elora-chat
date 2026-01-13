@@ -821,6 +821,15 @@ func removeSubscriber(ch chan []byte) {
 	subscribersMu.Unlock()
 }
 
+func replayEnabled(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // StreamChat initializes a WebSocket connection and streams chat messages
 func StreamChat(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -832,6 +841,7 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 
 	cfg := activeWebsocketConfig
 	sourceFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
+	shouldReplay := replayEnabled(r.URL.Query().Get("replay"))
 	if cfg.maxBytes > 0 {
 		conn.SetReadLimit(cfg.maxBytes)
 	}
@@ -861,7 +871,7 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 	defer removeSubscriber(messageChan)
 
 	// Read the last 100 messages from the backing store to send to the client immediately.
-	if chatStore != nil {
+	if shouldReplay && chatStore != nil {
 		history, err := chatStore.GetRecent(ctx, storage.QueryOpts{Limit: 100})
 		if err != nil {
 			log.Printf("storage: Failed to read messages from store: %v\n", err)
