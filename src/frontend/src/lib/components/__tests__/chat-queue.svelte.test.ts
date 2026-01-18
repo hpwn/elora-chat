@@ -109,4 +109,60 @@ describe('Chat websocket queue', () => {
     expect(screen.getByText('tw-one')).toBeInTheDocument();
     expect(screen.getByText('yt-two')).toBeInTheDocument();
   });
+
+  it('renders text when fragment emote is empty', async () => {
+    await renderChat();
+    const { __pushMockMessage } = await import('$lib/chat/ws');
+
+    const baseTs = Date.now();
+    const incoming: WsChatMessage = {
+      id: 'yt-emoji-1',
+      ts: baseTs,
+      username: 'yt-a',
+      platform: 'YouTube',
+      text: '',
+      emotes: [],
+      badges: [],
+      fragments: [
+        {
+          type: 'text',
+          text: ':grinning_squinting_face:',
+          emote: { id: '', name: '', locations: [], images: [] }
+        }
+      ]
+    };
+
+    __pushMockMessage(incoming);
+
+    await waitFor(() => expect(screen.getByText('😆')).toBeInTheDocument());
+    expect(screen.queryByText(':grinning_squinting_face:')).not.toBeInTheDocument();
+  });
+
+  it('replaces known YouTube shortcodes with unicode', async () => {
+    await renderChat();
+    const { __pushMockMessage } = await import('$lib/chat/ws');
+
+    const baseTs = Date.now();
+    const incoming: WsChatMessage = {
+      id: 'yt-emoji-2',
+      ts: baseTs,
+      username: 'yt-b',
+      platform: 'YouTube',
+      text: '',
+      emotes: [],
+      badges: [],
+      fragments: [
+        {
+          type: 'text',
+          text: ':rolling_on_the_floor_laughing:',
+          emote: null
+        }
+      ]
+    };
+
+    __pushMockMessage(incoming);
+
+    await waitFor(() => expect(screen.getByText('🤣')).toBeInTheDocument());
+    expect(screen.queryByText(':rolling_on_the_floor_laughing:')).not.toBeInTheDocument();
+  });
 });

@@ -9,12 +9,36 @@
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { normalizeWsPayload } from '$lib/chat/normalize';
   import { SvelteSet } from 'svelte/reactivity';
+  import * as EmojilibNS from 'emojilib';
 
   const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
   const DEFAULT_COLOUR = '#ffffff';
   const DEFAULT_SOURCE: Message['source'] = 'YouTube';
   const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
   const HISTORY_LIMIT = 200;
+  const SHORTCODE_REGEX = /:([a-z0-9_\-+]+):/gi;
+  const shortcodeToEmoji = new Map<string, string>();
+  const shortcodeAliases = new Map<string, string>([
+    ['rolling_on_the_floor_laughing', 'rofl'],
+    ['face_with_tears_of_joy', 'joy'],
+    ['grinning_squinting_face', 'laughing']
+  ]);
+  const ytShortcodeOverrides = new Map<string, string>([
+    ['grinning_squinting_face', '😆']
+  ]);
+  const keywordSet = (EmojilibNS as any).default ?? (EmojilibNS as any);
+
+  if (keywordSet && typeof keywordSet === 'object') {
+    for (const [emojiChar, keywords] of Object.entries(keywordSet)) {
+      if (!emojiChar) continue;
+      if (!Array.isArray(keywords)) continue;
+      for (const keyword of keywords) {
+        if (typeof keyword === 'string' && keyword) {
+          shortcodeToEmoji.set(keyword, emojiChar);
+        }
+      }
+    }
+  }
 
   type PlatformCounter = Map<Message['source'] | 'unknown', number>;
   const debugCounters = {
@@ -76,6 +100,20 @@
     });
   }
 
+  function shortcodesToUnicode(text: string): string {
+    if (!text) return text;
+    return text.replace(SHORTCODE_REGEX, (match, token) => {
+      const rawKey = String(token).toLowerCase();
+      const override = ytShortcodeOverrides.get(rawKey);
+      if (override) return override;
+
+      const normalized = rawKey.replace(/-/g, '_');
+      const key = shortcodeAliases.get(normalized) ?? normalized;
+      const mapped = shortcodeToEmoji.get(key);
+      return typeof mapped === 'string' && mapped.length > 0 ? mapped : match;
+    });
+  }
+
   interface MessagesResponse {
     items?: any[];
     next_before_ts?: number | null;
@@ -129,10 +167,11 @@
     }
 
     const emotes = coerceEmotes(message.emotes);
-    let fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments) : [];
+    let fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments, source) : [];
 
     if (fragments.length === 0 && text.trim().length > 0) {
-      fragments = [{ type: FragmentType.Text, text, emote: null }];
+      const normalizedText = source === 'YouTube' ? shortcodesToUnicode(text) : text;
+      fragments = [{ type: FragmentType.Text, text: normalizedText, emote: null }];
     }
 
     const badgeInput = message.displayBadges ?? message.badges;
@@ -332,7 +371,7 @@
     loadingHistory = false;
   }
 
-  function coerceFragments(fragments: any): Message['fragments'] {
+  function coerceFragments(fragments: any, source: Message['source']): Message['fragments'] {
     if (!Array.isArray(fragments)) return [];
     const out: Message['fragments'] = [];
 
@@ -355,29 +394,43 @@
 
       // If this fragment is an emote, normalize the emote object shape
       let emote: Message['emotes'][number] | null = null;
-      if (type === FragmentType.Emote && r.emote && typeof r.emote === 'object') {
+      if (r.emote && typeof r.emote === 'object') {
         const er = r.emote as Record<string, any>;
-        const name = typeof er.name === 'string' && er.name.trim().length > 0 ? er.name : text;
-        const id   = typeof er.id === 'string'   && er.id.trim().length > 0   ? er.id   : name;
-
+        const hasName = typeof er.name === 'string' && er.name.trim().length > 0;
+        const hasId = typeof er.id === 'string' && er.id.trim().length > 0;
         const imagesRaw = Array.isArray(er.images) ? er.images : [];
-        const images = imagesRaw.flatMap((img) => {
-          if (!img || typeof img !== 'object') return [] as Message['emotes'][number]['images'];
-          const ir = img as Record<string, any>;
-          const url = typeof ir.url === 'string' ? ir.url : undefined;
-          if (!url) return [] as Message['emotes'][number]['images'];
-          return [{
-            id: typeof ir.id === 'string' ? ir.id : `${id}-${url}`,
-            url,
-            width: typeof ir.width === 'number' ? ir.width : 0,
-            height: typeof ir.height === 'number' ? ir.height : 0,
-          }];
-        });
+        const locationsRaw = Array.isArray(er.locations) ? er.locations : [];
+        const isEmptyEmote = !hasId && !hasName && imagesRaw.length === 0 && locationsRaw.length === 0;
 
-        emote = { id, name, images, locations: er.locations ?? [] };
+        if (isEmptyEmote) {
+          emote = null;
+          if (type === FragmentType.Emote) {
+            type = FragmentType.Text;
+          }
+        } else if (type === FragmentType.Emote) {
+          const name = hasName ? er.name : text;
+          const id = hasId ? er.id : name;
+          const images = imagesRaw.flatMap((img) => {
+            if (!img || typeof img !== 'object') return [] as Message['emotes'][number]['images'];
+            const ir = img as Record<string, any>;
+            const url = typeof ir.url === 'string' ? ir.url : undefined;
+            if (!url) return [] as Message['emotes'][number]['images'];
+            return [{
+              id: typeof ir.id === 'string' ? ir.id : `${id}-${url}`,
+              url,
+              width: typeof ir.width === 'number' ? ir.width : 0,
+              height: typeof ir.height === 'number' ? ir.height : 0,
+            }];
+          });
+
+          emote = { id, name, images, locations: locationsRaw };
+        }
       }
 
-      out.push({ type, text, emote });
+      const normalizedText =
+        source === 'YouTube' && type === FragmentType.Text && emote === null ? shortcodesToUnicode(text) : text;
+
+      out.push({ type, text: normalizedText, emote });
     }
 
     return out;

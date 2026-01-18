@@ -1,8 +1,8 @@
 # Start with a base Go image to build your application
-FROM golang:1.24.2-alpine AS builder
+FROM golang:1.24.2 AS builder
 
-# Install git for fetching Go dependencies
-RUN apk add --no-cache git
+# Install git for fetching Go dependencies (avoid apk segfaults)
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -19,22 +19,6 @@ COPY src/backend .
 # Build the Go app
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server .
 
-# Build the Svelte frontend
-FROM node:23-alpine AS build-frontend
-
-WORKDIR /app
-
-# Install dependencies
-COPY src/frontend/package.json src/frontend/package-lock.json ./
-RUN npm ci
-
-# Copy the source code
-COPY src/frontend/ ./
-
-# Build the Svelte app
-RUN npm run build
-
-
 # Runtime image with the Go server and built assets
 FROM alpine:3.20
 
@@ -46,7 +30,7 @@ RUN apk add --no-cache curl
 COPY --from=builder /app/server /app/
 
 # Copy the frontend files to the production image
-COPY --from=build-frontend /app/build /app/public
+COPY src/frontend/build /app/public
 
 # Create a non-root user and the shared token mount point
 RUN adduser -D myuser && \
