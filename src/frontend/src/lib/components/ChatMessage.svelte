@@ -248,6 +248,12 @@
       vertical-align: middle;
     }
 
+    .chat-emote {
+      height: 1.2em;
+      width: auto;
+      vertical-align: -0.2em;
+    }
+
     .message-text > img + img {
       margin-left: 0;
     }

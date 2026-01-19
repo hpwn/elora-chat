@@ -492,3 +492,55 @@ func TestBroadcastFromTailerStructuredBadgesAndRaw(t *testing.T) {
 		t.Fatalf("expected broadcast payload but channel was empty")
 	}
 }
+
+func TestBroadcastFromTailerYouTubeEmoteFragments(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	subscribersMu.Lock()
+	subscribers = nil
+	subscribersMu.Unlock()
+
+	ch := addSubscriber()
+	defer removeSubscriber(ch)
+
+	emotesJSON := `[
+		{"id":"a","name":":a:","locations":["0-2"],"images":[{"url":"https://example.com/a.png","width":24,"height":24}]},
+		{"id":"b","name":":b:","locations":["3-5"],"images":[{"url":"https://example.com/b.png","width":24,"height":24}]}
+	]`
+
+	BroadcastFromTailer(storage.Message{
+		Username:   "YTUser",
+		Platform:   "YouTube",
+		Text:       ":a::b:",
+		EmotesJSON: emotesJSON,
+	})
+
+	select {
+	case payload := <-ch:
+		sanitized, err := sanitizeMessagePayload(payload)
+		if err != nil {
+			t.Fatalf("sanitizeMessagePayload returned error: %v", err)
+		}
+		var msg Message
+		if err := json.Unmarshal(sanitized, &msg); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+
+		emoteCount := 0
+		for _, token := range msg.Tokens {
+			if token.Type == TokenTypeEmote {
+				emoteCount++
+				if len(token.Emote.Images) == 0 || token.Emote.Images[0].URL == "" {
+					t.Fatalf("expected emote images to be populated, got %#v", token.Emote.Images)
+				}
+			}
+		}
+		if emoteCount != 2 {
+			t.Fatalf("expected 2 emote fragments, got %d", emoteCount)
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}

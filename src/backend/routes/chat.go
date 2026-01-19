@@ -279,6 +279,12 @@ func (m *Message) normalize() {
 	m.Message = strings.TrimSpace(m.Message)
 	m.Source = normalizeSource(m.Source)
 
+	if strings.EqualFold(m.Source, "youtube") && len(m.Emotes) > 0 && len(m.Tokens) == 0 {
+		if fragments := buildYouTubeFragments(m.Message, m.Emotes); len(fragments) > 0 {
+			m.Tokens = fragments
+		}
+	}
+
 	if m.Tokens == nil {
 		m.Tokens = []Token{}
 	}
@@ -299,6 +305,280 @@ func (m *Message) normalize() {
 			m.Author = strings.TrimSpace(m.Author)
 		}
 	}
+}
+
+type emoteSpan struct {
+	start int
+	end   int
+	emote Emote
+}
+
+func decodeEmotesJSON(raw string) []Emote {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []Emote{}
+	}
+
+	var emotes []Emote
+	if err := json.Unmarshal([]byte(raw), &emotes); err == nil {
+		if emotes == nil {
+			return []Emote{}
+		}
+		return emotes
+	}
+
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return []Emote{}
+	}
+
+	out := make([]Emote, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		emote := Emote{
+			ID:        strings.TrimSpace(getString(entry, "id")),
+			Name:      strings.TrimSpace(firstNonEmptyString(entry, "name", "shortcode", "text")),
+			Locations: parseEmoteLocations(entry["locations"]),
+			Images:    parseEmoteImages(entry),
+		}
+		out = append(out, emote)
+	}
+	if len(out) == 0 {
+		return []Emote{}
+	}
+	return out
+}
+
+func getString(record map[string]any, key string) string {
+	if record == nil {
+		return ""
+	}
+	if raw, ok := record[key]; ok {
+		if s, ok := raw.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyString(record map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(getString(record, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseEmoteLocations(raw any) []string {
+	arr, ok := raw.([]any)
+	if !ok {
+		return []string{}
+	}
+	out := make([]string, 0, len(arr))
+	for _, entry := range arr {
+		switch v := entry.(type) {
+		case string:
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		case map[string]any:
+			start, okStart := coerceInt(v["start"])
+			end, okEnd := coerceInt(v["end"])
+			endExclusive := false
+			if !okStart {
+				start, okStart = coerceInt(v["startIndex"])
+				endExclusive = endExclusive || okStart
+			}
+			if !okStart {
+				start, okStart = coerceInt(v["start_index"])
+				endExclusive = endExclusive || okStart
+			}
+			if !okEnd {
+				end, okEnd = coerceInt(v["endIndex"])
+				endExclusive = endExclusive || okEnd
+			}
+			if !okEnd {
+				end, okEnd = coerceInt(v["end_index"])
+				endExclusive = endExclusive || okEnd
+			}
+			if !okStart || !okEnd {
+				continue
+			}
+			if endExclusive && end > start {
+				end--
+			}
+			if end < start {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%d-%d", start, end))
+		}
+	}
+	if len(out) == 0 {
+		return []string{}
+	}
+	return out
+}
+
+func parseEmoteImages(entry map[string]any) []Image {
+	rawImages, ok := entry["images"].([]any)
+	if !ok {
+		rawImages = nil
+	}
+	out := make([]Image, 0, len(rawImages))
+	for _, img := range rawImages {
+		rec, ok := img.(map[string]any)
+		if !ok {
+			continue
+		}
+		url := strings.TrimSpace(firstNonEmptyString(rec, "url", "imageUrl", "image_url", "src"))
+		if url == "" {
+			continue
+		}
+		width, _ := coerceInt(rec["width"])
+		height, _ := coerceInt(rec["height"])
+		id := strings.TrimSpace(getString(rec, "id"))
+		out = append(out, Image{URL: url, Width: width, Height: height, ID: id})
+	}
+
+	if len(out) == 0 {
+		url := strings.TrimSpace(firstNonEmptyString(entry, "url", "imageUrl", "image_url", "src"))
+		if url != "" {
+			width, _ := coerceInt(entry["width"])
+			height, _ := coerceInt(entry["height"])
+			out = append(out, Image{URL: url, Width: width, Height: height})
+		}
+	}
+
+	if len(out) == 0 {
+		return []Image{}
+	}
+	return out
+}
+
+func coerceInt(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), true
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func buildYouTubeFragments(message string, emotes []Emote) []Token {
+	if len(emotes) == 0 {
+		return nil
+	}
+
+	runes := []rune(message)
+	if len(runes) == 0 {
+		return nil
+	}
+
+	spans := make([]emoteSpan, 0, len(emotes))
+	for _, emote := range emotes {
+		for _, loc := range emote.Locations {
+			loc = strings.TrimSpace(loc)
+			if loc == "" {
+				continue
+			}
+			bounds := strings.SplitN(loc, "-", 2)
+			if len(bounds) != 2 {
+				continue
+			}
+			start, err1 := strconv.Atoi(strings.TrimSpace(bounds[0]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(bounds[1]))
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			if start < 0 {
+				start = 0
+			}
+			if end < start {
+				continue
+			}
+			if start >= len(runes) {
+				continue
+			}
+			if end >= len(runes) {
+				end = len(runes) - 1
+			}
+			spans = append(spans, emoteSpan{start: start, end: end, emote: emote})
+		}
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end < spans[j].end
+	})
+
+	tokens := make([]Token, 0, len(spans)*2+1)
+	cursor := 0
+	for _, span := range spans {
+		if span.start > cursor {
+			text := string(runes[cursor:span.start])
+			if text != "" {
+				tokens = append(tokens, Token{
+					Type: TokenTypeText,
+					Text: text,
+					Emote: Emote{
+						Locations: []string{},
+						Images:    []Image{},
+					},
+				})
+			}
+		} else if span.start < cursor {
+			if span.end < cursor {
+				continue
+			}
+			span.start = cursor
+		}
+
+		if span.end < span.start {
+			continue
+		}
+		text := string(runes[span.start : span.end+1])
+		tokens = append(tokens, Token{
+			Type:  TokenTypeEmote,
+			Text:  text,
+			Emote: span.emote,
+		})
+		cursor = span.end + 1
+	}
+
+	if cursor < len(runes) {
+		text := string(runes[cursor:])
+		if text != "" {
+			tokens = append(tokens, Token{
+				Type: TokenTypeText,
+				Text: text,
+				Emote: Emote{
+					Locations: []string{},
+					Images:    []Image{},
+				},
+			})
+		}
+	}
+
+	return tokens
 }
 
 func (m Message) toChatPayload() ws.ChatPayload {
@@ -512,15 +792,33 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 	if strings.TrimSpace(m.RawJSON) != "" {
 		var msg Message
 		if err := json.Unmarshal([]byte(m.RawJSON), &msg); err == nil {
-			if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
-				if msg.Badges == nil || len(msg.Badges) == 0 {
-					msg.Badges = badges
-					msg.BadgesRaw = raw
-				} else if msg.BadgesRaw == nil {
-					msg.BadgesRaw = raw
+			looksLikeMessage := strings.TrimSpace(msg.Author) != "" ||
+				strings.TrimSpace(msg.Message) != "" ||
+				strings.TrimSpace(msg.Source) != ""
+			if looksLikeMessage {
+				if msg.Author == "" {
+					msg.Author = m.Username
 				}
+				if msg.Message == "" {
+					msg.Message = m.Text
+				}
+				if msg.Source == "" {
+					msg.Source = m.Platform
+				}
+				if len(msg.Emotes) == 0 && strings.TrimSpace(m.EmotesJSON) != "" {
+					msg.Emotes = decodeEmotesJSON(m.EmotesJSON)
+				}
+				if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
+					if msg.Badges == nil || len(msg.Badges) == 0 {
+						msg.Badges = badges
+						msg.BadgesRaw = raw
+					} else if msg.BadgesRaw == nil {
+						msg.BadgesRaw = raw
+					}
+				}
+				msg.normalize()
+				return json.Marshal(msg.toChatPayload())
 			}
-			return json.Marshal(msg.toChatPayload())
 		}
 	}
 
@@ -529,11 +827,13 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 		badges = []Badge{}
 	}
 
+	emotes := decodeEmotesJSON(m.EmotesJSON)
+
 	fallback := Message{
 		Author:    m.Username,
 		Message:   m.Text,
 		Tokens:    []Token{},
-		Emotes:    []Emote{},
+		Emotes:    emotes,
 		Badges:    badges,
 		BadgesRaw: badgesRaw,
 		Source:    m.Platform,
@@ -709,12 +1009,9 @@ func enrichTailerMessage(m storage.Message) Message {
 		msg.Source = m.Platform
 	}
 
-	if msg.Emotes == nil {
+	if msg.Emotes == nil || len(msg.Emotes) == 0 {
 		if strings.TrimSpace(m.EmotesJSON) != "" {
-			var emotes []Emote
-			if err := json.Unmarshal([]byte(m.EmotesJSON), &emotes); err == nil {
-				msg.Emotes = emotes
-			}
+			msg.Emotes = decodeEmotesJSON(m.EmotesJSON)
 		}
 	}
 	if msg.Emotes == nil {
@@ -744,26 +1041,32 @@ func enrichTailerMessage(m storage.Message) Message {
 
 	if msg.Tokens == nil {
 		msg.Tokens = make([]Token, 0, 8)
-	} else {
-		msg.Tokens = msg.Tokens[:0]
 	}
 
-	// Fallback: decode Twitch first-party emote spans -> Emote slice, then seed cache.
-	// This runs only if we don't already have emotes on the message.
-	if strings.EqualFold(m.Platform, "twitch") && len(msg.Emotes) == 0 {
-		if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
-			// Seed tokenizer cache by NAME so tokenization emits emote fragments.
-			for _, e := range dec {
-				if strings.TrimSpace(e.Name) != "" {
-					tokenizer.EmoteCache[e.Name] = e
-				}
-			}
-			msg.Emotes = append(msg.Emotes, dec...)
+	if len(msg.Tokens) == 0 && strings.EqualFold(msg.Source, "youtube") && len(msg.Emotes) > 0 {
+		if fragments := buildYouTubeFragments(msg.Message, msg.Emotes); len(fragments) > 0 {
+			msg.Tokens = fragments
 		}
 	}
 
-	for token := range tokenizer.Iter(msg.Message) {
-		msg.Tokens = append(msg.Tokens, token)
+	if len(msg.Tokens) == 0 {
+		// Fallback: decode Twitch first-party emote spans -> Emote slice, then seed cache.
+		// This runs only if we don't already have emotes on the message.
+		if strings.EqualFold(m.Platform, "twitch") && len(msg.Emotes) == 0 {
+			if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
+				// Seed tokenizer cache by NAME so tokenization emits emote fragments.
+				for _, e := range dec {
+					if strings.TrimSpace(e.Name) != "" {
+						tokenizer.EmoteCache[e.Name] = e
+					}
+				}
+				msg.Emotes = append(msg.Emotes, dec...)
+			}
+		}
+
+		for token := range tokenizer.Iter(msg.Message) {
+			msg.Tokens = append(msg.Tokens, token)
+		}
 	}
 
 	if msg.Colour == "" {

@@ -114,6 +114,47 @@
     });
   }
 
+  function pickEmoteUrl(emote: unknown): string | null {
+    if (!emote || typeof emote !== 'object') return null;
+    const record = emote as Record<string, any>;
+    const pickString = (value: unknown): string | null => {
+      if (typeof value !== 'string') return null;
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    };
+
+    const directUrl = pickString(record.url);
+    if (directUrl) return directUrl;
+
+    const urls = record.urls;
+    if (urls && typeof urls === 'object') {
+      const preferredKeys = ['4x', '3x', '2x', '1x', '4', '3', '2', '1', 'large', 'medium', 'small'];
+      for (const key of preferredKeys) {
+        const candidate = pickString((urls as Record<string, unknown>)[key]);
+        if (candidate) return candidate;
+      }
+      for (const value of Object.values(urls as Record<string, unknown>)) {
+        const candidate = pickString(value);
+        if (candidate) return candidate;
+      }
+    }
+
+    const images = Array.isArray(record.images) ? record.images : [];
+    for (const img of images) {
+      if (!img || typeof img !== 'object') continue;
+      const url = pickString((img as Record<string, unknown>).url ?? (img as Record<string, unknown>).src);
+      if (url) return url;
+    }
+
+    const image = record.image;
+    if (image && typeof image === 'object') {
+      const url = pickString((image as Record<string, unknown>).url ?? (image as Record<string, unknown>).src);
+      if (url) return url;
+    }
+
+    return null;
+  }
+
   interface MessagesResponse {
     items?: any[];
     next_before_ts?: number | null;
@@ -396,13 +437,13 @@
       let emote: Message['emotes'][number] | null = null;
       if (r.emote && typeof r.emote === 'object') {
         const er = r.emote as Record<string, any>;
+        const pickedUrl = pickEmoteUrl(er);
         const hasName = typeof er.name === 'string' && er.name.trim().length > 0;
         const hasId = typeof er.id === 'string' && er.id.trim().length > 0;
         const imagesRaw = Array.isArray(er.images) ? er.images : [];
         const locationsRaw = Array.isArray(er.locations) ? er.locations : [];
-        const isEmptyEmote = !hasId && !hasName && imagesRaw.length === 0 && locationsRaw.length === 0;
 
-        if (isEmptyEmote) {
+        if (!pickedUrl) {
           emote = null;
           if (type === FragmentType.Emote) {
             type = FragmentType.Text;
@@ -410,10 +451,11 @@
         } else if (type === FragmentType.Emote) {
           const name = hasName ? er.name : text;
           const id = hasId ? er.id : name;
-          const images = imagesRaw.flatMap((img) => {
+          let images = imagesRaw.flatMap((img) => {
             if (!img || typeof img !== 'object') return [] as Message['emotes'][number]['images'];
             const ir = img as Record<string, any>;
-            const url = typeof ir.url === 'string' ? ir.url : undefined;
+            const url =
+              typeof ir.url === 'string' ? ir.url : typeof ir.src === 'string' ? ir.src : undefined;
             if (!url) return [] as Message['emotes'][number]['images'];
             return [{
               id: typeof ir.id === 'string' ? ir.id : `${id}-${url}`,
@@ -423,7 +465,11 @@
             }];
           });
 
-          emote = { id, name, images, locations: locationsRaw };
+          if (pickedUrl && !images.some((img) => img.url === pickedUrl)) {
+            images = [{ id: `${id}-${pickedUrl}`, url: pickedUrl, width: 0, height: 0 }, ...images];
+          }
+
+          emote = { id, name, images, locations: locationsRaw, ...(pickedUrl ? { url: pickedUrl } : {}) };
         }
       }
 

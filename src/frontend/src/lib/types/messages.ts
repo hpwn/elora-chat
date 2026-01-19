@@ -18,6 +18,7 @@ export interface Emote {
   id: string;
   name: string;
   images: Image[];
+  url?: string;
   locations: unknown; // TODO: determine the correct type for this
 }
 
