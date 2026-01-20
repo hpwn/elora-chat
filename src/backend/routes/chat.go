@@ -294,6 +294,22 @@ func (m *Message) normalize() {
 	if m.Badges == nil {
 		m.Badges = []Badge{}
 	}
+	if len(m.Badges) > 0 {
+		filtered := m.Badges[:0]
+		for _, badge := range m.Badges {
+			if strings.EqualFold(strings.TrimSpace(badge.Platform), "youtube") &&
+				isYouTubeOwnerBadgeID(badge.ID) &&
+				!badgeHasUsableImage(badge.Images) {
+				continue
+			}
+			filtered = append(filtered, badge)
+		}
+		if len(filtered) == 0 {
+			m.Badges = []Badge{}
+		} else {
+			m.Badges = filtered
+		}
+	}
 	if !activeUIConfig.showBadges {
 		m.Badges = []Badge{}
 		m.BadgesRaw = nil
@@ -305,6 +321,24 @@ func (m *Message) normalize() {
 			m.Author = strings.TrimSpace(m.Author)
 		}
 	}
+}
+
+func isYouTubeOwnerBadgeID(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "owner", "broadcaster", "channel_owner":
+		return true
+	default:
+		return false
+	}
+}
+
+func badgeHasUsableImage(images []Image) bool {
+	for _, img := range images {
+		if strings.TrimSpace(img.URL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type emoteSpan struct {

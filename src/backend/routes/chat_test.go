@@ -513,6 +513,48 @@ func TestBroadcastFromTailerStructuredBadgesAndRaw(t *testing.T) {
 	}
 }
 
+func TestBroadcastFromTailerDropsYouTubeOwnerBadgeWithoutImages(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	subscribersMu.Lock()
+	subscribers = nil
+	subscribersMu.Unlock()
+
+	ch := addSubscriber()
+	defer removeSubscriber(ch)
+
+	badgesJSON := `{"badges":[{"platform":"youtube","id":"owner"},{"platform":"youtube","id":"moderator","images":[{"url":"https://example.com/mod.png","width":16,"height":16}]}],"raw":{"youtube":{"badges":[{"id":"owner","title":"Owner"}]}}}`
+
+	BroadcastFromTailer(storage.Message{
+		Username:   "YTBadgeUser",
+		Platform:   "YouTube",
+		Text:       "hi",
+		BadgesJSON: badgesJSON,
+	})
+
+	select {
+	case payload := <-ch:
+		var msg Message
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			t.Fatalf("failed to unmarshal broadcast payload: %v", err)
+		}
+
+		if msg.BadgesRaw == nil {
+			t.Fatalf("expected badges_raw to be populated")
+		}
+		if len(msg.Badges) != 1 {
+			t.Fatalf("expected 1 badge, got %d", len(msg.Badges))
+		}
+		if msg.Badges[0].ID != "moderator" || msg.Badges[0].Platform != "youtube" {
+			t.Fatalf("unexpected remaining badge: %#v", msg.Badges[0])
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}
+
 func TestBroadcastFromTailerYouTubeEmoteFragments(t *testing.T) {
 	tokenizer.TextEffectSep = ':'
 	tokenizer.TextCommandPrefix = '!'
