@@ -20,6 +20,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const defaultBusyTimeoutMS = 5000
+
 // isBenignMigrationError returns true when an ALTER/CREATE failed because the artifact already exists.
 func isBenignMigrationError(err error) bool {
 	if err == nil {
@@ -251,11 +253,10 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		busy := s.cfg.BusyTimeoutMS
-		if busy <= 0 {
-			busy = 30000
+		if s.cfg.BusyTimeoutMS <= 0 {
+			s.cfg.BusyTimeoutMS = defaultBusyTimeoutMS
 		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", busy)); err != nil {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", s.cfg.BusyTimeoutMS)); err != nil {
 			_ = db.Close()
 			s.initErr = fmt.Errorf("sqlite: set busy_timeout: %w", err)
 			return
