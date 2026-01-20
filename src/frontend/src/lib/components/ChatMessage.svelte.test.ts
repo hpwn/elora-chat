@@ -157,6 +157,42 @@ describe('ChatMessage', () => {
     expect(badgeImg.src).toContain(encodeURIComponent('https://example.com/badge-large.png'));
   });
 
+  test('renders youtube broadcaster badge as a label when no image exists', () => {
+    const message: Message = {
+      author: 'OwnerUser',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [
+        {
+          id: 'broadcaster',
+          platform: 'youtube'
+        }
+      ],
+      emotes: [],
+      fragments: []
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map<string, any>([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    expect(screen.queryByAltText('Broadcaster')).not.toBeInTheDocument();
+    expect(screen.getByText('HOST', { selector: '.badge-label' })).toBeInTheDocument();
+  });
+
   test('renders badge images as icons instead of text labels when image is present', () => {
     const message: Message = {
       author: 'ImageBadgeUser',
@@ -330,6 +366,6 @@ describe('ChatMessage', () => {
     const badgeImg = screen.getByAltText('Subscriber 2') as HTMLImageElement;
     expect(badgeImg).toBeInTheDocument();
     expect(badgeImg.tagName).toBe('IMG');
-    expect(badgeImg.src).toContain(encodeURIComponent('https://static.twitchcdn.net/badges/v1/subscriber_1x.png'));
+    expect(badgeImg.src).toContain(encodeURIComponent('https://static.twitchcdn.net/badges/v1/subscriber_2x.png'));
   });
 });

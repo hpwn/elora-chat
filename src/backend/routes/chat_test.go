@@ -150,6 +150,26 @@ func TestMessagePayloadFromStorageBadges(t *testing.T) {
 	}
 }
 
+func TestParseStoredBadgesPrefersTwitchSubscriberVersion(t *testing.T) {
+	raw := `{"badges":[{"platform":"twitch","id":"subscriber","version":"19"},{"platform":"twitch","id":"premium","version":"1"}],"raw":{"twitch":{"badges":"subscriber/12,premium/1","badge_info":"subscriber/19"}}}`
+	badges, rawAny := parseStoredBadges(raw)
+	if badges == nil {
+		t.Fatalf("expected badges to be parsed")
+	}
+	if rawAny == nil {
+		t.Fatalf("expected raw payload to be parsed")
+	}
+	if len(badges) != 2 {
+		t.Fatalf("expected 2 badges, got %d", len(badges))
+	}
+	if badges[0].ID != "subscriber" || badges[0].Platform != "twitch" || badges[0].Version != "12" {
+		t.Fatalf("unexpected subscriber badge: %#v", badges[0])
+	}
+	if badges[1].ID != "premium" || badges[1].Platform != "twitch" || badges[1].Version != "1" {
+		t.Fatalf("unexpected premium badge: %#v", badges[1])
+	}
+}
+
 func TestMessagePayloadFromStorageRawBadges(t *testing.T) {
 	payload, err := messagePayloadFromStorage(storage.Message{
 		Username:   "tester",
@@ -482,7 +502,7 @@ func TestBroadcastFromTailerStructuredBadgesAndRaw(t *testing.T) {
 		if msg.BadgesRaw == nil {
 			t.Fatalf("expected badges_raw to be populated")
 		}
-		if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Platform != "twitch" || msg.Badges[0].Version != "17" {
+		if msg.Badges[0].ID != "subscriber" || msg.Badges[0].Platform != "twitch" || msg.Badges[0].Version != "12" {
 			t.Fatalf("unexpected first badge: %#v", msg.Badges[0])
 		}
 		if msg.Badges[1].ID != "premium" || msg.Badges[1].Platform != "twitch" || msg.Badges[1].Version != "1" {

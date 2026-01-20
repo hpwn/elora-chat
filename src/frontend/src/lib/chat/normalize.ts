@@ -213,27 +213,26 @@ function normalizeBadges(badges: unknown[]): Badge[] {
   return out;
 }
 
-function selectPreferredBadgeImage(images: BadgeImage[], platform?: Badge['platform']): BadgeImage | undefined {
+function selectPreferredBadgeImage(images: BadgeImage[]): BadgeImage | undefined {
   if (!Array.isArray(images) || images.length === 0) return undefined;
-  const normalizedPlatform = typeof platform === 'string' ? platform.toLowerCase() : '';
   const validImages = images.filter((img) => typeof img?.url === 'string' && img.url.trim().length > 0);
   if (validImages.length === 0) return undefined;
 
-  const getValue = (value: number | undefined, twitchFallback: number, defaultFallback: number) => {
+  const getValue = (value: number | undefined, defaultFallback: number) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
-    return normalizedPlatform === 'twitch' ? twitchFallback : defaultFallback;
+    return defaultFallback;
   };
 
   const sorted = [...validImages].sort((a, b) => {
-    const widthA = getValue(a.width, Number.MAX_SAFE_INTEGER, -1);
-    const widthB = getValue(b.width, Number.MAX_SAFE_INTEGER, -1);
+    const widthA = getValue(a.width, -1);
+    const widthB = getValue(b.width, -1);
     if (widthA !== widthB) {
-      return normalizedPlatform === 'twitch' ? widthA - widthB : widthB - widthA;
+      return widthB - widthA;
     }
 
-    const heightA = getValue(a.height, Number.MAX_SAFE_INTEGER, -1);
-    const heightB = getValue(b.height, Number.MAX_SAFE_INTEGER, -1);
-    return normalizedPlatform === 'twitch' ? heightA - heightB : heightB - heightA;
+    const heightA = getValue(a.height, -1);
+    const heightB = getValue(b.height, -1);
+    return heightB - heightA;
   });
 
   return sorted[0];
@@ -251,7 +250,7 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
     const rendererModerator = renderer?.iconType === 'MODERATOR';
     const youtubeModerator = (isYoutubePlatform(badge.platform) || rendererModerator) && badgeId.toLowerCase() === 'moderator';
 
-    let imageUrl = badge.imageUrl ?? selectPreferredBadgeImage(baseImages, badge.platform)?.url;
+    let imageUrl = selectPreferredBadgeImage(baseImages)?.url ?? badge.imageUrl;
     let title = badge.title;
 
     if (renderer) {
@@ -289,7 +288,7 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
     }
 
     if (!imageUrl) {
-      imageUrl = selectPreferredBadgeImage(baseImages, badge.platform)?.url;
+      imageUrl = selectPreferredBadgeImage(baseImages)?.url;
     }
 
     const display: DisplayBadge = { ...badge };

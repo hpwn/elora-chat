@@ -686,6 +686,7 @@ func parseStoredBadges(raw string) ([]Badge, any) {
 				}
 			}
 			if badges != nil {
+				applyStoredBadgeOverrides(badges, rawAny)
 				return badges, rawAny
 			}
 			if rawAny != nil {
@@ -721,6 +722,55 @@ func parseStoredBadges(raw string) ([]Badge, any) {
 		return nil, nil
 	}
 	return out, nil
+}
+
+func applyStoredBadgeOverrides(badges []Badge, raw any) {
+	if len(badges) == 0 || raw == nil {
+		return
+	}
+	rawMap, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	twitchRaw, ok := rawMap["twitch"].(map[string]any)
+	if !ok {
+		return
+	}
+	badgesRaw, ok := twitchRaw["badges"].(string)
+	if !ok {
+		return
+	}
+	versions := parseTwitchBadgeVersions(badgesRaw)
+	subscriberVersion := strings.TrimSpace(versions["subscriber"])
+	if subscriberVersion == "" {
+		return
+	}
+	for i := range badges {
+		if strings.EqualFold(badges[i].Platform, "twitch") && strings.EqualFold(badges[i].ID, "subscriber") {
+			badges[i].Version = subscriberVersion
+		}
+	}
+}
+
+func parseTwitchBadgeVersions(raw string) map[string]string {
+	out := make(map[string]string)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		id := entry
+		version := ""
+		if idx := strings.Index(entry, "/"); idx >= 0 {
+			id = strings.TrimSpace(entry[:idx])
+			version = strings.TrimSpace(entry[idx+1:])
+		}
+		if id == "" {
+			continue
+		}
+		out[id] = version
+	}
+	return out
 }
 
 func encodeStoredBadges(badges []Badge) string {

@@ -263,7 +263,7 @@ describe('normalizeWsPayload', () => {
     expect(badge).toMatchObject({
       id: 'subscriber',
       platform: 'twitch',
-      imageUrl: 'https://static.twitchcdn.net/badge-18.png'
+      imageUrl: 'https://static.twitchcdn.net/badge-72.png'
     });
     expect(badge.images?.length).toBe(2);
   });

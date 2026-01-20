@@ -38,26 +38,22 @@
 
   let badgeViews = $state<DisplayBadge[]>([]);
 
-  function preferredBadgeImageUrl(
-    images: Array<{ url?: string; width?: number; height?: number }>,
-    platform?: string
-  ): string | undefined {
-    const normalized = typeof platform === 'string' ? platform.toLowerCase() : '';
+  function preferredBadgeImageUrl(images: Array<{ url?: string; width?: number; height?: number }>): string | undefined {
     const valid = images
       .filter((img) => img && typeof img === 'object' && typeof img.url === 'string' && img.url.trim().length > 0)
       .map((img) => ({ ...img, url: (img.url as string).trim() }));
     if (valid.length === 0) return undefined;
 
-    const fallback = normalized === 'twitch' ? Number.MAX_SAFE_INTEGER : -1;
+    const fallback = -1;
     const sorted = [...valid].sort((a, b) => {
       const widthA = typeof a.width === 'number' && Number.isFinite(a.width) ? a.width : fallback;
       const widthB = typeof b.width === 'number' && Number.isFinite(b.width) ? b.width : fallback;
       if (widthA !== widthB) {
-        return normalized === 'twitch' ? widthA - widthB : widthB - widthA;
+        return widthB - widthA;
       }
       const heightA = typeof a.height === 'number' && Number.isFinite(a.height) ? a.height : fallback;
       const heightB = typeof b.height === 'number' && Number.isFinite(b.height) ? b.height : fallback;
-      return normalized === 'twitch' ? heightA - heightB : heightB - heightA;
+      return heightB - heightA;
     });
 
     return sorted[0].url;
@@ -86,18 +82,23 @@
           ? (badge as any).imageUrl
           : undefined;
       const platform = typeof (badge as any).platform === 'string' ? (badge as any).platform : undefined;
-      const isYoutubeModerator = platform?.toLowerCase() === 'youtube' && id.toLowerCase() === 'moderator';
+      const idLower = id.toLowerCase();
+      const platformLower = platform?.toLowerCase();
+      const isYoutubeModerator = platformLower === 'youtube' && idLower === 'moderator';
+      const isYoutubeOwner = platformLower === 'youtube' && (idLower === 'owner' || idLower === 'broadcaster');
+      const preferredImage = preferredBadgeImageUrl(badgeImages);
       const badgeSrc =
+        preferredImage ??
         imageUrl ??
-        preferredBadgeImageUrl(badgeImages, platform) ??
         (isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined);
       const fallbackSrc = isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined;
+      const iconSrc = isYoutubeOwner && !preferredImage && !imageUrl ? undefined : icon.src;
       return [
         {
           key: `${id}-${version ?? 'default'}`,
           id,
           version,
-          icon,
+          icon: { ...icon, src: iconSrc },
           src: badgeSrc,
           fallbackSrc,
           alt: title ?? icon.alt
