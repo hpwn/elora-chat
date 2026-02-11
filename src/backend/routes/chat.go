@@ -254,6 +254,42 @@ func normalizeSource(src string) string {
 	}
 }
 
+func rawJSONLooksLikeChatMessage(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "{") {
+		return false
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return false
+	}
+
+	isJSONString := func(v json.RawMessage) bool {
+		trimmed := bytes.TrimSpace(v)
+		return len(trimmed) > 0 && trimmed[0] == '"'
+	}
+	isJSONArray := func(v json.RawMessage) bool {
+		trimmed := bytes.TrimSpace(v)
+		return len(trimmed) > 0 && trimmed[0] == '['
+	}
+
+	messageRaw := obj["message"]
+	if isJSONString(messageRaw) {
+		return true
+	}
+
+	if isJSONArray(obj["fragments"]) {
+		return true
+	}
+
+	if isJSONString(obj["author"]) && isJSONString(obj["source"]) && isJSONString(messageRaw) {
+		return true
+	}
+
+	return false
+}
+
 func wsDropEmptyEnabled() bool {
 	raw := strings.TrimSpace(os.Getenv("ELORA_WS_DROP_EMPTY"))
 	if raw == "" {
@@ -873,7 +909,8 @@ func maybeEnvelope(b []byte) []byte {
 }
 
 func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
-	if strings.TrimSpace(m.RawJSON) != "" {
+	if strings.TrimSpace(m.RawJSON) != "" &&
+		(!strings.EqualFold(m.Platform, "youtube") || rawJSONLooksLikeChatMessage(m.RawJSON)) {
 		var msg Message
 		if err := json.Unmarshal([]byte(m.RawJSON), &msg); err == nil {
 			looksLikeMessage := strings.TrimSpace(msg.Author) != "" ||
@@ -1076,10 +1113,10 @@ func broadcastChatMessage(msg []byte) {
 func enrichTailerMessage(m storage.Message) Message {
 	var msg Message
 	raw := strings.TrimSpace(m.RawJSON)
-	if raw != "" {
+	// Keep provider payload opaque for YouTube rows unless the payload is already chat-shaped.
+	if raw != "" && (!strings.EqualFold(m.Platform, "youtube") || rawJSONLooksLikeChatMessage(raw)) {
 		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
 			log.Printf("dbtailer: failed to unmarshal raw JSON: %v", err)
-			msg = Message{}
 		}
 	}
 
