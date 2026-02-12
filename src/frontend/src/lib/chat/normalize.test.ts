@@ -7,11 +7,13 @@ describe('normalizeWsPayload', () => {
   });
 
   it('parses harvester shape', () => {
-    const obj = { author: 'A', message: 'hi', source: 'YouTube', colour: '#808080' };
+    const obj = { author: 'A', message: 'hi', source: 'YouTube', username_color: '#1E90FF' };
     const out = normalizeWsPayload(JSON.stringify(obj));
     expect(out?.username).toBe('A');
     expect(out?.text).toBe('hi');
     expect(out?.platform).toBe('YouTube');
+    expect(out?.usernameColor).toBe('#1E90FF');
+    expect(out?.colour).toBe('#1E90FF');
     expect(typeof out?.ts).toBe('number');
   });
 

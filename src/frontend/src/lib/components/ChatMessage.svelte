@@ -190,7 +190,7 @@
           </span>
         {/if}
       {/each}
-      <span class="message-username" style="color: {message.colour}">
+      <span class="message-username" style="color: {message.usernameColor ?? message.colour}">
         {message.author}:
       </span>
     </span>

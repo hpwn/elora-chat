@@ -200,8 +200,15 @@
       return null;
     }
 
+    const rawUsernameColor =
+      typeof (message as any).usernameColor === 'string'
+        ? (message as any).usernameColor
+        : typeof (message as any).username_color === 'string'
+          ? (message as any).username_color
+          : '';
     const rawColour = typeof message.colour === 'string' ? message.colour : '';
-    const colour = rawColour && rawColour.trim().length > 0 ? rawColour : DEFAULT_COLOUR;
+    const colourCandidate = rawUsernameColor && rawUsernameColor.trim().length > 0 ? rawUsernameColor : rawColour;
+    const colour = colourCandidate && colourCandidate.trim().length > 0 ? colourCandidate : DEFAULT_COLOUR;
 
     if (hideYouTubeAt && source === 'YouTube' && author.startsWith('@')) {
       author = author.slice(1).trim() || author;
@@ -225,6 +232,7 @@
       author,
       message: text,
       colour,
+      usernameColor: colour,
       source,
       fragments,
       emotes,
@@ -310,7 +318,8 @@
       fragments: text ? [{ type: 'text', text, emote: null }] : [],
       emotes,
       badges: [],
-      colour: undefined
+      colour: undefined,
+      usernameColor: undefined
     } satisfies WsChatMessage;
   }
 

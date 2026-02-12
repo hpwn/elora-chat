@@ -606,3 +606,69 @@ func TestBroadcastFromTailerYouTubeEmoteFragments(t *testing.T) {
 		t.Fatalf("expected broadcast payload but channel was empty")
 	}
 }
+
+func TestComputeUsernameColorTwitchExtractionAndFallback(t *testing.T) {
+	row := storage.Message{
+		Username: "tw-user",
+		Platform: "twitch",
+		RawJSON:  `{"tags":{"color":"#1A2B3C"}}`,
+	}
+	msg := Message{Author: "tw-user", Source: "twitch"}
+	if got := computeUsernameColor(msg, row); got != "#1A2B3C" {
+		t.Fatalf("expected twitch color extraction, got %q", got)
+	}
+
+	row.RawJSON = `{"tags":{"color":""}}`
+	if got := computeUsernameColor(msg, row); got != colorFromName("tw-user") {
+		t.Fatalf("expected fallback color for empty twitch color, got %q", got)
+	}
+
+	row.RawJSON = `{"foo":"bar"}`
+	if got := computeUsernameColor(msg, row); got != colorFromName("tw-user") {
+		t.Fatalf("expected fallback color for missing twitch color, got %q", got)
+	}
+}
+
+func TestComputeUsernameColorYouTubeRoleOverridesFallback(t *testing.T) {
+	base := Message{Author: "yt-role", Source: "youtube"}
+
+	member := storage.Message{
+		Username: "yt-role",
+		Platform: "youtube",
+		RawJSON:  `{"isChatSponsor":true}`,
+	}
+	if got := computeUsernameColor(base, member); got != youtubeMemberColour {
+		t.Fatalf("expected youtube member color %q, got %q", youtubeMemberColour, got)
+	}
+
+	mod := storage.Message{
+		Username: "yt-role",
+		Platform: "youtube",
+		RawJSON:  `{"isChatModerator":true}`,
+	}
+	if got := computeUsernameColor(base, mod); got != youtubeModColour {
+		t.Fatalf("expected youtube moderator color %q, got %q", youtubeModColour, got)
+	}
+
+	owner := storage.Message{
+		Username: "yt-role",
+		Platform: "youtube",
+		RawJSON:  `{"author":{"isChatOwner":true}}`,
+	}
+	if got := computeUsernameColor(base, owner); got != youtubeOwnerColour {
+		t.Fatalf("expected youtube owner color %q, got %q", youtubeOwnerColour, got)
+	}
+}
+
+func TestComputeUsernameColorInvalidTwitchColorFallsBack(t *testing.T) {
+	row := storage.Message{
+		Username: "tw-invalid",
+		Platform: "twitch",
+		RawJSON:  `{"color":"#12GGFF"}`,
+	}
+	msg := Message{Author: "tw-invalid", Source: "twitch"}
+	want := colorFromName("tw-invalid")
+	if got := computeUsernameColor(msg, row); got != want {
+		t.Fatalf("expected fallback color %q for invalid twitch color, got %q", want, got)
+	}
+}

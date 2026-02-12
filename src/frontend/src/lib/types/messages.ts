@@ -44,6 +44,7 @@ export interface Message {
   displayBadges?: Badge[];
   badges_raw?: unknown;
   colour: string;
+  usernameColor?: string;
   message: string;
   fragments: Fragment[];
   emotes: Emote[];

@@ -32,6 +32,7 @@ export interface ChatMessage {
   displayBadges?: BadgeLike[];
   fragments?: any[];
   colour?: string;
+  usernameColor?: string;
   raw?: unknown;
 }
 
@@ -119,8 +120,8 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const textRaw = obj.message ?? obj.text ?? obj.body ?? '';
   const text = typeof textRaw === 'string' ? textRaw : '';
 
-  const colourRaw = (obj.colour ?? obj.color) as unknown;
-  const colour = typeof colourRaw === 'string' && colourRaw.trim() ? colourRaw : undefined;
+  const usernameColorRaw = (obj.username_color ?? obj.usernameColor ?? obj.colour ?? obj.color) as unknown;
+  const usernameColor = typeof usernameColorRaw === 'string' && usernameColorRaw.trim() ? usernameColorRaw : undefined;
 
   const emotes = coerceArray(obj.emotes, obj.emotes_json);
   let fragments = coerceArray(
@@ -155,7 +156,8 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     badges,
     badges_raw: badgesRawPayload,
     displayBadges,
-    colour,
+    colour: usernameColor,
+    usernameColor,
     raw
   } satisfies ChatMessage;
 }

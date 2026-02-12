@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -230,14 +231,15 @@ func (b *Badge) UnmarshalJSON(data []byte) error {
 }
 
 type Message struct {
-	Author    string  `json:"author"` // Adjusted to directly receive the author's name as a string
-	Message   string  `json:"message"`
-	Tokens    []Token `json:"fragments"`
-	Emotes    []Emote `json:"emotes"`
-	Badges    []Badge `json:"badges"`
-	BadgesRaw any     `json:"badges_raw,omitempty"`
-	Source    string  `json:"source"`
-	Colour    string  `json:"colour"`
+	Author        string  `json:"author"` // Adjusted to directly receive the author's name as a string
+	Message       string  `json:"message"`
+	Tokens        []Token `json:"fragments"`
+	Emotes        []Emote `json:"emotes"`
+	Badges        []Badge `json:"badges"`
+	BadgesRaw     any     `json:"badges_raw,omitempty"`
+	Source        string  `json:"source"`
+	Colour        string  `json:"colour"`
+	UsernameColor string  `json:"username_color,omitempty"`
 }
 
 var errDropMessage = errors.New("chat: drop empty message")
@@ -670,27 +672,37 @@ func (m Message) toChatPayload() ws.ChatPayload {
 	}
 
 	return ws.ChatPayload{
-		Author:    m.Author,
-		Message:   m.Message,
-		Fragments: fragments,
-		Emotes:    emotes,
-		Badges:    badges,
-		BadgesRaw: m.BadgesRaw,
-		Source:    m.Source,
-		Colour:    m.Colour,
+		Author:        m.Author,
+		Message:       m.Message,
+		Fragments:     fragments,
+		Emotes:        emotes,
+		Badges:        badges,
+		BadgesRaw:     m.BadgesRaw,
+		Source:        m.Source,
+		Colour:        m.Colour,
+		UsernameColor: m.UsernameColor,
 	}
 }
 
 var fallbackColourPalette = []string{
-	"#f97316",
-	"#22d3ee",
-	"#c084fc",
-	"#34d399",
-	"#facc15",
-	"#38bdf8",
-	"#f472b6",
-	"#a3e635",
+	"#0000FF", // blue
+	"#8A2BE2", // blue_violet
+	"#5F9EA0", // cadet_blue
+	"#D2691E", // chocolate
+	"#FF7F50", // coral
+	"#1E90FF", // dodger_blue
+	"#B22222", // firebrick
+	"#DAA520", // golden_rod
+	"#008000", // green
+	"#FF69B4", // hot_pink
+	"#FF4500", // orange_red
+	"#FF0000", // red
+	"#2E8B57", // sea_green
+	"#00FF7F", // spring_green
+	"#9ACD32", // yellow_green
 }
+
+var hexUsernameColourRe = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
 func colorFromName(name string) string {
 	if name == "" {
@@ -702,6 +714,297 @@ func colorFromName(name string) string {
 	sum := h.Sum32()
 	idx := int(sum % uint32(len(fallbackColourPalette)))
 	return fallbackColourPalette[idx]
+}
+
+const (
+	youtubeMemberColour = "#00FF7F"
+	youtubeModColour    = "#1E90FF"
+	youtubeOwnerColour  = "#DAA520"
+)
+
+func normalizeHexUsernameColour(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !hexUsernameColourRe.MatchString(raw) {
+		return ""
+	}
+	return strings.ToUpper(raw)
+}
+
+func parseRawJSONObject(raw string) map[string]json.RawMessage {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw[0] != '{' {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return nil
+	}
+	return obj
+}
+
+func parseRawJSONObjectValue(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return nil, false
+	}
+	return obj, true
+}
+
+func parseRawJSONStringValue(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return "", false
+	}
+	var out string
+	if err := json.Unmarshal(trimmed, &out); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
+}
+
+func parseRawJSONBoolValue(raw json.RawMessage) (bool, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false, false
+	}
+	switch trimmed[0] {
+	case 't', 'f':
+		var out bool
+		if err := json.Unmarshal(trimmed, &out); err != nil {
+			return false, false
+		}
+		return out, true
+	case '"':
+		var out string
+		if err := json.Unmarshal(trimmed, &out); err != nil {
+			return false, false
+		}
+		switch strings.ToLower(strings.TrimSpace(out)) {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func getRawString(obj map[string]json.RawMessage, key string) string {
+	if obj == nil {
+		return ""
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	s, ok := parseRawJSONStringValue(raw)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+func getRawBool(obj map[string]json.RawMessage, key string) (bool, bool) {
+	if obj == nil {
+		return false, false
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return false, false
+	}
+	return parseRawJSONBoolValue(raw)
+}
+
+func extractTwitchRawUsernameColour(rawJSON string) string {
+	obj := parseRawJSONObject(rawJSON)
+	if obj == nil {
+		return ""
+	}
+	if colour := normalizeHexUsernameColour(getRawString(obj, "color")); colour != "" {
+		return colour
+	}
+	if tagsRaw, ok := obj["tags"]; ok {
+		if tagsObj, ok := parseRawJSONObjectValue(tagsRaw); ok {
+			if colour := normalizeHexUsernameColour(getRawString(tagsObj, "color")); colour != "" {
+				return colour
+			}
+		}
+	}
+	if authorRaw, ok := obj["author"]; ok {
+		if authorObj, ok := parseRawJSONObjectValue(authorRaw); ok {
+			if colour := normalizeHexUsernameColour(getRawString(authorObj, "color")); colour != "" {
+				return colour
+			}
+		}
+	}
+	return ""
+}
+
+func extractAuthorIdentity(rawJSON string) string {
+	obj := parseRawJSONObject(rawJSON)
+	if obj == nil {
+		return ""
+	}
+	candidates := []string{
+		"authorId", "author_id", "authorExternalChannelId", "userId", "user_id", "channelId", "channel_id", "sender_id", "id",
+	}
+	for _, key := range candidates {
+		if value := getRawString(obj, key); value != "" {
+			return strings.ToLower(value)
+		}
+	}
+	for _, nested := range []string{"author", "tags"} {
+		nestedRaw, ok := obj[nested]
+		if !ok {
+			continue
+		}
+		nestedObj, ok := parseRawJSONObjectValue(nestedRaw)
+		if !ok {
+			continue
+		}
+		for _, key := range append(candidates, "user-id") {
+			if value := getRawString(nestedObj, key); value != "" {
+				return strings.ToLower(value)
+			}
+		}
+	}
+	return ""
+}
+
+type youtubeRole int
+
+const (
+	youtubeRoleNone youtubeRole = iota
+	youtubeRoleMember
+	youtubeRoleModerator
+	youtubeRoleOwner
+)
+
+func mergeYouTubeRole(role youtubeRole, next youtubeRole) youtubeRole {
+	if next > role {
+		return next
+	}
+	return role
+}
+
+func detectYouTubeRole(msg Message, rawJSON string) youtubeRole {
+	role := youtubeRoleNone
+
+	for _, badge := range msg.Badges {
+		id := strings.ToLower(strings.TrimSpace(badge.ID))
+		switch id {
+		case "owner", "broadcaster", "channel_owner":
+			role = mergeYouTubeRole(role, youtubeRoleOwner)
+		case "moderator":
+			role = mergeYouTubeRole(role, youtubeRoleModerator)
+		case "member", "sponsor":
+			role = mergeYouTubeRole(role, youtubeRoleMember)
+		}
+	}
+
+	obj := parseRawJSONObject(rawJSON)
+	if obj == nil {
+		return role
+	}
+
+	type roleProbe struct {
+		keys []string
+		role youtubeRole
+	}
+	probes := []roleProbe{
+		{keys: []string{"isChatOwner", "is_chat_owner", "isOwner", "is_owner", "isBroadcaster", "is_broadcaster"}, role: youtubeRoleOwner},
+		{keys: []string{"isChatModerator", "is_chat_moderator", "isModerator", "is_moderator"}, role: youtubeRoleModerator},
+		{keys: []string{"isChatSponsor", "is_chat_sponsor", "isMember", "is_member"}, role: youtubeRoleMember},
+	}
+	applyProbes := func(in map[string]json.RawMessage) {
+		for _, probe := range probes {
+			for _, key := range probe.keys {
+				if value, ok := getRawBool(in, key); ok && value {
+					role = mergeYouTubeRole(role, probe.role)
+				}
+			}
+		}
+	}
+	applyProbes(obj)
+	if authorRaw, ok := obj["author"]; ok {
+		if authorObj, ok := parseRawJSONObjectValue(authorRaw); ok {
+			applyProbes(authorObj)
+		}
+	}
+
+	return role
+}
+
+func computeUsernameColor(msg Message, row storage.Message) string {
+	author := strings.TrimSpace(msg.Author)
+	if author != "" {
+		if colour, ok := userColorMap[author]; ok {
+			if normalized := normalizeHexUsernameColour(colour); normalized != "" {
+				return normalized
+			}
+		}
+	}
+
+	source := normalizeSource(msg.Source)
+	if source == "" {
+		source = normalizeSource(row.Platform)
+	}
+
+	switch strings.ToLower(source) {
+	case "twitch":
+		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {
+			return colour
+		}
+		if colour := normalizeHexUsernameColour(msg.Colour); colour != "" {
+			return colour
+		}
+		if colour := extractTwitchRawUsernameColour(row.RawJSON); colour != "" {
+			return colour
+		}
+	case "youtube":
+		switch detectYouTubeRole(msg, row.RawJSON) {
+		case youtubeRoleOwner:
+			return youtubeOwnerColour
+		case youtubeRoleModerator:
+			return youtubeModColour
+		case youtubeRoleMember:
+			return youtubeMemberColour
+		}
+	default:
+		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {
+			return colour
+		}
+		if colour := normalizeHexUsernameColour(msg.Colour); colour != "" {
+			return colour
+		}
+	}
+
+	if identity := extractAuthorIdentity(row.RawJSON); identity != "" {
+		return colorFromName(identity)
+	}
+	if author != "" {
+		return colorFromName(strings.ToLower(author))
+	}
+	if username := strings.TrimSpace(row.Username); username != "" {
+		return colorFromName(strings.ToLower(username))
+	}
+	return colorFromName("")
+}
+
+func parseChatMessageFromRawJSON(raw string) (Message, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !rawJSONLooksLikeChatMessage(raw) {
+		return Message{}, false
+	}
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		return Message{}, false
+	}
+	return msg, true
 }
 
 func parseStoredBadges(raw string) ([]Badge, any) {
@@ -909,37 +1212,35 @@ func maybeEnvelope(b []byte) []byte {
 }
 
 func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
-	if strings.TrimSpace(m.RawJSON) != "" &&
-		(!strings.EqualFold(m.Platform, "youtube") || rawJSONLooksLikeChatMessage(m.RawJSON)) {
-		var msg Message
-		if err := json.Unmarshal([]byte(m.RawJSON), &msg); err == nil {
-			looksLikeMessage := strings.TrimSpace(msg.Author) != "" ||
-				strings.TrimSpace(msg.Message) != "" ||
-				strings.TrimSpace(msg.Source) != ""
-			if looksLikeMessage {
-				if msg.Author == "" {
-					msg.Author = m.Username
-				}
-				if msg.Message == "" {
-					msg.Message = m.Text
-				}
-				if msg.Source == "" {
-					msg.Source = m.Platform
-				}
-				if len(msg.Emotes) == 0 && strings.TrimSpace(m.EmotesJSON) != "" {
-					msg.Emotes = decodeEmotesJSON(m.EmotesJSON)
-				}
-				if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
-					if msg.Badges == nil || len(msg.Badges) == 0 {
-						msg.Badges = badges
-						msg.BadgesRaw = raw
-					} else if msg.BadgesRaw == nil {
-						msg.BadgesRaw = raw
-					}
-				}
-				msg.normalize()
-				return json.Marshal(msg.toChatPayload())
+	if msg, ok := parseChatMessageFromRawJSON(m.RawJSON); ok {
+		looksLikeMessage := strings.TrimSpace(msg.Author) != "" ||
+			strings.TrimSpace(msg.Message) != "" ||
+			strings.TrimSpace(msg.Source) != ""
+		if looksLikeMessage {
+			if msg.Author == "" {
+				msg.Author = m.Username
 			}
+			if msg.Message == "" {
+				msg.Message = m.Text
+			}
+			if msg.Source == "" {
+				msg.Source = m.Platform
+			}
+			if len(msg.Emotes) == 0 && strings.TrimSpace(m.EmotesJSON) != "" {
+				msg.Emotes = decodeEmotesJSON(m.EmotesJSON)
+			}
+			if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
+				if msg.Badges == nil || len(msg.Badges) == 0 {
+					msg.Badges = badges
+					msg.BadgesRaw = raw
+				} else if msg.BadgesRaw == nil {
+					msg.BadgesRaw = raw
+				}
+			}
+			msg.UsernameColor = computeUsernameColor(msg, m)
+			msg.Colour = msg.UsernameColor
+			msg.normalize()
+			return json.Marshal(msg.toChatPayload())
 		}
 	}
 
@@ -958,8 +1259,9 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 		Badges:    badges,
 		BadgesRaw: badgesRaw,
 		Source:    m.Platform,
-		Colour:    userColorMap[m.Username],
 	}
+	fallback.UsernameColor = computeUsernameColor(fallback, m)
+	fallback.Colour = fallback.UsernameColor
 	fallback.normalize()
 
 	data, err := json.Marshal(fallback.toChatPayload())
@@ -1113,11 +1415,9 @@ func broadcastChatMessage(msg []byte) {
 func enrichTailerMessage(m storage.Message) Message {
 	var msg Message
 	raw := strings.TrimSpace(m.RawJSON)
-	// Keep provider payload opaque for YouTube rows unless the payload is already chat-shaped.
-	if raw != "" && (!strings.EqualFold(m.Platform, "youtube") || rawJSONLooksLikeChatMessage(raw)) {
-		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-			log.Printf("dbtailer: failed to unmarshal raw JSON: %v", err)
-		}
+	// Keep provider payload opaque unless the payload is already chat-shaped.
+	if rawMsg, ok := parseChatMessageFromRawJSON(raw); ok {
+		msg = rawMsg
 	}
 
 	if msg.Author == "" {
@@ -1190,13 +1490,8 @@ func enrichTailerMessage(m storage.Message) Message {
 		}
 	}
 
-	if msg.Colour == "" {
-		if colour, ok := userColorMap[msg.Author]; ok && colour != "" {
-			msg.Colour = colour
-		} else {
-			msg.Colour = colorFromName(msg.Author)
-		}
-	}
+	msg.UsernameColor = computeUsernameColor(msg, m)
+	msg.Colour = msg.UsernameColor
 
 	if msg.Source == "" {
 		msg.Source = m.Platform
