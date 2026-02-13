@@ -1,10 +1,11 @@
 <script lang="ts">
-  let { kind, title }: { kind: 'verified' | 'moderator'; title: string } = $props();
+  let { kind, title, color }: { kind: 'verified' | 'moderator'; title: string; color?: string } = $props();
 </script>
 
 <span
   class="badge-glyph"
   data-badge-glyph={kind}
+  style={`color: ${color ?? 'currentColor'}`}
   role="img"
   aria-label={title}
   title={title}
@@ -35,10 +36,6 @@
     width: 18px;
     height: 18px;
     margin-right: 5px;
-    border-radius: 4px;
-    border: 1px solid rgba(148, 163, 184, 0.5);
-    background: rgba(226, 232, 240, 0.7);
-    color: #0f172a;
     vertical-align: middle;
   }
 

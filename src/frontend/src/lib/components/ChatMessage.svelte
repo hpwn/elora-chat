@@ -33,6 +33,7 @@
     version?: string;
     icon: ReturnType<typeof resolveBadgeIcon>;
     youtubeGlyph?: 'verified' | 'moderator';
+    youtubeGlyphColor?: string;
     src?: string;
     fallbackSrc?: string;
     alt: string;
@@ -41,6 +42,8 @@
   let badgeViews = $state<DisplayBadge[]>([]);
   const YT_MOD_WRENCH_PATH = '/assets/badges/yt-mod-wrench.svg';
   const YT_OWNER_COLOUR = '#ffd600';
+  const YT_VERIFIED_GLYPH_COLOUR = '#909090';
+  const youtubeModeratorColour = '#5e84f1';
 
   function trimmedString(value: unknown): string | undefined {
     if (typeof value !== 'string') return undefined;
@@ -181,6 +184,12 @@
       const platformLower = platform?.toLowerCase();
       const isYoutubeModerator = platformLower === 'youtube' && idLower === 'moderator';
       const youtubeGlyph = detectYoutubeBadgeGlyph(message.source, badgeRecord);
+      const youtubeGlyphColor =
+        youtubeGlyph === 'verified'
+          ? YT_VERIFIED_GLYPH_COLOUR
+          : youtubeGlyph === 'moderator'
+            ? (trimmedString(message.usernameColor) ?? youtubeModeratorColour)
+            : undefined;
       const preferredImage = preferredBadgeImageUrl(badgeImages);
       const badgeSrc = youtubeGlyph
         ? undefined
@@ -194,6 +203,7 @@
           version,
           icon: { ...icon, src: iconSrc },
           youtubeGlyph,
+          youtubeGlyphColor,
           src: badgeSrc,
           fallbackSrc,
           alt:
@@ -268,7 +278,7 @@
 
       {#each badgeViews as badge (badge.key)}
         {#if badge.youtubeGlyph}
-          <YoutubeBadgeGlyph kind={badge.youtubeGlyph} title={badge.alt} />
+          <YoutubeBadgeGlyph kind={badge.youtubeGlyph} title={badge.alt} color={badge.youtubeGlyphColor} />
         {:else if badge.src}
           <img
             class="badge-icon"
