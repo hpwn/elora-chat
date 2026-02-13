@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
@@ -69,8 +70,8 @@ func TestMessagePayloadFromStorageFallback(t *testing.T) {
 	if msg.Source != "Twitch" {
 		t.Fatalf("expected source 'Twitch', got %q", msg.Source)
 	}
-	if msg.Colour != "#112233" {
-		t.Fatalf("expected colour '#112233', got %q", msg.Colour)
+	if msg.Colour != sanitizeUsernameColorForDarkBG("#112233") {
+		t.Fatalf("expected colour %q, got %q", sanitizeUsernameColorForDarkBG("#112233"), msg.Colour)
 	}
 	if msg.Tokens == nil || len(msg.Tokens) != 0 {
 		t.Fatalf("expected empty tokens slice, got %#v", msg.Tokens)
@@ -611,20 +612,20 @@ func TestComputeUsernameColorTwitchExtractionAndFallback(t *testing.T) {
 	row := storage.Message{
 		Username: "tw-user",
 		Platform: "twitch",
-		RawJSON:  `{"tags":{"color":"#1A2B3C"}}`,
+		RawJSON:  `{"tags":{"color":"#33CC66"}}`,
 	}
 	msg := Message{Author: "tw-user", Source: "twitch"}
-	if got := computeUsernameColor(msg, row); got != "#1A2B3C" {
+	if got := computeUsernameColor(msg, row); got != "#33CC66" {
 		t.Fatalf("expected twitch color extraction, got %q", got)
 	}
 
 	row.RawJSON = `{"tags":{"color":""}}`
-	if got := computeUsernameColor(msg, row); got != colorFromName("tw-user") {
+	if got := computeUsernameColor(msg, row); got != sanitizeUsernameColorForDarkBG(colorFromName("tw-user")) {
 		t.Fatalf("expected fallback color for empty twitch color, got %q", got)
 	}
 
 	row.RawJSON = `{"foo":"bar"}`
-	if got := computeUsernameColor(msg, row); got != colorFromName("tw-user") {
+	if got := computeUsernameColor(msg, row); got != sanitizeUsernameColorForDarkBG(colorFromName("tw-user")) {
 		t.Fatalf("expected fallback color for missing twitch color, got %q", got)
 	}
 }
@@ -667,8 +668,35 @@ func TestComputeUsernameColorInvalidTwitchColorFallsBack(t *testing.T) {
 		RawJSON:  `{"color":"#12GGFF"}`,
 	}
 	msg := Message{Author: "tw-invalid", Source: "twitch"}
-	want := colorFromName("tw-invalid")
+	want := sanitizeUsernameColorForDarkBG(colorFromName("tw-invalid"))
 	if got := computeUsernameColor(msg, row); got != want {
 		t.Fatalf("expected fallback color %q for invalid twitch color, got %q", want, got)
+	}
+}
+
+func TestComputeUsernameColorDarkTwitchColorSanitized(t *testing.T) {
+	row := storage.Message{
+		Username: "tw-dark",
+		Platform: "twitch",
+		RawJSON:  `{"tags":{"color":"#000000"}}`,
+	}
+	msg := Message{Author: "tw-dark", Source: "twitch"}
+	got := computeUsernameColor(msg, row)
+
+	if got == "#000000" {
+		t.Fatalf("expected dark twitch color to be sanitized, got %q", got)
+	}
+	if !hexUsernameColourRe.MatchString(got) {
+		t.Fatalf("expected sanitized color to be valid hex, got %q", got)
+	}
+	r, g, b, ok := parseHexRGB(got)
+	if !ok {
+		t.Fatalf("expected parseHexRGB to parse %q", got)
+	}
+	if usernameColourRelativeLuminance(r, g, b) < usernameColourDarkBGMinLuminance {
+		t.Fatalf("expected sanitized color %q to be readable on dark bg", got)
+	}
+	if strings.ToUpper(got) != got {
+		t.Fatalf("expected sanitized color to be uppercase hex, got %q", got)
 	}
 }

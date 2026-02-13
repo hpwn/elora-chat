@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -704,6 +705,11 @@ var fallbackColourPalette = []string{
 
 var hexUsernameColourRe = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
+const (
+	usernameColourDarkBGMinLuminance = 0.10
+	usernameColourBlendTowardWhite   = 0.60
+)
+
 func colorFromName(name string) string {
 	if name == "" {
 		return "#94a3b8"
@@ -728,6 +734,73 @@ func normalizeHexUsernameColour(raw string) string {
 		return ""
 	}
 	return strings.ToUpper(raw)
+}
+
+func parseHexRGB(hex string) (uint8, uint8, uint8, bool) {
+	normalized := normalizeHexUsernameColour(hex)
+	if normalized == "" {
+		return 0, 0, 0, false
+	}
+	r, err := strconv.ParseUint(normalized[1:3], 16, 8)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	g, err := strconv.ParseUint(normalized[3:5], 16, 8)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	b, err := strconv.ParseUint(normalized[5:7], 16, 8)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return uint8(r), uint8(g), uint8(b), true
+}
+
+func srgbToLinear(v float64) float64 {
+	if v <= 0.04045 {
+		return v / 12.92
+	}
+	return math.Pow((v+0.055)/1.055, 2.4)
+}
+
+func usernameColourRelativeLuminance(r, g, b uint8) float64 {
+	rl := srgbToLinear(float64(r) / 255.0)
+	gl := srgbToLinear(float64(g) / 255.0)
+	bl := srgbToLinear(float64(b) / 255.0)
+	return 0.2126*rl + 0.7152*gl + 0.0722*bl
+}
+
+func blendChannelTowardWhite(v uint8, amount float64) uint8 {
+	blended := float64(v) + (255.0-float64(v))*amount
+	if blended < 0 {
+		blended = 0
+	}
+	if blended > 255 {
+		blended = 255
+	}
+	return uint8(math.Round(blended))
+}
+
+func sanitizeUsernameColorForDarkBG(hex string) string {
+	normalized := normalizeHexUsernameColour(hex)
+	if normalized == "" {
+		return ""
+	}
+	r, g, b, ok := parseHexRGB(normalized)
+	if !ok {
+		return ""
+	}
+	if usernameColourRelativeLuminance(r, g, b) >= usernameColourDarkBGMinLuminance {
+		return normalized
+	}
+
+	// Keep hue direction while lifting readability on a dark background.
+	for i := 0; i < 4 && usernameColourRelativeLuminance(r, g, b) < usernameColourDarkBGMinLuminance; i++ {
+		r = blendChannelTowardWhite(r, usernameColourBlendTowardWhite)
+		g = blendChannelTowardWhite(g, usernameColourBlendTowardWhite)
+		b = blendChannelTowardWhite(b, usernameColourBlendTowardWhite)
+	}
+	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 
 func parseRawJSONObject(raw string) map[string]json.RawMessage {
@@ -944,7 +1017,7 @@ func computeUsernameColor(msg Message, row storage.Message) string {
 	if author != "" {
 		if colour, ok := userColorMap[author]; ok {
 			if normalized := normalizeHexUsernameColour(colour); normalized != "" {
-				return normalized
+				return sanitizeUsernameColorForDarkBG(normalized)
 			}
 		}
 	}
@@ -957,42 +1030,42 @@ func computeUsernameColor(msg Message, row storage.Message) string {
 	switch strings.ToLower(source) {
 	case "twitch":
 		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {
-			return colour
+			return sanitizeUsernameColorForDarkBG(colour)
 		}
 		if colour := normalizeHexUsernameColour(msg.Colour); colour != "" {
-			return colour
+			return sanitizeUsernameColorForDarkBG(colour)
 		}
 		if colour := extractTwitchRawUsernameColour(row.RawJSON); colour != "" {
-			return colour
+			return sanitizeUsernameColorForDarkBG(colour)
 		}
 	case "youtube":
 		switch detectYouTubeRole(msg, row.RawJSON) {
 		case youtubeRoleOwner:
-			return youtubeOwnerColour
+			return sanitizeUsernameColorForDarkBG(youtubeOwnerColour)
 		case youtubeRoleModerator:
-			return youtubeModColour
+			return sanitizeUsernameColorForDarkBG(youtubeModColour)
 		case youtubeRoleMember:
-			return youtubeMemberColour
+			return sanitizeUsernameColorForDarkBG(youtubeMemberColour)
 		}
 	default:
 		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {
-			return colour
+			return sanitizeUsernameColorForDarkBG(colour)
 		}
 		if colour := normalizeHexUsernameColour(msg.Colour); colour != "" {
-			return colour
+			return sanitizeUsernameColorForDarkBG(colour)
 		}
 	}
 
 	if identity := extractAuthorIdentity(row.RawJSON); identity != "" {
-		return colorFromName(identity)
+		return sanitizeUsernameColorForDarkBG(colorFromName(identity))
 	}
 	if author != "" {
-		return colorFromName(strings.ToLower(author))
+		return sanitizeUsernameColorForDarkBG(colorFromName(strings.ToLower(author)))
 	}
 	if username := strings.TrimSpace(row.Username); username != "" {
-		return colorFromName(strings.ToLower(username))
+		return sanitizeUsernameColorForDarkBG(colorFromName(strings.ToLower(username)))
 	}
-	return colorFromName("")
+	return sanitizeUsernameColorForDarkBG(colorFromName(""))
 }
 
 func parseChatMessageFromRawJSON(raw string) (Message, bool) {
