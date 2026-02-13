@@ -40,6 +40,7 @@
 
   let badgeViews = $state<DisplayBadge[]>([]);
   const YT_MOD_WRENCH_PATH = '/assets/badges/yt-mod-wrench.svg';
+  const YT_OWNER_COLOUR = '#ffd600';
 
   function trimmedString(value: unknown): string | undefined {
     if (typeof value !== 'string') return undefined;
@@ -50,6 +51,26 @@
   function normalizeBadgeToken(value: unknown): string {
     const trimmed = trimmedString(value);
     return trimmed ? trimmed.toLowerCase() : '';
+  }
+
+  function hasYoutubeOwnerBadge(badges: unknown[]): boolean {
+    return badges.some((badge) => {
+      if (!badge || typeof badge !== 'object') return false;
+      const badgeRecord = badge as Record<string, unknown>;
+      const platform = normalizeBadgeToken(badgeRecord.platform) || message.source.toLowerCase();
+      if (platform !== 'youtube') return false;
+      const id =
+        normalizeBadgeToken(badgeRecord.id) ||
+        normalizeBadgeToken(badgeRecord.code) ||
+        normalizeBadgeToken(badgeRecord.text);
+      return id === 'owner' || id === 'broadcaster' || id === 'channel_owner';
+    });
+  }
+
+  function isYoutubeOwnerByNameColour(): boolean {
+    if (message.source !== 'YouTube') return false;
+    const nameColour = normalizeBadgeToken(message.usernameColor ?? message.colour);
+    return nameColour === YT_OWNER_COLOUR;
   }
 
   function detectYoutubeBadgeGlyph(
@@ -113,7 +134,26 @@
         : Array.isArray(message.badges)
           ? message.badges
           : [];
-    badgeViews = rawBadges.flatMap((badge) => {
+    const badgesForRender = [...rawBadges];
+    const shouldInjectYoutubeOwnerBadge =
+      message.source === 'YouTube' && (hasYoutubeOwnerBadge(rawBadges) || isYoutubeOwnerByNameColour());
+    if (shouldInjectYoutubeOwnerBadge) {
+      const filtered = badgesForRender.filter((badge) => {
+        if (!badge || typeof badge !== 'object') return true;
+        const badgeRecord = badge as unknown as Record<string, unknown>;
+        const platform = normalizeBadgeToken(badgeRecord.platform) || message.source.toLowerCase();
+        if (platform !== 'youtube') return true;
+        const id =
+          normalizeBadgeToken(badgeRecord.id) ||
+          normalizeBadgeToken(badgeRecord.code) ||
+          normalizeBadgeToken(badgeRecord.text);
+        return id !== 'owner' && id !== 'broadcaster' && id !== 'channel_owner';
+      });
+      badgesForRender.length = 0;
+      badgesForRender.push({ id: 'broadcaster', platform: 'youtube', title: 'Broadcaster' }, ...filtered);
+    }
+
+    badgeViews = badgesForRender.flatMap((badge) => {
       if (!badge || typeof badge !== 'object') return [] as DisplayBadge[];
       const badgeRecord = badge as unknown as Record<string, unknown>;
       const id =
@@ -140,14 +180,13 @@
       const idLower = id.toLowerCase();
       const platformLower = platform?.toLowerCase();
       const isYoutubeModerator = platformLower === 'youtube' && idLower === 'moderator';
-      const isYoutubeOwner = platformLower === 'youtube' && (idLower === 'owner' || idLower === 'broadcaster');
       const youtubeGlyph = detectYoutubeBadgeGlyph(message.source, badgeRecord);
       const preferredImage = preferredBadgeImageUrl(badgeImages);
       const badgeSrc = youtubeGlyph
         ? undefined
         : preferredImage ?? imageUrl ?? (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined);
       const fallbackSrc = youtubeGlyph ? undefined : (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined);
-      const iconSrc = youtubeGlyph || (isYoutubeOwner && !preferredImage && !imageUrl) ? undefined : icon.src;
+      const iconSrc = youtubeGlyph ? undefined : icon.src;
       return [
         {
           key: `${id}-${version ?? 'default'}`,
