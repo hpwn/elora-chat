@@ -723,9 +723,9 @@ func colorFromName(name string) string {
 }
 
 const (
-	youtubeMemberColour = "#00FF7F"
-	youtubeModColour    = "#1E90FF"
-	youtubeOwnerColour  = "#DAA520"
+	youtubeMemberColour    = "#0F9D58"
+	youtubeModeratorColour = "#5E84F1"
+	youtubeOwnerColour     = "#FFD600"
 )
 
 func normalizeHexUsernameColour(raw string) string {
@@ -1014,17 +1014,27 @@ func detectYouTubeRole(msg Message, rawJSON string) youtubeRole {
 
 func computeUsernameColor(msg Message, row storage.Message) string {
 	author := strings.TrimSpace(msg.Author)
+
+	source := normalizeSource(msg.Source)
+	if source == "" {
+		source = normalizeSource(row.Platform)
+	}
+	if strings.EqualFold(source, "youtube") {
+		switch detectYouTubeRole(msg, row.RawJSON) {
+		case youtubeRoleOwner:
+			return sanitizeUsernameColorForDarkBG(youtubeOwnerColour)
+		case youtubeRoleModerator:
+			return sanitizeUsernameColorForDarkBG(youtubeModeratorColour)
+		case youtubeRoleMember:
+			return sanitizeUsernameColorForDarkBG(youtubeMemberColour)
+		}
+	}
 	if author != "" {
 		if colour, ok := userColorMap[author]; ok {
 			if normalized := normalizeHexUsernameColour(colour); normalized != "" {
 				return sanitizeUsernameColorForDarkBG(normalized)
 			}
 		}
-	}
-
-	source := normalizeSource(msg.Source)
-	if source == "" {
-		source = normalizeSource(row.Platform)
 	}
 
 	switch strings.ToLower(source) {
@@ -1037,15 +1047,6 @@ func computeUsernameColor(msg Message, row storage.Message) string {
 		}
 		if colour := extractTwitchRawUsernameColour(row.RawJSON); colour != "" {
 			return sanitizeUsernameColorForDarkBG(colour)
-		}
-	case "youtube":
-		switch detectYouTubeRole(msg, row.RawJSON) {
-		case youtubeRoleOwner:
-			return sanitizeUsernameColorForDarkBG(youtubeOwnerColour)
-		case youtubeRoleModerator:
-			return sanitizeUsernameColorForDarkBG(youtubeModColour)
-		case youtubeRoleMember:
-			return sanitizeUsernameColorForDarkBG(youtubeMemberColour)
 		}
 	default:
 		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {

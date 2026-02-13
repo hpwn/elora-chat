@@ -647,8 +647,8 @@ func TestComputeUsernameColorYouTubeRoleOverridesFallback(t *testing.T) {
 		Platform: "youtube",
 		RawJSON:  `{"isChatModerator":true}`,
 	}
-	if got := computeUsernameColor(base, mod); got != youtubeModColour {
-		t.Fatalf("expected youtube moderator color %q, got %q", youtubeModColour, got)
+	if got := computeUsernameColor(base, mod); got != youtubeModeratorColour {
+		t.Fatalf("expected youtube moderator color %q, got %q", youtubeModeratorColour, got)
 	}
 
 	owner := storage.Message{
@@ -658,6 +658,31 @@ func TestComputeUsernameColorYouTubeRoleOverridesFallback(t *testing.T) {
 	}
 	if got := computeUsernameColor(base, owner); got != youtubeOwnerColour {
 		t.Fatalf("expected youtube owner color %q, got %q", youtubeOwnerColour, got)
+	}
+}
+
+func TestComputeUsernameColorYouTubeRoleOverridesAnyExtractedColor(t *testing.T) {
+	userColorMap["yt-override"] = "#112233"
+	t.Cleanup(func() { delete(userColorMap, "yt-override") })
+
+	msg := Message{
+		Author:        "yt-override",
+		Source:        "youtube",
+		UsernameColor: "#33CC66",
+		Colour:        "#AA00AA",
+		Badges: []Badge{
+			{ID: "member"},
+			{ID: "moderator"},
+		},
+	}
+	row := storage.Message{
+		Username: "yt-override",
+		Platform: "youtube",
+		RawJSON:  `{"isChatOwner":true,"isChatModerator":true,"isChatSponsor":true,"author":{"isChatModerator":true}}`,
+	}
+
+	if got := computeUsernameColor(msg, row); got != youtubeOwnerColour {
+		t.Fatalf("expected owner precedence color %q, got %q", youtubeOwnerColour, got)
 	}
 }
 
