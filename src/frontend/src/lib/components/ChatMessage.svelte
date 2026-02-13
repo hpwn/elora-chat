@@ -5,6 +5,7 @@
   import { loadImage, formatMessageFragments, validNameColors, sanitizeMessage } from '$lib/utils';
   import { resolveBadgeIcon } from '$lib/chat/badge-icons';
   import { TwitchIcon, YoutubeIcon } from './icons';
+  import YoutubeBadgeGlyph from './YoutubeBadgeGlyph.svelte';
 
   let { message }: { message: Message } = $props();
   if (import.meta.env.VITE_CHAT_DEBUG) console.debug("[DBG] ChatMessage fragments", $state.snapshot(message.fragments));
@@ -31,12 +32,58 @@
     id: string;
     version?: string;
     icon: ReturnType<typeof resolveBadgeIcon>;
+    youtubeGlyph?: 'verified' | 'moderator';
     src?: string;
     fallbackSrc?: string;
     alt: string;
   };
 
   let badgeViews = $state<DisplayBadge[]>([]);
+  const YT_MOD_WRENCH_PATH = '/assets/badges/yt-mod-wrench.svg';
+
+  function trimmedString(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  function normalizeBadgeToken(value: unknown): string {
+    const trimmed = trimmedString(value);
+    return trimmed ? trimmed.toLowerCase() : '';
+  }
+
+  function detectYoutubeBadgeGlyph(
+    source: Message['source'],
+    badgeRecord: Record<string, unknown>
+  ): 'verified' | 'moderator' | undefined {
+    const platform = normalizeBadgeToken(badgeRecord.platform) || source.toLowerCase();
+    if (platform !== 'youtube') {
+      return undefined;
+    }
+
+    const idToken = normalizeBadgeToken(badgeRecord.id);
+    const codeToken = normalizeBadgeToken(badgeRecord.code);
+    const textToken = normalizeBadgeToken(badgeRecord.text);
+    const titleToken = normalizeBadgeToken(badgeRecord.title);
+    const imageUrl = normalizeBadgeToken(badgeRecord.imageUrl);
+
+    const exactTokens = [idToken, codeToken, textToken];
+    const looksLikeModerator =
+      exactTokens.some((token) => token === 'mod' || token === 'moderator' || token.includes('moderator')) ||
+      titleToken.includes('moderator') ||
+      imageUrl.includes('yt-mod-wrench');
+    if (looksLikeModerator) {
+      return 'moderator';
+    }
+
+    const looksLikeVerified =
+      exactTokens.some((token) => token === 'ver' || token === 'verified') || titleToken.includes('verified');
+    if (looksLikeVerified) {
+      return 'verified';
+    }
+
+    return undefined;
+  }
 
   function preferredBadgeImageUrl(images: Array<{ url?: string; width?: number; height?: number }>): string | undefined {
     const valid = images
@@ -68,40 +115,51 @@
           : [];
     badgeViews = rawBadges.flatMap((badge) => {
       if (!badge || typeof badge !== 'object') return [] as DisplayBadge[];
-      const id = typeof badge.id === 'string' ? badge.id.trim() : '';
+      const badgeRecord = badge as unknown as Record<string, unknown>;
+      const id =
+        trimmedString(badgeRecord.id) ??
+        trimmedString(badgeRecord.code) ??
+        trimmedString(badgeRecord.text) ??
+        trimmedString(badgeRecord.title) ??
+        '';
       if (!id) return [] as DisplayBadge[];
       const version =
-        typeof badge.version === 'string' && badge.version.trim().length > 0 ? badge.version.trim() : undefined;
-      const icon = resolveBadgeIcon(id, version);
-      const title = typeof (badge as any).title === 'string' && (badge as any).title.trim().length > 0
-        ? (badge as any).title
-        : undefined;
-      const badgeImages = Array.isArray((badge as any).images) ? (badge as any).images : [];
-      const imageUrl =
-        typeof (badge as any).imageUrl === 'string' && (badge as any).imageUrl.trim().length > 0
-          ? (badge as any).imageUrl
+        typeof badgeRecord.version === 'string' && badgeRecord.version.trim().length > 0
+          ? badgeRecord.version.trim()
           : undefined;
-      const platform = typeof (badge as any).platform === 'string' ? (badge as any).platform : undefined;
+      const icon = resolveBadgeIcon(id, version);
+      const title = typeof badgeRecord.title === 'string' && badgeRecord.title.trim().length > 0
+        ? badgeRecord.title
+        : undefined;
+      const badgeImages = Array.isArray(badgeRecord.images) ? badgeRecord.images : [];
+      const imageUrl =
+        typeof badgeRecord.imageUrl === 'string' && badgeRecord.imageUrl.trim().length > 0
+          ? badgeRecord.imageUrl
+          : undefined;
+      const platform = typeof badgeRecord.platform === 'string' ? badgeRecord.platform : undefined;
       const idLower = id.toLowerCase();
       const platformLower = platform?.toLowerCase();
       const isYoutubeModerator = platformLower === 'youtube' && idLower === 'moderator';
       const isYoutubeOwner = platformLower === 'youtube' && (idLower === 'owner' || idLower === 'broadcaster');
+      const youtubeGlyph = detectYoutubeBadgeGlyph(message.source, badgeRecord);
       const preferredImage = preferredBadgeImageUrl(badgeImages);
-      const badgeSrc =
-        preferredImage ??
-        imageUrl ??
-        (isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined);
-      const fallbackSrc = isYoutubeModerator ? '/assets/badges/yt-mod-wrench.svg' : undefined;
-      const iconSrc = isYoutubeOwner && !preferredImage && !imageUrl ? undefined : icon.src;
+      const badgeSrc = youtubeGlyph
+        ? undefined
+        : preferredImage ?? imageUrl ?? (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined);
+      const fallbackSrc = youtubeGlyph ? undefined : (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined);
+      const iconSrc = youtubeGlyph || (isYoutubeOwner && !preferredImage && !imageUrl) ? undefined : icon.src;
       return [
         {
           key: `${id}-${version ?? 'default'}`,
           id,
           version,
           icon: { ...icon, src: iconSrc },
+          youtubeGlyph,
           src: badgeSrc,
           fallbackSrc,
-          alt: title ?? icon.alt
+          alt:
+            title ??
+            (youtubeGlyph === 'verified' ? 'Verified' : youtubeGlyph === 'moderator' ? 'Moderator' : icon.alt)
         }
       ];
     });
@@ -170,7 +228,9 @@
       {/if}
 
       {#each badgeViews as badge (badge.key)}
-        {#if badge.src}
+        {#if badge.youtubeGlyph}
+          <YoutubeBadgeGlyph kind={badge.youtubeGlyph} title={badge.alt} />
+        {:else if badge.src}
           <img
             class="badge-icon"
             src={badgeImageSource(badge.src)}

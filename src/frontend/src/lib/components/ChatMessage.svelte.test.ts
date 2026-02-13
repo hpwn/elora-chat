@@ -193,7 +193,7 @@ describe('ChatMessage', () => {
     expect(screen.getByText('HOST', { selector: '.badge-label' })).toBeInTheDocument();
   });
 
-  test('renders badge images as icons instead of text labels when image is present', () => {
+  test('renders youtube moderator badge as shield icon instead of image/text label', () => {
     const message: Message = {
       author: 'ImageBadgeUser',
       message: 'hi',
@@ -228,13 +228,13 @@ describe('ChatMessage', () => {
       ])
     });
 
-    const badgeIcon = screen.getByAltText('Moderator');
-    expect(badgeIcon.tagName).toBe('IMG');
-    expect((badgeIcon as HTMLImageElement).src).toContain('/assets/badges/yt-mod-wrench.svg');
+    const badgeIcon = screen.getByLabelText('Moderator');
+    expect(badgeIcon.tagName).toBe('SPAN');
+    expect(badgeIcon).toHaveAttribute('data-badge-glyph', 'moderator');
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 
-  test('renders youtube moderator wrench badge from normalized display badges', () => {
+  test('renders youtube moderator shield badge from normalized display badges', () => {
     const message: Message = {
       author: 'ModUser',
       message: 'hi',
@@ -270,12 +270,12 @@ describe('ChatMessage', () => {
       ])
     });
 
-    const badgeImg = screen.getByAltText('Moderator') as HTMLImageElement;
-    expect(badgeImg).toBeInTheDocument();
-    expect(badgeImg.src).toContain('/assets/badges/yt-mod-wrench.svg');
+    const badgeIcon = screen.getByLabelText('Moderator');
+    expect(badgeIcon).toBeInTheDocument();
+    expect(badgeIcon).toHaveAttribute('data-badge-glyph', 'moderator');
   });
 
-  test('falls back to local wrench icon when youtube moderator badge lacks images', () => {
+  test('falls back to shield icon when youtube moderator badge lacks images', () => {
     const message: Message = {
       author: 'FallbackMod',
       message: 'hi',
@@ -308,10 +308,50 @@ describe('ChatMessage', () => {
       ])
     });
 
-    const badgeImg = screen.getByAltText('Moderator') as HTMLImageElement;
-    expect(badgeImg).toBeInTheDocument();
-    expect(badgeImg.src).toContain('/assets/badges/yt-mod-wrench.svg');
+    const badgeIcon = screen.getByLabelText('Moderator');
+    expect(badgeIcon).toBeInTheDocument();
+    expect(badgeIcon).toHaveAttribute('data-badge-glyph', 'moderator');
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
+  });
+
+  test('renders youtube verified icon for VER badge placeholder', () => {
+    const message: Message = {
+      author: 'VerifiedUser',
+      message: 'hi',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [],
+      displayBadges: [
+        {
+          code: 'VER',
+          text: 'VER',
+          platform: 'youtube'
+        } as any
+      ],
+      emotes: [],
+      fragments: [{ type: FragmentType.Text, text: 'hi', emote: null }]
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map<string, any>([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const verifiedIcon = screen.getByLabelText('Verified');
+    expect(verifiedIcon).toBeInTheDocument();
+    expect(verifiedIcon).toHaveAttribute('data-badge-glyph', 'verified');
+    expect(screen.queryByText('VER', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 
   test('renders twitch badge images when provided', () => {
