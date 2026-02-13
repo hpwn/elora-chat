@@ -10,14 +10,19 @@
   title={title}
 >
   {#if kind === 'verified'}
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <circle cx="8" cy="8" r="6" />
-      <path d="M5.1 8.1 7.1 10l3.8-4" />
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <path transform="scale(0.66)" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"></path>
     </svg>
   {:else}
-    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M8 1.7 13 3.7v3.8c0 3.1-2.2 5.9-5 6.8-2.8-.9-5-3.7-5-6.8V3.7Z" />
-      <path d="m5.4 8.1 1.8 1.7 3.4-3.7" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      height="24"
+      viewBox="0 0 24 24"
+      width="24"
+      focusable="false"
+      aria-hidden="true"
+    >
+      <path d="M3 4.998v9.857a6 6 0 003.365 5.39L12 23l5.635-2.755A6 6 0 0021 14.855V4.998a1 1 0 00-.656-.938L12 1 3.656 4.06A1 1 0 003 4.998Z"></path>
     </svg>
   {/if}
 </span>
@@ -40,10 +45,10 @@
   svg {
     width: 14px;
     height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.75;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    fill: currentColor;
+  }
+
+  path {
+    fill: currentColor;
   }
 </style>
