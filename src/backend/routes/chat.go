@@ -1367,6 +1367,7 @@ func InitRoutes(store storage.Store) {
 
 	chatStore = store
 	maybeExportStoredTwitchToken(store)
+	startServiceTokenMaintainer()
 	subscribersMu.Lock()
 	if subscribers == nil {
 		subscribers = make(map[chan []byte]struct{})

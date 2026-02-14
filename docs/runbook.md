@@ -95,6 +95,22 @@ The tailer feeds `routes.BroadcastFromTailer`, which uses the same WebSocket hub
 
 The access/refresh paths mirror gnasty handoff defaults so you can verify shared volume wiring. Set `ELORA_DATA_DIR` to a writable mount when gnasty and the API share tokens.
 
+#### Headless service-token maintenance
+
+Elora now stores an app-level Twitch OAuth record in SQLite under `sessions.token="service:twitch"` (service `service_token`) with `{access_token, refresh_token, expiry}`. This record is independent of browser cookies (`session_token`) and enables gnasty token upkeep even when no user is actively visiting the UI.
+
+On backend startup, a background ticker:
+
+- Loads `service:twitch`.
+- Refreshes it when it is expired or within `ELORA_TWITCH_SERVICE_REFRESH_BEFORE_EXPIRY_MINUTES` of expiry.
+- Rewrites `${ELORA_DATA_DIR}/twitch_irc.pass` and `${ELORA_DATA_DIR}/twitch_refresh.pass`.
+- Calls the gnasty reload endpoint so Twitch IRC reconnects with fresh credentials.
+
+Tuning knobs:
+
+- `ELORA_TWITCH_SERVICE_REFRESH_INTERVAL_MINUTES` (default `5`)
+- `ELORA_TWITCH_SERVICE_REFRESH_BEFORE_EXPIRY_MINUTES` (default `10`)
+
 #### gnasty reload hook
 
 The Twitch callback posts to gnasty after exporting fresh tokens. Override the target with `ELORA_GNASTY_RELOAD_URL` (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
@@ -115,7 +131,7 @@ Use the local OAuth flow to grant the chat scope pair Twitch requires:
 - Start the handoff from your browser at <http://localhost:8080/auth/twitch/start>.
 - Authorise the `chat:read` and `chat:edit` scopes when prompted.
 
-When `ELORA_TWITCH_WRITE_GNASTY_TOKENS` (the "write flag") is enabled the callback writes the access token to `${ELORA_DATA_DIR}/twitch_irc.pass` and the refresh token to `${ELORA_DATA_DIR}/twitch_refresh.pass`. Both files trigger gnasty's reload hook so the harvester begins using the new credentials without manual restarts.
+When `ELORA_TWITCH_WRITE_GNASTY_TOKENS` (the "write flag") is enabled the callback writes the access token to `${ELORA_DATA_DIR}/twitch_irc.pass` and the refresh token to `${ELORA_DATA_DIR}/twitch_refresh.pass`, and also stores `service:twitch` in SQLite. The startup maintainer keeps those files fresh thereafter without requiring `/check-session` traffic.
 
 Verify the handoff end to end by:
 
