@@ -1,0 +1,5 @@
+services:
+  gnasty-harvester:
+    build:
+      context: ../gnasty-chat
+      dockerfile: Dockerfile

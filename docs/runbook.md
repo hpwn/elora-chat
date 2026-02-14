@@ -10,6 +10,13 @@
    ```bash
    make bootstrap
    ```
+   For dev iterations on `../gnasty-chat` (for example logging changes), use the
+   compose override so `gnasty-harvester` is rebuilt from local source instead of
+   pulling `GNASTY_IMAGE`:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache gnasty-harvester
+   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+   ```
 3. Launch the stack:
    ```bash
    make up
@@ -123,6 +130,8 @@ Pass Twitch and YouTube selectors via the shared `.env` file so both containers 
 - `YOUTUBE_URL` and/or `GNASTY_YT_CHANNEL_IDS` select the YouTube Live source.
 
 The Twitch OAuth credentials (`TWITCH_OAUTH_CLIENT_ID`, `TWITCH_OAUTH_CLIENT_SECRET`, `TWITCH_OAUTH_REDIRECT_URL`) are required for the login flow that populates gnasty's token files.
+
+Set `GNASTY_TWITCH_DEBUG_DROPS=1` in `.env` when you need verbose drop diagnostics from gnasty's Twitch ingest path during local debugging. Leave it unset (or `0`) for normal operation.
 
 #### Sign in with Twitch
 
