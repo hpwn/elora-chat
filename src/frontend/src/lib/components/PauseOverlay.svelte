@@ -15,11 +15,10 @@
 
 <style lang="scss">
   #pauseOverlay {
-    position: absolute;
-    top: 80%;
-    left: 50%;
-    transform: translate(-50%, -80%);
-    z-index: 1000;
+    display: inline-flex;
+    width: auto;
+    align-items: center;
+    justify-content: center;
     text-align: center;
     border: 2px solid var(--accent-color);
     border-radius: 8px;
@@ -27,6 +26,12 @@
     background-color: var(--secondary-color);
     opacity: 0.9;
     font-weight: bold;
-    padding: 0px 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+
+  #pauseOverlay p {
+    margin: 0;
+    white-space: nowrap;
   }
 </style>

@@ -170,6 +170,7 @@
   let nextBeforeRowID: number | null = $state(null);
   let loadingHistory = $state(false);
   let historyExhausted = $state(false);
+  const BOTTOM_THRESHOLD_PX = 24;
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
     if (CHAT_DEBUG) {
@@ -579,6 +580,7 @@
   function unpauseChat() {
     paused = false;
     setTimeout(() => {
+      if (!container) return;
       container.scrollTop = container.scrollHeight;
       newMessageCount = 0;
     }, 0);
@@ -669,8 +671,18 @@
 
   function handleScroll() {
     if (!container) return;
-    if (!isFetchHistoryOnLoad()) return;
-    if (container.scrollTop <= 50) {
+
+    const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
+    const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
+    if (isAtBottom) {
+      if (paused) {
+        unpauseChat();
+      }
+    } else {
+      paused = true;
+    }
+
+    if (isFetchHistoryOnLoad() && container.scrollTop <= 50) {
       loadOlderMessages();
     }
   }
@@ -772,22 +784,26 @@
   });
 </script>
 
-<div
-  id="chat-container"
-  aria-label="Chat messages"
-  role="list"
-  onmouseenter={pauseChat}
-  onmouseleave={unpauseChat}
-  onscroll={handleScroll}
-  bind:this={container}
->
-  {#each messages as message (message.id)}
-    {#if !blacklist.has(message.author)}
-      <ChatMessage {message} />
-    {/if}
-  {/each}
+<div class="chat-shell">
+  <div
+    id="chat-container"
+    class:paused={paused}
+    aria-label="Chat messages"
+    role="list"
+    onmouseleave={unpauseChat}
+    onscroll={handleScroll}
+    bind:this={container}
+  >
+    {#each messages as message (message.id)}
+      {#if !blacklist.has(message.author)}
+        <ChatMessage {message} />
+      {/if}
+    {/each}
+  </div>
   {#if paused}
-    <PauseOverlay {newMessageCount} {unpauseChat} />
+    <div class="pause-overlay">
+      <PauseOverlay {newMessageCount} {unpauseChat} />
+    </div>
   {/if}
 </div>
 
@@ -800,14 +816,39 @@
 {/if}
 
 <style lang="scss">
-  #chat-container {
+  .chat-shell {
+    position: relative;
     display: flex;
     flex-direction: column;
     flex: 1;
-    position: relative;
+    height: 100%;
+    min-height: 0;
+  }
+
+  #chat-container {
+    --pauseOverlayH: 72px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
     padding: 0 10px;
+    min-height: 0;
 
     overflow-y: auto;
     scrollbar-width: none;
+  }
+
+  #chat-container.paused {
+    padding-bottom: var(--pauseOverlayH);
+  }
+
+  .pause-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 8px;
+    padding: 0 10px 10px;
+    display: flex;
+    justify-content: center;
+    z-index: 2;
   }
 </style>
