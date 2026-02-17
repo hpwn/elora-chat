@@ -170,7 +170,11 @@
   let nextBeforeRowID: number | null = $state(null);
   let loadingHistory = $state(false);
   let historyExhausted = $state(false);
-  const BOTTOM_THRESHOLD_PX = 24;
+  const BOTTOM_THRESHOLD_PX = 128;
+  const USER_SCROLL_INTENT_WINDOW_MS = 250;
+  let lastUserScrollTs = 0;
+  let lastScrollTop = $state(0);
+  let programmaticScrollTs = $state(0);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
     if (CHAT_DEBUG) {
@@ -581,6 +585,7 @@
     paused = false;
     setTimeout(() => {
       if (!container) return;
+      programmaticScrollTs = Date.now();
       container.scrollTop = container.scrollHeight;
       newMessageCount = 0;
     }, 0);
@@ -654,6 +659,7 @@
     if (!paused) {
       requestAnimationFrame(() => {
         if (container) {
+          programmaticScrollTs = Date.now();
           container.scrollTop = container.scrollHeight;
         }
         newMessageCount = 0;
@@ -672,13 +678,19 @@
   function handleScroll() {
     if (!container) return;
 
+    const now = Date.now();
+    const prev = lastScrollTop;
+    lastScrollTop = container.scrollTop;
+    const movedUp = container.scrollTop < prev - 1;
+    const recentUserIntent = now - lastUserScrollTs < USER_SCROLL_INTENT_WINDOW_MS;
+    const recentProgrammatic = now - programmaticScrollTs < 100;
     const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
     const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
     if (isAtBottom) {
       if (paused) {
         unpauseChat();
       }
-    } else {
+    } else if (!recentProgrammatic && (movedUp || recentUserIntent)) {
       paused = true;
     }
 
@@ -729,6 +741,48 @@
     ws.onclose = () => CHAT_DEBUG && console.log('[chat] close');
   }
 
+  function markUserScrollIntent() {
+    lastUserScrollTs = Date.now();
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    switch (e.key) {
+      case 'P':
+      case 'p':
+        togglePause();
+        break;
+      case 'Control':
+        keymods.ctrl = true;
+        break;
+      case 'Shift':
+        keymods.shift = true;
+        break;
+      case 'Alt':
+        keymods.alt = true;
+        break;
+      case 'PageUp':
+      case 'PageDown':
+      case 'Home':
+      case 'End':
+        markUserScrollIntent();
+        break;
+    }
+  }
+
+  function handleKeyUp(e: KeyboardEvent) {
+    switch (e.key) {
+      case 'Control':
+        keymods.ctrl = false;
+        break;
+      case 'Shift':
+        keymods.shift = false;
+        break;
+      case 'Alt':
+        keymods.alt = false;
+        break;
+    }
+  }
+
   onMount(() => {
     if (isFetchHistoryOnLoad()) {
       fetchMessagesPage();
@@ -737,37 +791,8 @@
     }
     initializeWebSocket();
 
-    document.addEventListener('keydown', (e) => {
-      switch (e.key) {
-        case 'P':
-        case 'p':
-          togglePause();
-          break;
-        case 'Control':
-          keymods.ctrl = true;
-          break;
-        case 'Shift':
-          keymods.shift = true;
-          break;
-        case 'Alt':
-          keymods.alt = true;
-          break;
-      }
-    });
-
-    document.addEventListener('keyup', (e) => {
-      switch (e.key) {
-        case 'Control':
-          keymods.ctrl = false;
-          break;
-        case 'Shift':
-          keymods.shift = false;
-          break;
-        case 'Alt':
-          keymods.alt = false;
-          break;
-      }
-    });
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
 
     document.addEventListener('visibilitychange', () => {
       saveBlacklist();
@@ -781,6 +806,11 @@
       }
       saveBlacklist();
     });
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
+    };
   });
 </script>
 
@@ -791,6 +821,9 @@
     aria-label="Chat messages"
     role="list"
     onmouseleave={unpauseChat}
+    onwheel={markUserScrollIntent}
+    ontouchstart={markUserScrollIntent}
+    onpointerdown={markUserScrollIntent}
     onscroll={handleScroll}
     bind:this={container}
   >
@@ -834,6 +867,8 @@
     min-height: 0;
 
     overflow-y: auto;
+    overflow-anchor: none;
+    scrollbar-gutter: stable;
     scrollbar-width: none;
   }
 
