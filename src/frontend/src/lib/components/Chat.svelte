@@ -15,7 +15,8 @@
   const DEFAULT_COLOUR = '#ffffff';
   const DEFAULT_SOURCE: Message['source'] = 'YouTube';
   const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
-  const HISTORY_LIMIT = 200;
+  const HISTORY_PAGE_LIMIT = 200;
+  const HISTORY_TRIM_LIMIT: number | null = null;
   const SHORTCODE_REGEX = /:([a-z0-9_\-+]+):/gi;
   const shortcodeToEmoji = new Map<string, string>();
   const shortcodeAliases = new Map<string, string>([
@@ -171,8 +172,8 @@
   let loadingHistory = $state(false);
   let historyExhausted = $state(false);
   const BOTTOM_THRESHOLD_PX = 128;
-  const USER_SCROLL_INTENT_WINDOW_MS = 250;
-  let lastUserScrollTs = 0;
+  const USER_SCROLL_INTENT_WINDOW_MS = 2000;
+  let lastUserScrollTs = $state(0);
   let lastScrollTop = $state(0);
   let programmaticScrollTs = $state(0);
 
@@ -375,7 +376,7 @@
 
   async function fetchMessagesPage(cursor?: MessageCursor) {
     try {
-      const params = new URLSearchParams({ limit: HISTORY_LIMIT.toString() });
+      const params = new URLSearchParams({ limit: HISTORY_PAGE_LIMIT.toString() });
       if (cursor?.beforeTs != null) {
         params.set('before_ts', cursor.beforeTs.toString());
         if (cursor.beforeRowID != null) {
@@ -599,7 +600,8 @@
     }
   }
 
-  function trimHistory(limit = HISTORY_LIMIT) {
+  function trimHistory(limit = HISTORY_TRIM_LIMIT) {
+    if (limit === null) return;
     if (messages.length <= limit) return;
     const overflow = messages.length - limit;
     const trimmed = messages.slice(0, overflow);
@@ -679,18 +681,17 @@
     if (!container) return;
 
     const now = Date.now();
-    const prev = lastScrollTop;
+    const previousScrollTop = lastScrollTop;
     lastScrollTop = container.scrollTop;
-    const movedUp = container.scrollTop < prev - 1;
-    const recentUserIntent = now - lastUserScrollTs < USER_SCROLL_INTENT_WINDOW_MS;
-    const recentProgrammatic = now - programmaticScrollTs < 100;
     const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
     const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
     if (isAtBottom) {
       if (paused) {
         unpauseChat();
       }
-    } else if (!recentProgrammatic && (movedUp || recentUserIntent)) {
+    } else if (
+      container.scrollTop < previousScrollTop &&
+      now - lastUserScrollTs < USER_SCROLL_INTENT_WINDOW_MS) {
       paused = true;
     }
 
@@ -760,12 +761,6 @@
       case 'Alt':
         keymods.alt = true;
         break;
-      case 'PageUp':
-      case 'PageDown':
-      case 'Home':
-      case 'End':
-        markUserScrollIntent();
-        break;
     }
   }
 
@@ -783,6 +778,18 @@
     }
   }
 
+  function handleVisibilityChange() {
+    saveBlacklist();
+    keymods.reset();
+    if (document.visibilityState === 'visible' && !paused) {
+      programmaticScrollTs = Date.now();
+      requestAnimationFrame(() => {
+        if (!container) return;
+        container.scrollTop = container.scrollHeight;
+      });
+    }
+  }
+
   onMount(() => {
     if (isFetchHistoryOnLoad()) {
       fetchMessagesPage();
@@ -794,10 +801,7 @@
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
 
-    document.addEventListener('visibilitychange', () => {
-      saveBlacklist();
-      keymods.reset();
-    });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     window.addEventListener('beforeunload', () => {
       if (ws) {
@@ -810,6 +814,7 @@
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
 </script>
@@ -826,7 +831,11 @@
     onpointerdown={markUserScrollIntent}
     onscroll={handleScroll}
     bind:this={container}
-  >
+  
+      onmousedown={markUserScrollIntent}
+    
+      onauxclick={markUserScrollIntent}
+    >
     {#each messages as message (message.id)}
       {#if !blacklist.has(message.author)}
         <ChatMessage {message} />
