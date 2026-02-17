@@ -173,6 +173,7 @@
   let historyExhausted = $state(false);
   const BOTTOM_THRESHOLD_PX = 128;
   const USER_SCROLL_INTENT_WINDOW_MS = 2000;
+  const MOUSELEAVE_UNPAUSE_COOLDOWN_MS = 2000;
   let lastUserScrollTs = $state(0);
   let lastScrollTop = $state(0);
   let programmaticScrollTs = $state(0);
@@ -746,6 +747,13 @@
     lastUserScrollTs = Date.now();
   }
 
+  function handleMouseLeave() {
+    if (!paused) return;
+    const now = Date.now();
+    if (now - lastUserScrollTs < MOUSELEAVE_UNPAUSE_COOLDOWN_MS) return;
+    unpauseChat();
+  }
+
   function handleKeyDown(e: KeyboardEvent) {
     switch (e.key) {
       case 'P':
@@ -825,7 +833,7 @@
     class:paused={paused}
     aria-label="Chat messages"
     role="list"
-    onmouseleave={unpauseChat}
+    onmouseleave={handleMouseLeave}
     onwheel={markUserScrollIntent}
     ontouchstart={markUserScrollIntent}
     onpointerdown={markUserScrollIntent}
