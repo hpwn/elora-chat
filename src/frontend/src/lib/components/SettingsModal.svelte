@@ -344,6 +344,14 @@
             />
             Chat debug
           </label>
+          <label class="toggle">
+            <input
+              checked={$settings.settingsDebug}
+              on:change={(event) => updateSettings({ settingsDebug: (event.currentTarget as HTMLInputElement).checked })}
+              type="checkbox"
+            />
+            Settings debug (show apply/connect events in chat)
+          </label>
         </section>
       {:else}
         <section class="section">

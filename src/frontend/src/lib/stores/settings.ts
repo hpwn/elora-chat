@@ -8,6 +8,7 @@ export type Settings = {
   hideYouTubeAt: boolean;
   fetchHistoryOnLoad: boolean;
   chatDebug: boolean;
+  settingsDebug: boolean;
   twitchUrl: string;
   youtubeUrl: string;
   recentTwitch: string[];
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hideYouTubeAt: true,
   fetchHistoryOnLoad: false,
   chatDebug: false,
+  settingsDebug: false,
   twitchUrl: '',
   youtubeUrl: '',
   recentTwitch: [],
@@ -101,6 +103,7 @@ function loadSettings(): Settings {
       hideYouTubeAt: readBoolean(partial.hideYouTubeAt, DEFAULT_SETTINGS.hideYouTubeAt),
       fetchHistoryOnLoad: readBoolean(partial.fetchHistoryOnLoad, DEFAULT_SETTINGS.fetchHistoryOnLoad),
       chatDebug: readBoolean(partial.chatDebug, DEFAULT_SETTINGS.chatDebug),
+      settingsDebug: readBoolean(partial.settingsDebug, DEFAULT_SETTINGS.settingsDebug),
       twitchUrl: readString(partial.twitchUrl),
       youtubeUrl: readString(partial.youtubeUrl),
       recentTwitch: readRecent(partial.recentTwitch),

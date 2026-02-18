@@ -8,7 +8,7 @@
   import { apiPath, getHideYouTubeAt, getShowBadges, getWsUrl, isChatDebugEnabled, isFetchHistoryOnLoad } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { normalizeWsPayload } from '$lib/chat/normalize';
-  import { settings } from '$lib/stores/settings';
+  import { settings, type Settings } from '$lib/stores/settings';
   import { SvelteSet } from 'svelte/reactivity';
   import * as EmojilibNS from 'emojilib';
 
@@ -58,6 +58,9 @@
 
   let ws: WebSocket | null = $state(null);
   let currentWsUrl = $state('');
+  let settingsDebug = $state(false);
+  let pendingTwitchSince = $state<number | null>(null);
+  let pendingYouTubeSince = $state<number | null>(null);
   let messageQueue: Message[] = $state([]);
   let messages: Message[] = $state([]);
   let processing = $state(false);
@@ -87,6 +90,34 @@
     if (typeof raw !== 'string') return 'unknown';
     const trimmed = raw.trim() as Message['source'];
     return ALLOWED_SOURCES.has(trimmed) ? trimmed : 'unknown';
+  }
+
+  function sourceLower(source: Message['source'] | 'unknown'): string {
+    return typeof source === 'string' ? source.toLowerCase() : '';
+  }
+
+  function systemMessage(text: string): Message {
+    const ts = Date.now();
+    return {
+      id: `system:${ts}-${Math.random().toString(36).slice(2, 8)}`,
+      ts,
+      author: 'system',
+      badges: [],
+      displayBadges: [],
+      badges_raw: null,
+      colour: '#94a3b8',
+      usernameColor: '#94a3b8',
+      message: text,
+      fragments: [{ type: FragmentType.Text, text, emote: null }],
+      emotes: [],
+      source: 'Test'
+    };
+  }
+
+  function emitSystem(text: string): void {
+    if (!settingsDebug) return;
+    messageQueue = [...messageQueue, systemMessage(text)];
+    if (!processing) processMessageQueue();
   }
 
   function logDebug(stage: string) {
@@ -714,6 +745,7 @@
 
     currentWsUrl = wsUrl;
     if (chatDebug) console.log('[chat] url:', wsUrl);
+    emitSystem(`ws: reconnecting -> ${wsUrl}`);
     ws = connectChat((incoming) => {
       if (chatDebug) {
         const platform = normalizeSourceValue((incoming as any)?.platform);
@@ -729,6 +761,17 @@
         return;
       }
 
+      const incomingTs = typeof normalized.ts === 'number' ? normalized.ts : Date.now();
+      const normalizedSource = sourceLower(normalized.source);
+      if (pendingTwitchSince !== null && normalizedSource === 'twitch' && incomingTs >= pendingTwitchSince) {
+        emitSystem('twitch: receiving messages [ok]');
+        pendingTwitchSince = null;
+      }
+      if (pendingYouTubeSince !== null && normalizedSource === 'youtube' && incomingTs >= pendingYouTubeSince) {
+        emitSystem('youtube: receiving messages [ok]');
+        pendingYouTubeSince = null;
+      }
+
       messageQueue = [...messageQueue, normalized];
       if (chatDebug) {
         debugCounters.enqueued += 1;
@@ -738,11 +781,17 @@
       if (!processing) processMessageQueue();
     }, wsUrl);
 
-    ws.onopen = () => chatDebug && console.log('[chat] open');
+    ws.onopen = () => {
+      emitSystem('ws: connected');
+      chatDebug && console.log('[chat] open');
+    };
 
     ws.onerror = (error) => chatDebug && console.error('[chat] error:', error);
 
-    ws.onclose = () => chatDebug && console.log('[chat] close');
+    ws.onclose = (event) => {
+      emitSystem(`ws: closed code=${event.code} reason=${event.reason || 'n/a'}`);
+      chatDebug && console.log('[chat] close');
+    };
   }
 
   function markUserScrollIntent() {
@@ -798,16 +847,67 @@
     }
   }
 
-  onMount(() => {
-    const unsubscribeSettings = settings.subscribe(() => {
-      chatDebug = isChatDebugEnabled();
-      const nextWsUrl = getWsUrl();
-      if (!nextWsUrl || nextWsUrl === currentWsUrl) return;
-      if (ws) {
-        ws.close();
-        ws = null;
+  function twitchChannelLabel(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed) return '(unset)';
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.hostname.toLowerCase().includes('twitch.tv')) {
+        const login = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
+        return login || trimmed;
       }
-      initializeWebSocket();
+      return trimmed;
+    } catch {
+      return trimmed;
+    }
+  }
+
+  onMount(() => {
+    let lastSettings: Settings | null = null;
+
+    const unsubscribeSettings = settings.subscribe((nextSettings) => {
+      chatDebug = isChatDebugEnabled();
+      const wasSettingsDebug = settingsDebug;
+      settingsDebug = !!nextSettings.settingsDebug;
+
+      if (lastSettings) {
+        const apiChanged = lastSettings.apiBaseUrl !== nextSettings.apiBaseUrl;
+        const wsChanged = lastSettings.wsUrl !== nextSettings.wsUrl;
+        const twitchChanged = lastSettings.twitchUrl !== nextSettings.twitchUrl;
+        const youtubeChanged = lastSettings.youtubeUrl !== nextSettings.youtubeUrl;
+
+        if ((apiChanged || wsChanged || twitchChanged || youtubeChanged) && settingsDebug) {
+          emitSystem(
+            `settings: applied api=${nextSettings.apiBaseUrl || '(default)'} ws=${nextSettings.wsUrl || '(derived)'} tw=${nextSettings.twitchUrl || '(unset)'} yt=${nextSettings.youtubeUrl || '(unset)'}`
+          );
+        }
+
+        if (!wasSettingsDebug && settingsDebug) {
+          emitSystem('settings: debug enabled');
+        }
+
+        if (twitchChanged && settingsDebug) {
+          pendingTwitchSince = Date.now();
+          emitSystem(`twitch: channel set -> ${twitchChannelLabel(nextSettings.twitchUrl)} (waiting for first message)`);
+        }
+
+        if (youtubeChanged && settingsDebug) {
+          pendingYouTubeSince = Date.now();
+          emitSystem(`youtube: source set -> ${nextSettings.youtubeUrl || '(unset)'} (waiting for first message)`);
+        }
+      }
+
+      const nextWsUrl = getWsUrl();
+      const shouldReconnect = !!nextWsUrl && nextWsUrl !== currentWsUrl;
+      if (shouldReconnect) {
+        if (ws) {
+          ws.close();
+          ws = null;
+        }
+        initializeWebSocket();
+      }
+
+      lastSettings = { ...nextSettings };
     });
 
     if (isFetchHistoryOnLoad()) {
@@ -921,4 +1021,5 @@
     z-index: 2;
   }
 </style>
+
 
