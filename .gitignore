@@ -51,3 +51,6 @@ env.local.smoke.*
 
 # local backups
 *.bak.*
+
+# local scratch
+.tmp_env_inventory/

@@ -32,7 +32,7 @@ make bootstrap
 make up
 ```
 
-Within a few seconds the API and WebSocket endpoints will be available at [`${VITE_PUBLIC_API_BASE}`](http://localhost:8080/) and `${VITE_PUBLIC_WS_URL}` respectively. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. Once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
+Within a few seconds the API and WebSocket endpoints will be available at `http://localhost:8080` and `ws://localhost:8080/ws/chat` by default. You can override both live in the Settings UI (persisted in browser storage) without rebuilding. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. Once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
 
 > ⚠️ `gnasty-harvester` always pulls the published `gnasty-chat` image specified by `GNASTY_IMAGE` (defaults to `gnasty-chat:latest`). Verify the resolved tag with `docker compose config` before proposing changes and see [docs/dev/harvester.md](docs/dev/harvester.md) for details on where to contribute harvester edits.
 

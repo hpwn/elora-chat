@@ -1,8 +1,7 @@
 <script>
   import { checkLoginStatus } from '$lib/api/auth.svelte';
-  import { Chat, Header, Footer, ExportPanel } from '$lib/components';
+  import { Chat, Header, Footer } from '$lib/components';
   import SettingsModal from '$lib/components/SettingsModal.svelte';
-  import { settings } from '$lib/stores/settings';
   import { onMount } from 'svelte';
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -28,11 +27,6 @@
 
 {#if !isPopout}
   <Header />
-  {#if $settings.showExportPanel}
-    <div class="export-wrapper">
-      <ExportPanel />
-    </div>
-  {/if}
 {/if}
 <Chat />
 <Footer on:open-settings={() => (settingsOpen = true)} />
@@ -183,9 +177,4 @@
     }
   }
 
-  .export-wrapper {
-    max-width: 640px;
-    margin: 0 auto;
-    padding: 0 16px;
-  }
 </style>

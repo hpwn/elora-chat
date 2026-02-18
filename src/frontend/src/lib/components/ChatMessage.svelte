@@ -4,11 +4,12 @@
   import { getContext } from 'svelte';
   import { loadImage, formatMessageFragments, validNameColors, sanitizeMessage } from '$lib/utils';
   import { resolveBadgeIcon } from '$lib/chat/badge-icons';
+  import { isChatDebugEnabled } from '$lib/config';
   import { TwitchIcon, YoutubeIcon } from './icons';
   import YoutubeBadgeGlyph from './YoutubeBadgeGlyph.svelte';
 
   let { message }: { message: Message } = $props();
-  if (import.meta.env.VITE_CHAT_DEBUG) console.debug("[DBG] ChatMessage fragments", $state.snapshot(message.fragments));
+  if (isChatDebugEnabled()) console.debug('[DBG] ChatMessage fragments', $state.snapshot(message.fragments));
   let visible = $state(true);
 
   const blacklist: SvelteSet<string> = getContext('blacklist');

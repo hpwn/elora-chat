@@ -1,4 +1,4 @@
-import { isFetchHistoryOnLoad, wsUrl as configuredWsUrl } from '$lib/config';
+import { getWsUrl, isFetchHistoryOnLoad } from '$lib/config';
 import { normalizeWsPayloads, type ChatMessage } from './normalize';
 
 export type { ChatMessage } from './normalize';
@@ -60,9 +60,8 @@ function emitMessages(messages: ChatMessage[], onMessage: OnMessage): void {
 }
 
 export function defaultWsUrl(): string {
-  if (configuredWsUrl) {
-    return configuredWsUrl;
-  }
+  const configuredWsUrl = getWsUrl();
+  if (configuredWsUrl) return configuredWsUrl;
   if (typeof location === 'undefined') {
     return 'ws://localhost:8080/ws/chat';
   }

@@ -1,6 +1,6 @@
-import { apiBaseUrl } from '$lib/config';
+import { getApiBaseUrl } from '$lib/config';
 
 export function buildApiUrl(path: string): string {
   const normalized = path.startsWith('/') ? path : `/${path}`;
-  return `${apiBaseUrl}${normalized}`;
+  return `${getApiBaseUrl()}${normalized}`;
 }

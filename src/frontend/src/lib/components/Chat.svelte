@@ -5,13 +5,14 @@
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
 
-  import { apiPath, hideYouTubeAt, isFetchHistoryOnLoad, showBadges, wsUrl as configuredWsUrl } from '$lib/config';
+  import { apiPath, getHideYouTubeAt, getShowBadges, getWsUrl, isChatDebugEnabled, isFetchHistoryOnLoad } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { normalizeWsPayload } from '$lib/chat/normalize';
+  import { settings } from '$lib/stores/settings';
   import { SvelteSet } from 'svelte/reactivity';
   import * as EmojilibNS from 'emojilib';
 
-  const CHAT_DEBUG = import.meta.env.VITE_CHAT_DEBUG === '1';
+  let chatDebug = $state(isChatDebugEnabled());
   const DEFAULT_COLOUR = '#ffffff';
   const DEFAULT_SOURCE: Message['source'] = 'YouTube';
   const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
@@ -56,6 +57,7 @@
   let container: HTMLDivElement;
 
   let ws: WebSocket | null = $state(null);
+  let currentWsUrl = $state('');
   let messageQueue: Message[] = $state([]);
   let messages: Message[] = $state([]);
   let processing = $state(false);
@@ -88,7 +90,7 @@
   }
 
   function logDebug(stage: string) {
-    if (!CHAT_DEBUG) return;
+    if (!chatDebug) return;
     console.debug('[chat-debug]', stage, {
       wsReceived: debugCounters.wsReceived,
       enqueued: debugCounters.enqueued,
@@ -179,7 +181,7 @@
   let programmaticScrollTs = $state(0);
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
-    if (CHAT_DEBUG) {
+    if (chatDebug) {
       console.debug('[convertIncomingMessage]', {
         fragments: (message as any).fragments,
         emotes: (message as any).emotes,
@@ -217,7 +219,7 @@
     const colourCandidate = rawUsernameColor && rawUsernameColor.trim().length > 0 ? rawUsernameColor : rawColour;
     const colour = colourCandidate && colourCandidate.trim().length > 0 ? colourCandidate : DEFAULT_COLOUR;
 
-    if (hideYouTubeAt && source === 'YouTube' && author.startsWith('@')) {
+    if (getHideYouTubeAt() && source === 'YouTube' && author.startsWith('@')) {
       author = author.slice(1).trim() || author;
     }
 
@@ -230,6 +232,7 @@
     }
 
     const badgeInput = message.displayBadges ?? message.badges;
+    const showBadges = getShowBadges();
     const badges = showBadges ? coerceBadges(badgeInput) : [];
     const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
 
@@ -608,7 +611,7 @@
     const trimmed = messages.slice(0, overflow);
     messages = messages.slice(overflow);
 
-    if (CHAT_DEBUG) {
+    if (chatDebug) {
       debugCounters.trimmed += trimmed.length;
       for (const m of trimmed) {
         incrementCounter(debugCounters.trimmedBySource, m.source ?? 'unknown');
@@ -642,7 +645,7 @@
       messages = [...messages, next];
       processed++;
 
-      if (CHAT_DEBUG) {
+      if (chatDebug) {
         debugCounters.appended++;
         incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
       }
@@ -655,7 +658,7 @@
       return;
     }
 
-    if (CHAT_DEBUG) {
+    if (chatDebug) {
       logDebug('append');
     }
 
@@ -702,18 +705,17 @@
   }
 
   function initializeWebSocket() {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const localUrl = `${wsProtocol}://${window.location.host}/ws/chat`;
-    const wsUrl = configuredWsUrl || localUrl;
+    const wsUrl = getWsUrl();
 
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      if (CHAT_DEBUG) console.log('[chat] ws already connected/connecting');
+      if (chatDebug) console.log('[chat] ws already connected/connecting');
       return;
     }
 
-    if (CHAT_DEBUG) console.log('[chat] url:', wsUrl);
+    currentWsUrl = wsUrl;
+    if (chatDebug) console.log('[chat] url:', wsUrl);
     ws = connectChat((incoming) => {
-      if (CHAT_DEBUG) {
+      if (chatDebug) {
         const platform = normalizeSourceValue((incoming as any)?.platform);
         debugCounters.wsReceived += 1;
         incrementCounter(debugCounters.wsBySource, platform);
@@ -721,14 +723,14 @@
 
       const normalized = convertIncomingMessage(incoming);
       if (!normalized) {
-        if (CHAT_DEBUG) {
+        if (chatDebug) {
           logDebug('ws-drop');
         }
         return;
       }
 
       messageQueue = [...messageQueue, normalized];
-      if (CHAT_DEBUG) {
+      if (chatDebug) {
         debugCounters.enqueued += 1;
         incrementCounter(debugCounters.queueBySource, normalized.source ?? 'unknown');
         logDebug('enqueue');
@@ -736,11 +738,11 @@
       if (!processing) processMessageQueue();
     }, wsUrl);
 
-    ws.onopen = () => CHAT_DEBUG && console.log('[chat] open');
+    ws.onopen = () => chatDebug && console.log('[chat] open');
 
-    ws.onerror = (error) => CHAT_DEBUG && console.error('[chat] error:', error);
+    ws.onerror = (error) => chatDebug && console.error('[chat] error:', error);
 
-    ws.onclose = () => CHAT_DEBUG && console.log('[chat] close');
+    ws.onclose = () => chatDebug && console.log('[chat] close');
   }
 
   function markUserScrollIntent() {
@@ -748,11 +750,9 @@
   }
 
   function handleMouseLeave() {
-    if (!paused) return;
-    const now = Date.now();
-    if (now - lastUserScrollTs < MOUSELEAVE_UNPAUSE_COOLDOWN_MS) return;
-    unpauseChat();
-  }
+      if (!paused) return;
+      unpauseChat();
+    }
 
   function handleKeyDown(e: KeyboardEvent) {
     switch (e.key) {
@@ -799,6 +799,17 @@
   }
 
   onMount(() => {
+    const unsubscribeSettings = settings.subscribe(() => {
+      chatDebug = isChatDebugEnabled();
+      const nextWsUrl = getWsUrl();
+      if (!nextWsUrl || nextWsUrl === currentWsUrl) return;
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      initializeWebSocket();
+    });
+
     if (isFetchHistoryOnLoad()) {
       fetchMessagesPage();
     } else {
@@ -820,6 +831,11 @@
     });
 
     return () => {
+      unsubscribeSettings();
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -828,6 +844,7 @@
 </script>
 
 <div class="chat-shell">
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     id="chat-container"
     class:paused={paused}
@@ -857,7 +874,7 @@
   {/if}
 </div>
 
-{#if import.meta?.env?.VITE_CHAT_DEBUG}
+{#if chatDebug}
   <div
     style="position:absolute;right:.5rem;bottom:.5rem;font:12px/1.2 monospace;background:#0008;color:#fff;padding:.25rem .5rem;border-radius:.5rem;z-index:9999"
   >
@@ -904,3 +921,4 @@
     z-index: 2;
   }
 </style>
+

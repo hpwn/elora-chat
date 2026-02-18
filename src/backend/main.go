@@ -108,6 +108,7 @@ func main() {
 	routes.SetupMessageRoutes(r)
 	routes.SetupDevRoutes(r)
 	routes.SetupDebugRoutes(r)
+	routes.SetupSourceRoutes(r)
 
 	rootMux := http.NewServeMux()
 	httpapi.RegisterHealth(rootMux, store)
