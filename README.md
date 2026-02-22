@@ -32,7 +32,7 @@ make bootstrap
 make up
 ```
 
-Within a few seconds the API and WebSocket endpoints will be available at `http://localhost:8080` and `ws://localhost:8080/ws/chat` by default. You can override both live in the Settings UI (persisted in browser storage) without rebuilding. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. Once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
+Within a few seconds the API and WebSocket endpoints will be available at `http://localhost:8080` and `ws://localhost:8080/ws/chat` by default. Non-secret runtime settings are now managed through `GET/PUT /api/config` and persisted in SQLite (`config_kv`) so UI changes survive restarts. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. Once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
 
 > ⚠️ `gnasty-harvester` always pulls the published `gnasty-chat` image specified by `GNASTY_IMAGE` (defaults to `gnasty-chat:latest`). Verify the resolved tag with `docker compose config` before proposing changes and see [docs/dev/harvester.md](docs/dev/harvester.md) for details on where to contribute harvester edits.
 
@@ -69,11 +69,12 @@ The Docker compose stack launches [gnasty](https://github.com/hpwn/gnasty) along
 Key environment variables to review after copying `.env.example`:
 
 - `ELORA_DB_PATH` / `GNASTY_SINK_SQLITE_PATH` – point both services at the same SQLite file inside the shared volume.
-- `TWITCH_CHANNEL` / `TWITCH_NICK` – gnasty's IRC join target and identity.
-- `YOUTUBE_URL` and/or `GNASTY_YT_CHANNEL_IDS` – YouTube Live selection knobs.
+- `TWITCH_CHANNEL` / `YOUTUBE_URL` / `TWITCH_NICK` - bootstrap defaults only; once `/api/config` is written, Elora persisted config is runtime authority.
 - `TWITCH_OAUTH_CLIENT_ID`, `TWITCH_OAUTH_CLIENT_SECRET`, `TWITCH_OAUTH_REDIRECT_URL` – required for the `/auth/twitch` flow that exports gnasty tokens.
 - `ELORA_TWITCH_WRITE_GNASTY_TOKENS` – leave enabled to keep gnasty's `${ELORA_DATA_DIR}/twitch_irc.pass` and `twitch_refresh.pass` up to date.
-- `ELORA_GNASTY_RELOAD_URL` – optional override for gnasty's reload endpoint (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+- `ELORA_GNASTY_ADMIN_BASE` - gnasty admin API base used by startup + `PUT /api/config` bulk sync through `POST /admin/config` (defaults to `http://gnasty-harvester:8765`).
+- `ELORA_GNASTY_RELOAD_URL` - optional token-reload endpoint override for Twitch OAuth/service-token refresh (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+- `ELORA_UI_*`, `ELORA_TAILER_*`, `ELORA_WS_*`, `GNASTY_*` non-secret runtime knobs, `VITE_PUBLIC_*` - bootstrap defaults only; once `/api/config` is written these env values are no longer the source of truth.
 
 After the stack is up, run `make configz` to confirm the shared volume paths and ingest driver. gnasty logs a reload message whenever fresh Twitch tokens land in the shared volume.
 
@@ -89,6 +90,8 @@ By default the Twitch OAuth callback also writes gnasty-compatible handoff files
 `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload` so gnasty reloads immediately. Set
 `ELORA_TWITCH_WRITE_GNASTY_TOKENS=false` (or `0`, `no`, `off`) to disable this automatic export when you
 prefer to manage the files manually, or override the webhook target with `ELORA_GNASTY_RELOAD_URL`.
+Runtime source and gnasty non-secret advanced settings are synced by Elora through
+`ELORA_GNASTY_ADMIN_BASE` using gnasty `POST /admin/config` and follow `/api/config` values.
 
 **Environment**
 

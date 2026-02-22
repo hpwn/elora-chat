@@ -329,15 +329,15 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		clauses = append(clauses, "ts >= ?")
 		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
-       if q.BeforeTS != nil {
-               if q.BeforeRowID != nil {
-                       clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
-                       args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
-               } else {
-                       clauses = append(clauses, "ts < ?")
-                       args = append(args, q.BeforeTS.UTC().UnixMilli())
-               }
-       }
+	if q.BeforeTS != nil {
+		if q.BeforeRowID != nil {
+			clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
+			args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
+		} else {
+			clauses = append(clauses, "ts < ?")
+			args = append(args, q.BeforeTS.UTC().UnixMilli())
+		}
+	}
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -623,6 +623,70 @@ func (s *Store) LatestSession(ctx context.Context) (*storage.Session, error) {
 		TokenExpiry: time.Unix(expiry, 0).UTC(),
 		UpdatedAt:   time.Unix(updated, 0).UTC(),
 	}, nil
+}
+
+// GetConfig fetches a persisted config blob by key.
+func (s *Store) GetConfig(ctx context.Context, key string) (*storage.ConfigRecord, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errors.New("sqlite: config key is empty")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT key, version, value_json, updated_at FROM config_kv WHERE key = ?`, key)
+	var (
+		record             storage.ConfigRecord
+		updatedAtUnixMilli int64
+	)
+	if err := row.Scan(&record.Key, &record.Version, &record.ValueJSON, &updatedAtUnixMilli); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlite: get config: %w", err)
+	}
+	record.UpdatedAt = time.UnixMilli(updatedAtUnixMilli).UTC()
+	return &record, nil
+}
+
+// UpsertConfig writes a config blob by key.
+func (s *Store) UpsertConfig(ctx context.Context, cfg *storage.ConfigRecord) error {
+	if s.db == nil {
+		return errors.New("sqlite: store not initialized")
+	}
+	if cfg == nil {
+		return errors.New("sqlite: config record is nil")
+	}
+	cfg.Key = strings.TrimSpace(cfg.Key)
+	if cfg.Key == "" {
+		return errors.New("sqlite: config key is empty")
+	}
+	if cfg.Version <= 0 {
+		return errors.New("sqlite: config version must be positive")
+	}
+
+	updatedAt := cfg.UpdatedAt.UTC()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO config_kv(key, version, value_json, updated_at)
+         VALUES(?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           version=excluded.version,
+           value_json=excluded.value_json,
+           updated_at=excluded.updated_at`,
+		cfg.Key,
+		cfg.Version,
+		cfg.ValueJSON,
+		updatedAt.UnixMilli(),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: upsert config: %w", err)
+	}
+	return nil
 }
 
 // UpsertSession creates or updates a stored session record.

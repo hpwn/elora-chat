@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://elora.chat/schemas/runtime-config.schema.json",
+  "title": "Elora Runtime Config",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "apiBaseUrl",
+    "wsUrl",
+    "allowedOrigins",
+    "twitchChannel",
+    "youtubeSourceUrl",
+    "features",
+    "tailer",
+    "websocket",
+    "ingest",
+    "gnasty"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 2 },
+    "apiBaseUrl": { "type": "string", "format": "uri" },
+    "wsUrl": { "type": "string", "format": "uri" },
+    "allowedOrigins": { "type": "array", "items": { "type": "string" } },
+    "twitchChannel": { "type": "string", "pattern": "^[a-z0-9_]*$" },
+    "youtubeSourceUrl": { "type": "string" },
+    "features": {
+      "type": "object",
+      "required": ["showBadges", "hideYouTubeAt", "wsEnvelope", "wsDropEmpty"],
+      "properties": {
+        "showBadges": { "type": "boolean" },
+        "hideYouTubeAt": { "type": "boolean" },
+        "wsEnvelope": { "type": "boolean" },
+        "wsDropEmpty": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "tailer": {
+      "type": "object",
+      "required": ["enabled", "pollIntervalMs", "maxBatch", "maxLagMs", "persistOffsets", "offsetPath"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pollIntervalMs": { "type": "integer", "minimum": 25, "maximum": 60000 },
+        "maxBatch": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "maxLagMs": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+        "persistOffsets": { "type": "boolean" },
+        "offsetPath": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "websocket": {
+      "type": "object",
+      "required": ["pingIntervalMs", "pongWaitMs", "writeDeadlineMs", "maxMessageBytes"],
+      "properties": {
+        "pingIntervalMs": { "type": "integer", "minimum": 500, "maximum": 120000 },
+        "pongWaitMs": { "type": "integer", "minimum": 500, "maximum": 120000 },
+        "writeDeadlineMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
+        "maxMessageBytes": { "type": "integer", "minimum": 1024, "maximum": 16777216 }
+      },
+      "additionalProperties": false
+    },
+    "ingest": {
+      "type": "object",
+      "required": ["gnastyBin", "gnastyArgs", "backoffBaseMs", "backoffMaxMs"],
+      "properties": {
+        "gnastyBin": { "type": "string" },
+        "gnastyArgs": { "type": "array", "items": { "type": "string" } },
+        "backoffBaseMs": { "type": "integer", "minimum": 100, "maximum": 60000 },
+        "backoffMaxMs": { "type": "integer", "minimum": 1000, "maximum": 600000 }
+      },
+      "additionalProperties": false
+    },
+    "gnasty": {
+      "type": "object",
+      "required": ["sinks", "twitch", "youtube"],
+      "properties": {
+        "sinks": {
+          "type": "object",
+          "required": ["enabled", "batchSize", "flushMaxMs"],
+          "properties": {
+            "enabled": { "type": "array", "items": { "type": "string" } },
+            "batchSize": { "type": "integer", "minimum": 1 },
+            "flushMaxMs": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "twitch": {
+          "type": "object",
+          "required": ["nick", "tls", "debugDrops", "backoffMinMs", "backoffMaxMs", "refreshBackoffMinMs", "refreshBackoffMaxMs"],
+          "properties": {
+            "nick": { "type": "string" },
+            "tls": { "type": "boolean" },
+            "debugDrops": { "type": "boolean" },
+            "backoffMinMs": { "type": "integer", "minimum": 1 },
+            "backoffMaxMs": { "type": "integer", "minimum": 1 },
+            "refreshBackoffMinMs": { "type": "integer", "minimum": 1 },
+            "refreshBackoffMaxMs": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "youtube": {
+          "type": "object",
+          "required": ["retrySeconds", "dumpUnhandled", "pollTimeoutSecs", "pollIntervalMs", "debug"],
+          "properties": {
+            "retrySeconds": { "type": "integer", "minimum": 1 },
+            "dumpUnhandled": { "type": "boolean" },
+            "pollTimeoutSecs": { "type": "integer", "minimum": 0 },
+            "pollIntervalMs": { "type": "integer", "minimum": 0 },
+            "debug": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$comment": "Env-only secrets (never persisted or returned): TWITCH_OAUTH_CLIENT_SECRET, YOUTUBE_API_KEY"
+}

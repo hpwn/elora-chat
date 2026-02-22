@@ -1,4 +1,7 @@
 services:
+  elora-chat:
+    environment:
+      ELORA_GNASTY_ADMIN_BASE: ${ELORA_GNASTY_ADMIN_BASE:-http://gnasty-harvester:8765}
   gnasty-harvester:
     build:
       context: ../gnasty-chat

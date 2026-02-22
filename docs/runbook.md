@@ -71,9 +71,9 @@ ored, making it a safe place for `elora.db`, `gnasty.db`, and Twitch token hando
 
 The store is initialised before routing and reused by the HTTP API, WebSocket history loader, and the DB tailer.
 
-### Tailer / publisher (`ELORA_TAILER_*`)
+### Tailer / publisher (`/api/config`, bootstrap from `ELORA_TAILER_*`)
 
-`tailer.Config` is derived from `ELORA_TAILER_*` and orchestrates the background publisher that reads from SQLite and broadcasts frames over the WebSocket hub:
+`tailer.Config` is derived from persisted runtime config (`/api/config`) and orchestrates the background publisher that reads from SQLite and broadcasts frames over the WebSocket hub. `ELORA_TAILER_*` values are bootstrap defaults only.
 
 | Variable | Description | Effect |
 | --- | --- | --- |
@@ -121,17 +121,19 @@ Tuning knobs:
 #### gnasty reload hook
 
 The Twitch callback posts to gnasty after exporting fresh tokens. Override the target with `ELORA_GNASTY_RELOAD_URL` (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+This hook is token-reload-only.
 
-#### Channel selection
+#### Runtime authority and gnasty sync
 
-Pass Twitch and YouTube selectors via the shared `.env` file so both containers agree on the upstream rooms:
+Elora is the runtime authority for all non-secret settings. On startup and after `PUT /api/config`, Elora pushes the gnasty subset with one bulk request to `POST /admin/config` at `ELORA_GNASTY_ADMIN_BASE` (default `http://gnasty-harvester:8765`).
+Pass Twitch/YouTube selectors and gnasty knobs via `.env` only for first-boot bootstrap defaults:
 
-- `TWITCH_CHANNEL` and `TWITCH_NICK` inform gnasty which IRC room to join and which nickname to present.
-- `YOUTUBE_URL` and/or `GNASTY_YT_CHANNEL_IDS` select the YouTube Live source.
+- `TWITCH_CHANNEL`, `YOUTUBE_URL`, and `TWITCH_NICK`
+- optional `ELORA_WS_*`, `ELORA_TAILER_*`, and `GNASTY_*` non-secret runtime knobs
 
 The Twitch OAuth credentials (`TWITCH_OAUTH_CLIENT_ID`, `TWITCH_OAUTH_CLIENT_SECRET`, `TWITCH_OAUTH_REDIRECT_URL`) are required for the login flow that populates gnasty's token files.
 
-Set `GNASTY_TWITCH_DEBUG_DROPS=1` in `.env` when you need verbose drop diagnostics from gnasty's Twitch ingest path during local debugging. Leave it unset (or `0`) for normal operation.
+Set `GNASTY_TWITCH_DEBUG_DROPS=1` in `.env` only when you want that value as the first-boot default; after startup use `/api/config` so Elora persists and reapplies it.
 
 #### Sign in with Twitch
 
@@ -152,7 +154,7 @@ Verify the handoff end to end by:
 ### gnasty + SQLite tailer (default)
 
 - gnasty writes frames into the shared volume (`GNASTY_SINK_SQLITE_PATH` should match `ELORA_DB_PATH`).
-- Configure Twitch/YouTube selectors via `TWITCH_CHANNEL`, `TWITCH_NICK`, `YOUTUBE_URL`, and/or `GNASTY_YT_CHANNEL_IDS`.
+- Configure Twitch/YouTube selectors via Elora Settings (`/api/config`). `.env` values are bootstrap-only defaults.
 - The elora tailer (`ELORA_DB_TAIL_ENABLED=1`) polls the same database and republishes new rows over WebSocket.
 - `/configz` shows `ingest.driver="gnasty"`, the active journal mode, tailer interval/batch/lag thresholds, and the resolved offset path. The startup log includes a `config_summary` JSON line with the same fields for quick grepping alongside gnasty's logs.
 
@@ -170,6 +172,6 @@ Troubleshooting checklist:
 - **`make ws-*` shows no frames** – verify `/configz` reports `tailer.enabled=true` when relying on gnasty, and that gnasty is writing to the same database path. Use `make configz` to confirm `allowed_origins` allows your websocket client.
 - **`/configz` shows `allow_any_origin=false` with an empty list** – set `ELORA_WS_ALLOWED_ORIGINS` or `ELORA_ALLOWED_ORIGINS` to a comma-separated list of origins.
 - **`ingest.driver` unexpected** – it should always be `gnasty`. Double-check that gnasty and elora-chat share the same SQLite volume and review the `config_summary` log line for the resolved paths.
-- **Tailer lag warnings** – adjust `ELORA_TAILER_MAX_BATCH`/`ELORA_TAILER_POLL_MS`/`ELORA_TAILER_MAX_LAG_MS` to increase throughput, or reduce gnasty's flush batch size.
+- **Tailer lag warnings** – adjust tailer values in `/api/config` (or seed first boot with `ELORA_TAILER_*`) to increase throughput, or reduce gnasty sink flush/batch values.
 
 For deeper wiring details (env variable precedence, command examples, and failure modes) this runbook plus the `/configz` endpoint act as the canonical source of truth.

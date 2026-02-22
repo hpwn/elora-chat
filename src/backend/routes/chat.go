@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -77,6 +78,8 @@ var (
 		hideYouTubeAt: true,
 		showBadges:    true,
 	}
+	overrideWSEnvelope  *bool
+	overrideWSDropEmpty *bool
 )
 
 var tokenizer Tokenizer
@@ -239,6 +242,8 @@ type Message struct {
 	Badges        []Badge `json:"badges"`
 	BadgesRaw     any     `json:"badges_raw,omitempty"`
 	Source        string  `json:"source"`
+	SourceChannel string  `json:"source_channel,omitempty"`
+	SourceURL     string  `json:"source_url,omitempty"`
 	Colour        string  `json:"colour"`
 	UsernameColor string  `json:"username_color,omitempty"`
 }
@@ -294,6 +299,10 @@ func rawJSONLooksLikeChatMessage(raw string) bool {
 }
 
 func wsDropEmptyEnabled() bool {
+	if overrideWSDropEmpty != nil {
+		return *overrideWSDropEmpty
+	}
+
 	raw := strings.TrimSpace(os.Getenv("ELORA_WS_DROP_EMPTY"))
 	if raw == "" {
 		return true
@@ -680,6 +689,8 @@ func (m Message) toChatPayload() ws.ChatPayload {
 		Badges:        badges,
 		BadgesRaw:     m.BadgesRaw,
 		Source:        m.Source,
+		SourceChannel: m.SourceChannel,
+		SourceURL:     m.SourceURL,
 		Colour:        m.Colour,
 		UsernameColor: m.UsernameColor,
 	}
@@ -1069,6 +1080,294 @@ func computeUsernameColor(msg Message, row storage.Message) string {
 	return sanitizeUsernameColorForDarkBG(colorFromName(""))
 }
 
+func normalizeTwitchChannelIdentity(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, ".") && !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		if !strings.HasSuffix(strings.ToLower(parsed.Hostname()), "twitch.tv") {
+			return ""
+		}
+		raw = parsed.Path
+	}
+
+	raw = strings.Trim(raw, "/")
+	raw = strings.TrimPrefix(raw, "@")
+	if raw == "" {
+		return ""
+	}
+	login := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case '/', '?', '#':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(login) == 0 {
+		return ""
+	}
+	out := strings.ToLower(strings.TrimSpace(login[0]))
+	if out == "" {
+		return ""
+	}
+	for _, r := range out {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return out
+}
+
+func normalizeYouTubeVideoIDIdentity(raw string) string {
+	id := strings.TrimSpace(raw)
+	if len(id) != 11 {
+		return ""
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return id
+}
+
+func normalizeYouTubeHandleIdentity(raw string) string {
+	handle := strings.TrimSpace(raw)
+	handle = strings.TrimPrefix(handle, "@")
+	if handle == "" {
+		return ""
+	}
+	for _, r := range handle {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return handle
+}
+
+func canonicalYouTubeWatchIdentity(videoID string) string {
+	return "https://www.youtube.com/watch?v=" + videoID
+}
+
+func canonicalYouTubeLiveIdentity(handle string) string {
+	return "https://www.youtube.com/@" + handle + "/live"
+}
+
+func normalizeYouTubeSourceIdentity(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if id := normalizeYouTubeVideoIDIdentity(raw); id != "" {
+		return canonicalYouTubeWatchIdentity(id)
+	}
+	if handle := normalizeYouTubeHandleIdentity(raw); handle != "" {
+		return canonicalYouTubeLiveIdentity(handle)
+	}
+	candidate := raw
+	if strings.Contains(raw, ".") && !strings.Contains(raw, "://") {
+		candidate = "https://" + raw
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if strings.HasSuffix(host, "youtu.be") {
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) == 0 {
+			return ""
+		}
+		if id := normalizeYouTubeVideoIDIdentity(parts[0]); id != "" {
+			return canonicalYouTubeWatchIdentity(id)
+		}
+		return ""
+	}
+	if !strings.HasSuffix(host, "youtube.com") {
+		return ""
+	}
+
+	path := strings.Trim(parsed.Path, "/")
+	if strings.HasPrefix(path, "@") {
+		parts := strings.Split(path, "/")
+		if len(parts) > 0 {
+			if handle := normalizeYouTubeHandleIdentity(strings.TrimPrefix(parts[0], "@")); handle != "" {
+				return canonicalYouTubeLiveIdentity(handle)
+			}
+		}
+	}
+	if id := normalizeYouTubeVideoIDIdentity(parsed.Query().Get("v")); id != "" {
+		return canonicalYouTubeWatchIdentity(id)
+	}
+	return ""
+}
+
+func normalizeRawKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func extractRawStringByKeys(rawJSON string, keys []string) string {
+	rawJSON = strings.TrimSpace(rawJSON)
+	if rawJSON == "" {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(rawJSON), &decoded); err != nil {
+		return ""
+	}
+
+	lookup := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if normalized := normalizeRawKey(key); normalized != "" {
+			lookup[normalized] = struct{}{}
+		}
+	}
+
+	var walk func(node any, depth int) string
+	walk = func(node any, depth int) string {
+		if depth > 6 || node == nil {
+			return ""
+		}
+		switch current := node.(type) {
+		case map[string]any:
+			directKeys := make([]string, 0, len(current))
+			for key := range current {
+				directKeys = append(directKeys, key)
+			}
+			sort.Strings(directKeys)
+			for _, key := range directKeys {
+				if _, ok := lookup[normalizeRawKey(key)]; !ok {
+					continue
+				}
+				if value, ok := current[key].(string); ok {
+					value = strings.TrimSpace(value)
+					if value != "" {
+						return value
+					}
+				}
+			}
+			for _, key := range directKeys {
+				if found := walk(current[key], depth+1); found != "" {
+					return found
+				}
+			}
+		case []any:
+			for _, entry := range current {
+				if found := walk(entry, depth+1); found != "" {
+					return found
+				}
+			}
+		}
+		return ""
+	}
+
+	return walk(decoded, 0)
+}
+
+func resolveMessageSourceIdentity(msg *Message, row storage.Message) {
+	if msg == nil {
+		return
+	}
+
+	source := strings.ToLower(strings.TrimSpace(msg.Source))
+	if source == "" {
+		source = strings.ToLower(strings.TrimSpace(row.Platform))
+	}
+
+	switch source {
+	case "twitch":
+		channel := normalizeTwitchChannelIdentity(msg.SourceChannel)
+		if channel == "" {
+			channel = normalizeTwitchChannelIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"channel", "channel_name", "channel_login", "broadcaster", "broadcaster_login", "room", "room_name",
+			}))
+		}
+		if channel == "" {
+			channel = normalizeTwitchChannelIdentity(msg.SourceURL)
+		}
+		msg.SourceChannel = channel
+		msg.SourceURL = ""
+	case "youtube":
+		sourceURL := normalizeYouTubeSourceIdentity(msg.SourceURL)
+		if sourceURL == "" {
+			sourceURL = normalizeYouTubeSourceIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"url", "source_url", "sourceurl", "watch_url", "watchurl", "video_url", "videourl",
+			}))
+		}
+		if sourceURL == "" {
+			if videoID := normalizeYouTubeVideoIDIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"video_id", "videoid", "live_id", "stream_id",
+			})); videoID != "" {
+				sourceURL = canonicalYouTubeWatchIdentity(videoID)
+			}
+		}
+		if sourceURL == "" {
+			if handle := normalizeYouTubeHandleIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"channel_handle", "channelhandle", "handle",
+			})); handle != "" {
+				sourceURL = canonicalYouTubeLiveIdentity(handle)
+			}
+		}
+		msg.SourceURL = sourceURL
+		msg.SourceChannel = ""
+	default:
+		msg.SourceChannel = normalizeTwitchChannelIdentity(msg.SourceChannel)
+		msg.SourceURL = normalizeYouTubeSourceIdentity(msg.SourceURL)
+	}
+
+	applyRuntimeSourceIdentity(msg)
+}
+
+func applyRuntimeSourceIdentity(msg *Message) {
+	if msg == nil {
+		return
+	}
+
+	cfg := currentRuntimeConfig()
+	source := strings.ToLower(strings.TrimSpace(msg.Source))
+
+	switch source {
+	case "twitch":
+		msg.SourceChannel = normalizeTwitchChannelIdentity(msg.SourceChannel)
+		if msg.SourceChannel == "" {
+			msg.SourceChannel = normalizeTwitchChannelIdentity(cfg.TwitchChannel)
+		}
+		msg.SourceURL = ""
+	case "youtube":
+		msg.SourceURL = normalizeYouTubeSourceIdentity(msg.SourceURL)
+		if msg.SourceURL == "" {
+			msg.SourceURL = normalizeYouTubeSourceIdentity(cfg.YouTubeSourceURL)
+		}
+		msg.SourceChannel = ""
+	default:
+		msg.SourceChannel = normalizeTwitchChannelIdentity(msg.SourceChannel)
+		msg.SourceURL = normalizeYouTubeSourceIdentity(msg.SourceURL)
+	}
+}
+
 func parseChatMessageFromRawJSON(raw string) (Message, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || !rawJSONLooksLikeChatMessage(raw) {
@@ -1248,6 +1547,10 @@ func encodeStoredBadges(badges []Badge) string {
 }
 
 func wsEnvelopeEnabled() bool {
+	if overrideWSEnvelope != nil {
+		return *overrideWSEnvelope
+	}
+
 	raw := strings.TrimSpace(os.Getenv("ELORA_WS_ENVELOPE"))
 	if raw == "" {
 		return true
@@ -1313,6 +1616,7 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 			}
 			msg.UsernameColor = computeUsernameColor(msg, m)
 			msg.Colour = msg.UsernameColor
+			resolveMessageSourceIdentity(&msg, m)
 			msg.normalize()
 			return json.Marshal(msg.toChatPayload())
 		}
@@ -1336,6 +1640,7 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 	}
 	fallback.UsernameColor = computeUsernameColor(fallback, m)
 	fallback.Colour = fallback.UsernameColor
+	resolveMessageSourceIdentity(&fallback, m)
 	fallback.normalize()
 
 	data, err := json.Marshal(fallback.toChatPayload())
@@ -1352,6 +1657,7 @@ func sanitizeMessagePayload(payload []byte) ([]byte, error) {
 		return nil, err
 	}
 	msg.normalize()
+	applyRuntimeSourceIdentity(&msg)
 
 	if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
 		return nil, errDropMessage
@@ -1374,8 +1680,7 @@ func InitRoutes(store storage.Store) {
 	}
 	subscribersMu.Unlock()
 
-	activeWebsocketConfig = loadWebsocketConfigFromEnv()
-	activeUIConfig = loadUIConfigFromEnv()
+	initRuntimeConfig(store)
 
 	// Initialize tokenizer
 	tokenizer.TextEffectSep = ':'
@@ -1573,6 +1878,7 @@ func enrichTailerMessage(m storage.Message) Message {
 	}
 
 	msg.Source = normalizeSource(msg.Source)
+	resolveMessageSourceIdentity(&msg, m)
 	msg.normalize()
 
 	return msg
@@ -1859,6 +2165,16 @@ func WebsocketConfig() WebsocketRuntimeConfig {
 	}
 }
 
+// SetWebsocketConfig applies runtime websocket tuning for newly opened connections.
+func SetWebsocketConfig(cfg WebsocketRuntimeConfig) {
+	activeWebsocketConfig = websocketConfig{
+		pingInterval:  cfg.PingInterval,
+		pongWait:      cfg.PongWait,
+		writeDeadline: cfg.WriteDeadline,
+		maxBytes:      cfg.MaxMessage,
+	}
+}
+
 // AllowedOriginsConfig returns whether all origins are permitted along with the normalized allow-list.
 func AllowedOriginsConfig() (allowAll bool, origins []string) {
 	allowedOriginsMu.RLock()
@@ -1900,6 +2216,20 @@ func loadUIConfigFromEnv() uiConfig {
 // UIConfig returns the active presentation toggles for the frontend.
 func UIConfig() (hideYouTubeAt bool, showBadges bool) {
 	return activeUIConfig.hideYouTubeAt, activeUIConfig.showBadges
+}
+
+// SetUIConfig applies runtime message presentation toggles.
+func SetUIConfig(hideYouTubeAt bool, showBadges bool) {
+	activeUIConfig = uiConfig{
+		hideYouTubeAt: hideYouTubeAt,
+		showBadges:    showBadges,
+	}
+}
+
+// SetWSMessageBehavior applies runtime toggles for envelope/drop behavior.
+func SetWSMessageBehavior(envelope bool, dropEmpty bool) {
+	overrideWSEnvelope = &envelope
+	overrideWSDropEmpty = &dropEmpty
 }
 
 func durationFromEnv(key string, def int) time.Duration {

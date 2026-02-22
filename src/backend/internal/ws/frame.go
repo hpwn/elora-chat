@@ -9,6 +9,8 @@ type ChatPayload struct {
 	Badges        []any  `json:"badges"`
 	BadgesRaw     any    `json:"badges_raw,omitempty"`
 	Source        string `json:"source"`
+	SourceChannel string `json:"source_channel,omitempty"`
+	SourceURL     string `json:"source_url,omitempty"`
 	Colour        string `json:"colour"`
 	UsernameColor string `json:"username_color,omitempty"`
 }

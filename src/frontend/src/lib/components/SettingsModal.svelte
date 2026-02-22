@@ -3,6 +3,7 @@
   import ExportPanel from './ExportPanel.svelte';
   import { apiPath } from '$lib/config';
   import { pushRecent, settings, type Settings } from '$lib/stores/settings';
+  import type { RuntimeConfig, RuntimeConfigResponse } from '$lib/types/runtime-config';
 
   type TopTwitchItem = {
     login: string;
@@ -29,14 +30,49 @@
   let youtubeTopLoading = false;
   let twitchTopError = '';
   let youtubeTopError = '';
+  let configError = '';
+  let configLoading = false;
+  let wasOpen = false;
+  let backendConfig: RuntimeConfig | null = null;
   let twitchTopList: TopTwitchItem[] = [];
   let youtubeTopList: TopYouTubeItem[] = [];
+  let allowedOriginsDraft = '';
+  let tailerPollDraft = 0;
+  let tailerBatchDraft = 0;
+  let tailerLagDraft = 0;
+  let tailerPersistDraft = false;
+  let tailerOffsetDraft = '';
+  let wsPingDraft = 0;
+  let wsPongDraft = 0;
+  let wsWriteDeadlineDraft = 0;
+  let wsMaxMessageDraft = 0;
+  let gnastySinkEnabledDraft = '';
+  let gnastySinkBatchDraft = 0;
+  let gnastySinkFlushDraft = 0;
+  let gnastyTwitchNickDraft = '';
+  let gnastyTwitchTLSDraft = true;
+  let gnastyTwitchDebugDropsDraft = false;
+  let gnastyTwitchBackoffMinDraft = 0;
+  let gnastyTwitchBackoffMaxDraft = 0;
+  let gnastyTwitchRefreshBackoffMinDraft = 0;
+  let gnastyTwitchRefreshBackoffMaxDraft = 0;
+  let gnastyYTRetryDraft = 0;
+  let gnastyYTDumpUnhandledDraft = false;
+  let gnastyYTPollTimeoutDraft = 0;
+  let gnastyYTPollIntervalDraft = 0;
+  let gnastyYTDebugDraft = false;
 
-  $: if (open) {
-    tick().then(() => {
+  $: if (open && !wasOpen) {
+    wasOpen = true;
+    tick().then(async () => {
       dialog?.focus();
+      await loadBackendConfig();
       syncDraftsFromSettings();
     });
+  }
+
+  $: if (!open && wasOpen) {
+    wasOpen = false;
   }
 
   function close() {
@@ -58,67 +94,196 @@
     youtubeDraft = $settings.youtubeUrl || $settings.recentYouTube[0] || '';
   }
 
-  function applyConnectionSettings() {
+  async function applyConnectionSettings() {
     const apiBaseUrl = apiBaseDraft.trim();
     const wsUrl = wsUrlDraft.trim();
-    updateSettings({ apiBaseUrl, wsUrl });
-    apiBaseDraft = apiBaseUrl;
-    wsUrlDraft = wsUrl;
+    await applyBackendConfig((current) => ({
+      ...current,
+      apiBaseUrl,
+      wsUrl
+    }));
   }
 
-  function normalizeTwitchValue(raw: string): string {
-    const trimmed = raw.trim();
-    if (!trimmed) return '';
-
-    try {
-      const url = new URL(trimmed);
-      if (url.hostname.toLowerCase().includes('twitch.tv')) {
-        const login = url.pathname.split('/').filter(Boolean)[0] ?? '';
-        if (login) return `https://www.twitch.tv/${login}`;
-      }
-      return trimmed;
-    } catch {
-      const login = trimmed.replace(/^@/, '').replace(/^\/+/, '').split(/[/?#]/)[0];
-      return login ? `https://www.twitch.tv/${login}` : trimmed;
+  async function applyTwitch(value?: string) {
+    const input = (value ?? twitchDraft).trim();
+    if (!input) return;
+    const updated = await applyBackendConfig((current) => ({
+      ...current,
+      twitchChannel: input
+    }));
+    if (updated?.twitchChannel) {
+      const twitchUrl = toTwitchURL(updated.twitchChannel);
+      updateSettings({ recentTwitch: pushRecent($settings.recentTwitch, twitchUrl) });
     }
   }
 
-  function normalizeYouTubeValue(raw: string): string {
-    const trimmed = raw.trim();
-    if (!trimmed) return '';
-
-    if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
-      return `https://www.youtube.com/watch?v=${trimmed}`;
+  async function applyYouTube(value?: string) {
+    const input = (value ?? youtubeDraft).trim();
+    if (!input) return;
+    const updated = await applyBackendConfig((current) => ({
+      ...current,
+      youtubeSourceUrl: input
+    }));
+    if (updated?.youtubeSourceUrl) {
+      updateSettings({ recentYouTube: pushRecent($settings.recentYouTube, updated.youtubeSourceUrl) });
     }
+  }
 
-    try {
-      const url = new URL(trimmed);
-      if (url.hostname.toLowerCase().includes('youtu')) {
-        if (url.hostname.toLowerCase() === 'youtu.be') {
-          const id = url.pathname.split('/').filter(Boolean)[0] ?? '';
-          if (id) return `https://www.youtube.com/watch?v=${id}`;
+  function toTwitchURL(channel: string): string {
+    const trimmed = channel.trim();
+    if (!trimmed) return '';
+    return `https://www.twitch.tv/${trimmed}`;
+  }
+
+  function syncSettingsFromBackend(config: RuntimeConfig) {
+    const twitchUrl = toTwitchURL(config.twitchChannel);
+    const youtubeUrl = config.youtubeSourceUrl;
+    updateSettings({
+      apiBaseUrl: config.apiBaseUrl,
+      wsUrl: config.wsUrl,
+      twitchUrl,
+      youtubeUrl,
+      showBadges: config.features.showBadges,
+      hideYouTubeAt: config.features.hideYouTubeAt,
+      recentTwitch: twitchUrl ? pushRecent($settings.recentTwitch, twitchUrl) : $settings.recentTwitch,
+      recentYouTube: youtubeUrl ? pushRecent($settings.recentYouTube, youtubeUrl) : $settings.recentYouTube
+    });
+    syncAdvancedDrafts(config);
+    syncDraftsFromSettings();
+  }
+
+  function syncAdvancedDrafts(config: RuntimeConfig) {
+    allowedOriginsDraft = (config.allowedOrigins || []).join(', ');
+    tailerPollDraft = config.tailer.pollIntervalMs;
+    tailerBatchDraft = config.tailer.maxBatch;
+    tailerLagDraft = config.tailer.maxLagMs;
+    tailerPersistDraft = config.tailer.persistOffsets;
+    tailerOffsetDraft = config.tailer.offsetPath;
+    wsPingDraft = config.websocket.pingIntervalMs;
+    wsPongDraft = config.websocket.pongWaitMs;
+    wsWriteDeadlineDraft = config.websocket.writeDeadlineMs;
+    wsMaxMessageDraft = config.websocket.maxMessageBytes;
+    gnastySinkEnabledDraft = (config.gnasty.sinks.enabled || []).join(', ');
+    gnastySinkBatchDraft = config.gnasty.sinks.batchSize;
+    gnastySinkFlushDraft = config.gnasty.sinks.flushMaxMs;
+    gnastyTwitchNickDraft = config.gnasty.twitch.nick;
+    gnastyTwitchTLSDraft = config.gnasty.twitch.tls;
+    gnastyTwitchDebugDropsDraft = config.gnasty.twitch.debugDrops;
+    gnastyTwitchBackoffMinDraft = config.gnasty.twitch.backoffMinMs;
+    gnastyTwitchBackoffMaxDraft = config.gnasty.twitch.backoffMaxMs;
+    gnastyTwitchRefreshBackoffMinDraft = config.gnasty.twitch.refreshBackoffMinMs;
+    gnastyTwitchRefreshBackoffMaxDraft = config.gnasty.twitch.refreshBackoffMaxMs;
+    gnastyYTRetryDraft = config.gnasty.youtube.retrySeconds;
+    gnastyYTDumpUnhandledDraft = config.gnasty.youtube.dumpUnhandled;
+    gnastyYTPollTimeoutDraft = config.gnasty.youtube.pollTimeoutSecs;
+    gnastyYTPollIntervalDraft = config.gnasty.youtube.pollIntervalMs;
+    gnastyYTDebugDraft = config.gnasty.youtube.debug;
+  }
+
+  function splitCSVList(value: string): string[] {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+
+  async function applyAdvancedSettings() {
+    await applyBackendConfig((current) => ({
+      ...current,
+      allowedOrigins: splitCSVList(allowedOriginsDraft),
+      tailer: {
+        ...current.tailer,
+        pollIntervalMs: tailerPollDraft,
+        maxBatch: tailerBatchDraft,
+        maxLagMs: tailerLagDraft,
+        persistOffsets: tailerPersistDraft,
+        offsetPath: tailerOffsetDraft
+      },
+      websocket: {
+        ...current.websocket,
+        pingIntervalMs: wsPingDraft,
+        pongWaitMs: wsPongDraft,
+        writeDeadlineMs: wsWriteDeadlineDraft,
+        maxMessageBytes: wsMaxMessageDraft
+      },
+      gnasty: {
+        sinks: {
+          enabled: splitCSVList(gnastySinkEnabledDraft),
+          batchSize: gnastySinkBatchDraft,
+          flushMaxMs: gnastySinkFlushDraft
+        },
+        twitch: {
+          nick: gnastyTwitchNickDraft.trim(),
+          tls: gnastyTwitchTLSDraft,
+          debugDrops: gnastyTwitchDebugDropsDraft,
+          backoffMinMs: gnastyTwitchBackoffMinDraft,
+          backoffMaxMs: gnastyTwitchBackoffMaxDraft,
+          refreshBackoffMinMs: gnastyTwitchRefreshBackoffMinDraft,
+          refreshBackoffMaxMs: gnastyTwitchRefreshBackoffMaxDraft
+        },
+        youtube: {
+          retrySeconds: gnastyYTRetryDraft,
+          dumpUnhandled: gnastyYTDumpUnhandledDraft,
+          pollTimeoutSecs: gnastyYTPollTimeoutDraft,
+          pollIntervalMs: gnastyYTPollIntervalDraft,
+          debug: gnastyYTDebugDraft
         }
-        const id = url.searchParams.get('v') ?? '';
-        if (id) return `https://www.youtube.com/watch?v=${id}`;
       }
-      return trimmed;
-    } catch {
-      return trimmed;
+    }));
+  }
+
+  async function loadBackendConfig(): Promise<RuntimeConfig | null> {
+    configError = '';
+    configLoading = true;
+    try {
+      const response = await fetch(apiPath('/api/config'));
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as RuntimeConfigResponse;
+      backendConfig = payload.config;
+      syncSettingsFromBackend(payload.config);
+      return payload.config;
+    } catch (error) {
+      configError = error instanceof Error ? error.message : 'Failed to load runtime config';
+      return null;
+    } finally {
+      configLoading = false;
     }
   }
 
-  function applyTwitch(value?: string) {
-    const normalized = normalizeTwitchValue(value ?? twitchDraft);
-    if (!normalized) return;
-    updateSettings({ twitchUrl: normalized, recentTwitch: pushRecent($settings.recentTwitch, normalized) });
-    twitchDraft = normalized;
+  async function saveBackendConfig(next: RuntimeConfig): Promise<RuntimeConfig | null> {
+    configError = '';
+    try {
+      const putPayload = 'config' in (next as RuntimeConfig | RuntimeConfigResponse) ? (next as RuntimeConfigResponse).config : next;
+      const response = await fetch(apiPath('/api/config'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(putPayload)
+      });
+      const payload = (await response.json().catch(() => null)) as RuntimeConfigResponse | { error?: string; message?: string } | null;
+      if (!response.ok) {
+        const fallback = `HTTP ${response.status}`;
+        const message = payload && typeof payload === 'object' ? payload.message || payload.error || fallback : fallback;
+        throw new Error(message);
+      }
+      if (!payload || typeof payload !== 'object' || !('config' in payload)) {
+        throw new Error('Runtime config response missing config payload');
+      }
+      const updated = (payload as RuntimeConfigResponse).config;
+      backendConfig = updated;
+      syncSettingsFromBackend(updated);
+      return updated;
+    } catch (error) {
+      configError = error instanceof Error ? error.message : 'Failed to save runtime config';
+      return null;
+    }
   }
 
-  function applyYouTube(value?: string) {
-    const normalized = normalizeYouTubeValue(value ?? youtubeDraft);
-    if (!normalized) return;
-    updateSettings({ youtubeUrl: normalized, recentYouTube: pushRecent($settings.recentYouTube, normalized) });
-    youtubeDraft = normalized;
+  async function applyBackendConfig(mutator: (current: RuntimeConfig) => RuntimeConfig): Promise<RuntimeConfig | null> {
+    const current = backendConfig ?? (await loadBackendConfig());
+    if (!current) return null;
+    return saveBackendConfig(mutator(current));
   }
 
   async function loadTopTwitch() {
@@ -212,6 +377,12 @@
     </nav>
 
     <div class="modal__content">
+      {#if configLoading}
+        <p class="current">Loading runtime config...</p>
+      {/if}
+      {#if configError}
+        <p class="error">{configError}</p>
+      {/if}
       {#if activeTab === 'quick'}
         <section class="section">
           <h3>Connection</h3>
@@ -311,11 +482,152 @@
         </section>
       {:else if activeTab === 'advanced'}
         <section class="section">
-          <h3>Advanced</h3>
+          <h3>Sources</h3>
+          <div class="apply-row">
+            <input
+              type="text"
+              bind:value={twitchDraft}
+              on:blur={() => applyTwitch()}
+              placeholder="channel or https://www.twitch.tv/..."
+            />
+            <button type="button" on:click={() => applyTwitch()}>Apply Twitch</button>
+          </div>
+          <div class="apply-row">
+            <input
+              type="text"
+              bind:value={youtubeDraft}
+              on:blur={() => applyYouTube()}
+              placeholder="video id, handle, or https://www.youtube.com/..."
+            />
+            <button type="button" on:click={() => applyYouTube()}>Apply YouTube</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <h3>Tailer</h3>
+          <label>
+            Poll interval (ms)
+            <input type="number" min="25" bind:value={tailerPollDraft} />
+          </label>
+          <label>
+            Max batch
+            <input type="number" min="1" bind:value={tailerBatchDraft} />
+          </label>
+          <label>
+            Max lag (ms)
+            <input type="number" min="0" bind:value={tailerLagDraft} />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={tailerPersistDraft} />
+            Persist offsets
+          </label>
+          <label>
+            Offset path
+            <input type="text" bind:value={tailerOffsetDraft} placeholder="/data/gnasty.db.offset.json" />
+          </label>
+        </section>
+
+        <section class="section">
+          <h3>WebSocket</h3>
+          <label>
+            Allowed origins (comma-separated)
+            <input type="text" bind:value={allowedOriginsDraft} placeholder="http://localhost:5173" />
+          </label>
+          <label>
+            Ping interval (ms)
+            <input type="number" min="500" bind:value={wsPingDraft} />
+          </label>
+          <label>
+            Pong wait (ms)
+            <input type="number" min="500" bind:value={wsPongDraft} />
+          </label>
+          <label>
+            Write deadline (ms)
+            <input type="number" min="0" bind:value={wsWriteDeadlineDraft} />
+          </label>
+          <label>
+            Max message bytes
+            <input type="number" min="1024" bind:value={wsMaxMessageDraft} />
+          </label>
+        </section>
+
+        <section class="section">
+          <h3>Gnasty Advanced</h3>
+          <label>
+            Sinks enabled (comma-separated)
+            <input type="text" bind:value={gnastySinkEnabledDraft} placeholder="sqlite" />
+          </label>
+          <label>
+            Sink batch size
+            <input type="number" min="1" bind:value={gnastySinkBatchDraft} />
+          </label>
+          <label>
+            Sink flush max (ms)
+            <input type="number" min="0" bind:value={gnastySinkFlushDraft} />
+          </label>
+          <label>
+            Twitch nick
+            <input type="text" bind:value={gnastyTwitchNickDraft} placeholder="elora_bot" />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={gnastyTwitchTLSDraft} />
+            Twitch TLS
+          </label>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={gnastyTwitchDebugDropsDraft} />
+            Twitch debug drops
+          </label>
+          <label>
+            Twitch backoff min (ms)
+            <input type="number" min="1" bind:value={gnastyTwitchBackoffMinDraft} />
+          </label>
+          <label>
+            Twitch backoff max (ms)
+            <input type="number" min="1" bind:value={gnastyTwitchBackoffMaxDraft} />
+          </label>
+          <label>
+            Twitch refresh backoff min (ms)
+            <input type="number" min="1" bind:value={gnastyTwitchRefreshBackoffMinDraft} />
+          </label>
+          <label>
+            Twitch refresh backoff max (ms)
+            <input type="number" min="1" bind:value={gnastyTwitchRefreshBackoffMaxDraft} />
+          </label>
+          <label>
+            YouTube retry/backoff seconds
+            <input type="number" min="1" bind:value={gnastyYTRetryDraft} />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={gnastyYTDumpUnhandledDraft} />
+            YouTube dump unhandled
+          </label>
+          <label>
+            YouTube poll timeout (secs)
+            <input type="number" min="0" bind:value={gnastyYTPollTimeoutDraft} />
+          </label>
+          <label>
+            YouTube poll interval (ms)
+            <input type="number" min="0" bind:value={gnastyYTPollIntervalDraft} />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={gnastyYTDebugDraft} />
+            YouTube debug
+          </label>
+          <button type="button" on:click={applyAdvancedSettings}>Apply advanced runtime config</button>
+        </section>
+
+        <section class="section">
+          <h3>Feature Flags</h3>
           <label class="toggle">
             <input
               checked={$settings.showBadges}
-              on:change={(event) => updateSettings({ showBadges: (event.currentTarget as HTMLInputElement).checked })}
+              on:change={async (event) => {
+                const checked = (event.currentTarget as HTMLInputElement).checked;
+                await applyBackendConfig((current) => ({
+                  ...current,
+                  features: { ...current.features, showBadges: checked }
+                }));
+              }}
               type="checkbox"
             />
             Show badges
@@ -323,7 +635,13 @@
           <label class="toggle">
             <input
               checked={$settings.hideYouTubeAt}
-              on:change={(event) => updateSettings({ hideYouTubeAt: (event.currentTarget as HTMLInputElement).checked })}
+              on:change={async (event) => {
+                const checked = (event.currentTarget as HTMLInputElement).checked;
+                await applyBackendConfig((current) => ({
+                  ...current,
+                  features: { ...current.features, hideYouTubeAt: checked }
+                }));
+              }}
               type="checkbox"
             />
             Hide @ prefix for YouTube users

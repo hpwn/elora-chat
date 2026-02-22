@@ -875,4 +875,12 @@ func (s *stubStore) LatestSession(context.Context) (*storage.Session, error) {
 	return nil, nil
 }
 
+func (s *stubStore) GetConfig(context.Context, string) (*storage.ConfigRecord, error) {
+	return nil, nil
+}
+
+func (s *stubStore) UpsertConfig(context.Context, *storage.ConfigRecord) error {
+	return nil
+}
+
 func (s *stubStore) Close(context.Context) error { return nil }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/runtimeconfig"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 )
 
@@ -387,6 +388,18 @@ func TestBroadcastFromTailerEnrichesPayload(t *testing.T) {
 	tokenizer.TextCommandPrefix = '!'
 	tokenizer.EmoteCache = make(map[string]Emote)
 
+	runtimeState.mu.Lock()
+	prev := runtimeState.current
+	runtimeState.current = runtimeconfig.Merge(runtimeState.current, runtimeconfig.Config{
+		TwitchChannel: "rocketleague",
+	})
+	runtimeState.mu.Unlock()
+	t.Cleanup(func() {
+		runtimeState.mu.Lock()
+		runtimeState.current = prev
+		runtimeState.mu.Unlock()
+	})
+
 	subscribersMu.Lock()
 	subscribers = nil
 	subscribersMu.Unlock()
@@ -418,6 +431,9 @@ func TestBroadcastFromTailerEnrichesPayload(t *testing.T) {
 		}
 		if msg.Tokens == nil {
 			t.Fatalf("expected tokens slice to be initialized")
+		}
+		if msg.SourceChannel != "rocketleague" {
+			t.Fatalf("expected source_channel to default to runtime twitch channel, got %q", msg.SourceChannel)
 		}
 	default:
 		t.Fatalf("expected broadcast payload but channel was empty")
@@ -605,6 +621,48 @@ func TestBroadcastFromTailerYouTubeEmoteFragments(t *testing.T) {
 		}
 	default:
 		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}
+
+func TestMessagePayloadFromStorageIncludesTwitchSourceChannel(t *testing.T) {
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username: "tester",
+		Text:     "hello",
+		Platform: "Twitch",
+		RawJSON:  `{"channel":"dagnel"}`,
+	})
+	if err != nil {
+		t.Fatalf("messagePayloadFromStorage returned error: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+
+	if msg.SourceChannel != "dagnel" {
+		t.Fatalf("expected source_channel=dagnel, got %q", msg.SourceChannel)
+	}
+}
+
+func TestMessagePayloadFromStorageIncludesCanonicalYouTubeSourceURL(t *testing.T) {
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username: "tester",
+		Text:     "hello",
+		Platform: "YouTube",
+		RawJSON:  `{"video_id":"abcdefghijk"}`,
+	})
+	if err != nil {
+		t.Fatalf("messagePayloadFromStorage returned error: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+
+	if msg.SourceURL != "https://www.youtube.com/watch?v=abcdefghijk" {
+		t.Fatalf("expected canonical source_url, got %q", msg.SourceURL)
 	}
 }
 

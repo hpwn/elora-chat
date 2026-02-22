@@ -59,8 +59,8 @@
   let ws: WebSocket | null = $state(null);
   let currentWsUrl = $state('');
   let settingsDebug = $state(false);
-  let pendingTwitchSince = $state<number | null>(null);
-  let pendingYouTubeSince = $state<number | null>(null);
+  let pendingTwitchChannel = $state<string | null>(null);
+  let pendingYouTubeSource = $state<string | null>(null);
   let messageQueue: Message[] = $state([]);
   let messages: Message[] = $state([]);
   let processing = $state(false);
@@ -94,6 +94,55 @@
 
   function sourceLower(source: Message['source'] | 'unknown'): string {
     return typeof source === 'string' ? source.toLowerCase() : '';
+  }
+
+  function normalizeTwitchChannelIdentity(raw: unknown): string | null {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+      if (!parsed.hostname.toLowerCase().includes('twitch.tv')) return null;
+      const login = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
+      return login ? login.toLowerCase() : null;
+    } catch {
+      const login = trimmed.replace(/^@/, '').replace(/^\/+/, '').split(/[/?#]/)[0] ?? '';
+      if (!login) return null;
+      return /^[a-z0-9_]+$/i.test(login) ? login.toLowerCase() : null;
+    }
+  }
+
+  function normalizeYouTubeSourceIdentity(raw: unknown): string | null {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+      return `https://www.youtube.com/watch?v=${trimmed}`;
+    }
+
+    try {
+      const parsed = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname === 'youtu.be') {
+        const id = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
+      }
+      if (!hostname.includes('youtube.com')) return null;
+
+      const path = parsed.pathname.replace(/\/+$/, '');
+      if (path.startsWith('/@')) {
+        const handle = path.split('/').filter(Boolean)[0]?.slice(1) ?? '';
+        return handle ? `https://www.youtube.com/@${handle}/live` : null;
+      }
+      const id = parsed.searchParams.get('v') ?? '';
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
+    } catch {
+      const handle = trimmed.replace(/^@/, '');
+      if (/^[a-zA-Z0-9._-]+$/.test(handle)) {
+        return `https://www.youtube.com/@${handle}/live`;
+      }
+      return null;
+    }
   }
 
   function systemMessage(text: string): Message {
@@ -761,15 +810,16 @@
         return;
       }
 
-      const incomingTs = typeof normalized.ts === 'number' ? normalized.ts : Date.now();
       const normalizedSource = sourceLower(normalized.source);
-      if (pendingTwitchSince !== null && normalizedSource === 'twitch' && incomingTs >= pendingTwitchSince) {
-        emitSystem('twitch: receiving messages [ok]');
-        pendingTwitchSince = null;
+      const twitchIdentity = normalizeTwitchChannelIdentity((incoming as any)?.sourceChannel);
+      if (pendingTwitchChannel !== null && normalizedSource === 'twitch' && twitchIdentity === pendingTwitchChannel) {
+        emitSystem(`twitch: receiving messages [ok] channel=${pendingTwitchChannel}`);
+        pendingTwitchChannel = null;
       }
-      if (pendingYouTubeSince !== null && normalizedSource === 'youtube' && incomingTs >= pendingYouTubeSince) {
-        emitSystem('youtube: receiving messages [ok]');
-        pendingYouTubeSince = null;
+      const youtubeIdentity = normalizeYouTubeSourceIdentity((incoming as any)?.sourceUrl);
+      if (pendingYouTubeSource !== null && normalizedSource === 'youtube' && youtubeIdentity === pendingYouTubeSource) {
+        emitSystem(`youtube: receiving messages [ok] source=${pendingYouTubeSource}`);
+        pendingYouTubeSource = null;
       }
 
       messageQueue = [...messageQueue, normalized];
@@ -847,21 +897,6 @@
     }
   }
 
-  function twitchChannelLabel(raw: string): string {
-    const trimmed = raw.trim();
-    if (!trimmed) return '(unset)';
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.hostname.toLowerCase().includes('twitch.tv')) {
-        const login = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
-        return login || trimmed;
-      }
-      return trimmed;
-    } catch {
-      return trimmed;
-    }
-  }
-
   onMount(() => {
     let lastSettings: Settings | null = null;
 
@@ -875,10 +910,12 @@
         const wsChanged = lastSettings.wsUrl !== nextSettings.wsUrl;
         const twitchChanged = lastSettings.twitchUrl !== nextSettings.twitchUrl;
         const youtubeChanged = lastSettings.youtubeUrl !== nextSettings.youtubeUrl;
+        const normalizedTwitch = normalizeTwitchChannelIdentity(nextSettings.twitchUrl);
+        const normalizedYouTube = normalizeYouTubeSourceIdentity(nextSettings.youtubeUrl);
 
         if ((apiChanged || wsChanged || twitchChanged || youtubeChanged) && settingsDebug) {
           emitSystem(
-            `settings: applied api=${nextSettings.apiBaseUrl || '(default)'} ws=${nextSettings.wsUrl || '(derived)'} tw=${nextSettings.twitchUrl || '(unset)'} yt=${nextSettings.youtubeUrl || '(unset)'}`
+            `settings: applied api=${nextSettings.apiBaseUrl || '(default)'} ws=${nextSettings.wsUrl || '(derived)'} tw=${normalizedTwitch || '(unset)'} yt=${normalizedYouTube || '(unset)'}`
           );
         }
 
@@ -887,13 +924,17 @@
         }
 
         if (twitchChanged && settingsDebug) {
-          pendingTwitchSince = Date.now();
-          emitSystem(`twitch: channel set -> ${twitchChannelLabel(nextSettings.twitchUrl)} (waiting for first message)`);
+          pendingTwitchChannel = normalizedTwitch;
+          if (pendingTwitchChannel) {
+            emitSystem(`twitch: channel set -> ${pendingTwitchChannel} (waiting for first matching message)`);
+          }
         }
 
         if (youtubeChanged && settingsDebug) {
-          pendingYouTubeSince = Date.now();
-          emitSystem(`youtube: source set -> ${nextSettings.youtubeUrl || '(unset)'} (waiting for first message)`);
+          pendingYouTubeSource = normalizedYouTube;
+          if (pendingYouTubeSource) {
+            emitSystem(`youtube: source set -> ${pendingYouTubeSource} (waiting for first matching message)`);
+          }
         }
       }
 

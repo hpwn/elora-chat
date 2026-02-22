@@ -25,6 +25,8 @@ export interface ChatMessage {
   ts: number; // ms since epoch
   username: string;
   platform: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | 'Test' | string;
+  sourceChannel?: string;
+  sourceUrl?: string;
   text: string;
   emotes: Emote[];
   badges: BadgeLike[];
@@ -116,6 +118,10 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
 
   const platformRaw = obj.source ?? obj.platform ?? obj.service ?? 'Unknown';
   const platform = typeof platformRaw === 'string' && platformRaw.trim() ? platformRaw : 'Unknown';
+  const sourceChannelRaw = obj.source_channel ?? obj.sourceChannel;
+  const sourceChannel = typeof sourceChannelRaw === 'string' && sourceChannelRaw.trim() ? sourceChannelRaw.trim() : undefined;
+  const sourceUrlRaw = obj.source_url ?? obj.sourceUrl;
+  const sourceUrl = typeof sourceUrlRaw === 'string' && sourceUrlRaw.trim() ? sourceUrlRaw.trim() : undefined;
 
   const textRaw = obj.message ?? obj.text ?? obj.body ?? '';
   const text = typeof textRaw === 'string' ? textRaw : '';
@@ -150,6 +156,8 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     ts,
     username,
     platform,
+    sourceChannel,
+    sourceUrl,
     text,
     fragments,
     emotes,

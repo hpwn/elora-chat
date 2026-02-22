@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -66,10 +65,6 @@ func main() {
 		httpPort = "8080"
 	}
 
-	exportedAPIBase = computeAPIBase(httpPort)
-	exportedWebsocket = computeWebsocketURL(httpPort, exportedAPIBase)
-	exportedDeployed = getEnvOrDefault("DEPLOYED_URL", exportedAPIBase)
-
 	baseCtx := context.Background()
 
 	sqliteCfg := sqlite.Config{
@@ -95,6 +90,10 @@ func main() {
 	log.Printf("storage: using sqlite store (mode=%s)", sqliteCfg.Mode)
 
 	routes.InitRoutes(store)
+	runtimeCfg := routes.EffectiveRuntimeConfig()
+	exportedAPIBase = runtimeCfg.APIBaseURL
+	exportedWebsocket = runtimeCfg.WSURL
+	exportedDeployed = getEnvOrDefault("DEPLOYED_URL", runtimeCfg.APIBaseURL)
 
 	r := mux.NewRouter()
 
@@ -109,22 +108,23 @@ func main() {
 	routes.SetupDevRoutes(r)
 	routes.SetupDebugRoutes(r)
 	routes.SetupSourceRoutes(r)
+	routes.SetupConfigRoutes(r)
 
 	rootMux := http.NewServeMux()
 	httpapi.RegisterHealth(rootMux, store)
 	rootMux.Handle("/", r)
 
-	allowedOrigins := parseCSV(getEnvFirst([]string{"ELORA_WS_ALLOWED_ORIGINS", "ELORA_ALLOWED_ORIGINS"}))
+	allowedOrigins := append([]string(nil), runtimeCfg.AllowedOrigins...)
 	routes.SetAllowedOrigins(allowedOrigins)
 	corsHandler := handlers.CORS(
-		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodOptions}),
+		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodOptions}),
 		handlers.AllowedHeaders([]string{"Authorization", "Content-Type"}),
 		handlers.ExposedHeaders([]string{"Link"}),
 		handlers.AllowCredentials(),
 	)
 	if len(allowedOrigins) > 0 {
 		corsHandler = handlers.CORS(
-			handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodOptions}),
+			handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodOptions}),
 			handlers.AllowedHeaders([]string{"Authorization", "Content-Type"}),
 			handlers.ExposedHeaders([]string{"Link"}),
 			handlers.AllowCredentials(),
@@ -135,12 +135,12 @@ func main() {
 	handler := corsHandler(rootMux)
 
 	tailerCfg := tailer.Config{
-		Enabled:        getEnvAsBoolFallback([]string{"ELORA_TAILER_ENABLED", "ELORA_DB_TAIL_ENABLED"}, false),
-		Interval:       time.Duration(getEnvAsIntFallback([]string{"ELORA_TAILER_POLL_MS", "ELORA_DB_TAIL_INTERVAL_MS", "ELORA_DB_TAIL_POLL_MS"}, 1000)) * time.Millisecond,
-		Batch:          getEnvAsIntFallback([]string{"ELORA_TAILER_MAX_BATCH", "ELORA_DB_TAIL_BATCH"}, 200),
-		MaxLag:         time.Duration(getEnvAsInt("ELORA_TAILER_MAX_LAG_MS", 0)) * time.Millisecond,
-		PersistOffsets: getEnvAsBool("ELORA_TAILER_PERSIST_OFFSETS", false),
-		OffsetPath:     strings.TrimSpace(os.Getenv("ELORA_TAILER_OFFSET_PATH")),
+		Enabled:        runtimeCfg.Tailer.Enabled,
+		Interval:       time.Duration(runtimeCfg.Tailer.PollIntervalMS) * time.Millisecond,
+		Batch:          runtimeCfg.Tailer.MaxBatch,
+		MaxLag:         time.Duration(runtimeCfg.Tailer.MaxLagMS) * time.Millisecond,
+		PersistOffsets: runtimeCfg.Tailer.PersistOffsets,
+		OffsetPath:     runtimeCfg.Tailer.OffsetPath,
 	}
 	if tailerCfg.PersistOffsets {
 		if tailerCfg.OffsetPath == "" {
@@ -155,6 +155,10 @@ func main() {
 	}
 
 	ingestEnv := ingest.FromEnv()
+	ingestEnv.GnastyBin = runtimeCfg.Ingest.GnastyBin
+	ingestEnv.GnastyArgs = runtimeCfg.Ingest.GnastyArgs
+	ingestEnv.BackoffBaseMS = runtimeCfg.Ingest.BackoffBaseMS
+	ingestEnv.BackoffMaxMS = runtimeCfg.Ingest.BackoffMaxMS
 	twitchClientID := strings.TrimSpace(os.Getenv("TWITCH_OAUTH_CLIENT_ID"))
 	twitchRedirectURL := strings.TrimSpace(os.Getenv("TWITCH_OAUTH_REDIRECT_URL"))
 	twitchWriteGnastyTokens := twitchGnastyWritesEnabled()
@@ -250,35 +254,6 @@ func getEnvOrDefault(key, def string) string {
 	return def
 }
 
-func getEnvAsBoolFallback(keys []string, def bool) bool {
-	for _, key := range keys {
-		value := strings.TrimSpace(os.Getenv(key))
-		if value == "" {
-			continue
-		}
-		parsed, err := strconv.ParseBool(value)
-		if err != nil {
-			log.Printf("config: invalid %s=%q, ignoring", key, value)
-			continue
-		}
-		return parsed
-	}
-	return def
-}
-
-func getEnvAsBool(key string, def bool) bool {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return def
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		log.Printf("config: invalid %s=%q, using default %t", key, value, def)
-		return def
-	}
-	return parsed
-}
-
 func getEnvAsInt(key string, def int) int {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -358,40 +333,4 @@ func twitchGnastyWritesEnabled() bool {
 	default:
 		return true
 	}
-}
-
-func computeAPIBase(port string) string {
-	base := strings.TrimSpace(os.Getenv("VITE_PUBLIC_API_BASE"))
-	if base == "" {
-		base = "http://localhost:" + port
-	}
-	base = strings.TrimRight(base, "/")
-	if base == "" {
-		return "http://localhost:" + port
-	}
-	return base
-}
-
-func computeWebsocketURL(port, apiBase string) string {
-	raw := strings.TrimSpace(os.Getenv("VITE_PUBLIC_WS_URL"))
-	if raw != "" {
-		return raw
-	}
-
-	parsed, err := url.Parse(apiBase)
-	if err != nil {
-		return "ws://localhost:" + port + "/ws/chat"
-	}
-	scheme := "ws"
-	switch strings.ToLower(parsed.Scheme) {
-	case "https":
-		scheme = "wss"
-	case "wss", "ws":
-		scheme = strings.ToLower(parsed.Scheme)
-	}
-	host := parsed.Host
-	if host == "" {
-		host = "localhost:" + port
-	}
-	return scheme + "://" + host + "/ws/chat"
 }

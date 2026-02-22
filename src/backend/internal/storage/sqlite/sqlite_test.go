@@ -886,3 +886,47 @@ func TestSQLiteMigrationsIdempotent(t *testing.T) {
 		t.Fatalf("expected schema_migrations to record applied migrations")
 	}
 }
+
+func TestSQLiteConfigRecordRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := New(Config{Mode: "ephemeral"})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	missing, err := store.GetConfig(ctx, "runtime_config")
+	if err != nil {
+		t.Fatalf("GetConfig returned error for missing key: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("expected nil for missing config key, got %#v", missing)
+	}
+
+	input := &storage.ConfigRecord{
+		Key:       "runtime_config",
+		Version:   1,
+		ValueJSON: `{"foo":"bar"}`,
+	}
+	if err := store.UpsertConfig(ctx, input); err != nil {
+		t.Fatalf("UpsertConfig returned error: %v", err)
+	}
+
+	got, err := store.GetConfig(ctx, "runtime_config")
+	if err != nil {
+		t.Fatalf("GetConfig returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected persisted config, got nil")
+	}
+	if got.Key != input.Key || got.Version != input.Version || got.ValueJSON != input.ValueJSON {
+		t.Fatalf("unexpected config row: %#v", got)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatalf("expected UpdatedAt to be set")
+	}
+}

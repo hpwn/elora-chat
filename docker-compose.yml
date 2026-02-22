@@ -12,6 +12,7 @@ services:
     environment:
       TZ: ${TZ}
       LOG_LEVEL: ${LOG_LEVEL}
+      ELORA_GNASTY_ADMIN_BASE: ${ELORA_GNASTY_ADMIN_BASE:-http://gnasty-harvester:8765}
     volumes:
       - ./data:/data
     ports:
@@ -36,9 +37,6 @@ services:
     environment:
       TZ: ${TZ}
       GNASTY_SINK_SQLITE_PATH: /data/gnasty.db
-      GNASTY_YT_URL: ${GNASTY_YT_URL:-https://www.youtube.com/@lofigirl/live}
-      GNASTY_YT_POLL_INTERVAL_MS: ${GNASTY_YT_POLL_INTERVAL_MS:-1500}
-      GNASTY_YT_DUMP_UNHANDLED: ${GNASTY_YT_DUMP_UNHANDLED:-0}
     command: ["-http-addr",":8765","-http-access-log=true"]
     volumes:
       - ./data:/data

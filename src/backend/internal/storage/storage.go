@@ -33,6 +33,14 @@ type Session struct {
 	UpdatedAt   time.Time
 }
 
+// ConfigRecord represents a named JSON configuration blob persisted by the backend.
+type ConfigRecord struct {
+	Key       string
+	Version   int
+	ValueJSON string
+	UpdatedAt time.Time
+}
+
 // QueryOpts defines filters for retrieving stored messages.
 type QueryOpts struct {
 	Limit       int
@@ -59,5 +67,7 @@ type Store interface {
 	// LatestSession returns the most recently updated session regardless of
 	// service. If no sessions exist, (nil, nil) is returned.
 	LatestSession(ctx context.Context) (*Session, error)
+	GetConfig(ctx context.Context, key string) (*ConfigRecord, error)
+	UpsertConfig(ctx context.Context, cfg *ConfigRecord) error
 	Close(ctx context.Context) error
 }

@@ -7,14 +7,40 @@ describe('normalizeWsPayload', () => {
   });
 
   it('parses harvester shape', () => {
-    const obj = { author: 'A', message: 'hi', source: 'YouTube', username_color: '#1E90FF' };
+    const obj = {
+      author: 'A',
+      message: 'hi',
+      source: 'YouTube',
+      source_channel: 'dagnel',
+      source_url: 'https://www.youtube.com/@lofigirl/live',
+      username_color: '#1E90FF'
+    };
     const out = normalizeWsPayload(JSON.stringify(obj));
     expect(out?.username).toBe('A');
     expect(out?.text).toBe('hi');
     expect(out?.platform).toBe('YouTube');
+    expect(out?.sourceChannel).toBe('dagnel');
+    expect(out?.sourceUrl).toBe('https://www.youtube.com/@lofigirl/live');
     expect(out?.usernameColor).toBe('#1E90FF');
     expect(out?.colour).toBe('#1E90FF');
     expect(typeof out?.ts).toBe('number');
+  });
+
+  it('parses source identity fields from enveloped data payloads', () => {
+    const out = normalizeWsPayload({
+      type: 'chat',
+      data: JSON.stringify({
+        author: 'A',
+        message: 'hi',
+        source: 'Twitch',
+        source_channel: 'rocketleague',
+        source_url: 'https://www.youtube.com/@jynxzi/live'
+      })
+    });
+
+    expect(out?.platform).toBe('Twitch');
+    expect(out?.sourceChannel).toBe('rocketleague');
+    expect(out?.sourceUrl).toBe('https://www.youtube.com/@jynxzi/live');
   });
 
   it('parses tailer/row shape with json fields', () => {
