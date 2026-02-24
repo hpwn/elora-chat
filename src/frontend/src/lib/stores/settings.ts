@@ -6,6 +6,11 @@ export type Settings = {
   wsUrl: string;
   showBadges: boolean;
   hideYouTubeAt: boolean;
+  pauseChatEnabled: boolean;
+  pauseOnMouseLeave: boolean;
+  pauseBottomThresholdPx: number;
+  pauseScrollIntentWindowMs: number;
+  pauseMouseleaveUnpauseCooldownMs: number;
   fetchHistoryOnLoad: boolean;
   chatDebug: boolean;
   settingsDebug: boolean;
@@ -24,6 +29,11 @@ export const DEFAULT_SETTINGS: Settings = {
   wsUrl: '',
   showBadges: true,
   hideYouTubeAt: true,
+  pauseChatEnabled: true,
+  pauseOnMouseLeave: true,
+  pauseBottomThresholdPx: 128,
+  pauseScrollIntentWindowMs: 2000,
+  pauseMouseleaveUnpauseCooldownMs: 0,
   fetchHistoryOnLoad: false,
   chatDebug: false,
   settingsDebug: false,
@@ -39,6 +49,11 @@ function readString(value: unknown, fallback = ''): string {
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function readNumber(value: unknown, fallback: number, min = 0): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.floor(value));
 }
 
 function readRecent(value: unknown, max = MAX_RECENT_DEFAULT): string[] {
@@ -101,6 +116,19 @@ function loadSettings(): Settings {
       wsUrl: readString(partial.wsUrl),
       showBadges: readBoolean(partial.showBadges, DEFAULT_SETTINGS.showBadges),
       hideYouTubeAt: readBoolean(partial.hideYouTubeAt, DEFAULT_SETTINGS.hideYouTubeAt),
+      pauseChatEnabled: readBoolean(partial.pauseChatEnabled, DEFAULT_SETTINGS.pauseChatEnabled),
+      pauseOnMouseLeave: readBoolean(partial.pauseOnMouseLeave, DEFAULT_SETTINGS.pauseOnMouseLeave),
+      pauseBottomThresholdPx: readNumber(partial.pauseBottomThresholdPx, DEFAULT_SETTINGS.pauseBottomThresholdPx, 0),
+      pauseScrollIntentWindowMs: readNumber(
+        partial.pauseScrollIntentWindowMs,
+        DEFAULT_SETTINGS.pauseScrollIntentWindowMs,
+        0
+      ),
+      pauseMouseleaveUnpauseCooldownMs: readNumber(
+        partial.pauseMouseleaveUnpauseCooldownMs,
+        DEFAULT_SETTINGS.pauseMouseleaveUnpauseCooldownMs,
+        0
+      ),
       fetchHistoryOnLoad: readBoolean(partial.fetchHistoryOnLoad, DEFAULT_SETTINGS.fetchHistoryOnLoad),
       chatDebug: readBoolean(partial.chatDebug, DEFAULT_SETTINGS.chatDebug),
       settingsDebug: readBoolean(partial.settingsDebug, DEFAULT_SETTINGS.settingsDebug),

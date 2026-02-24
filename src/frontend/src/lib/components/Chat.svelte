@@ -8,7 +8,7 @@
   import { apiPath, getHideYouTubeAt, getShowBadges, getWsUrl, isChatDebugEnabled, isFetchHistoryOnLoad } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { normalizeWsPayload } from '$lib/chat/normalize';
-  import { settings, type Settings } from '$lib/stores/settings';
+  import { DEFAULT_SETTINGS, settings, type Settings } from '$lib/stores/settings';
   import { SvelteSet } from 'svelte/reactivity';
   import * as EmojilibNS from 'emojilib';
 
@@ -66,6 +66,11 @@
   let processing = $state(false);
   let paused = $state(false);
   let newMessageCount = $state(0);
+  let pauseChatEnabled = $state(DEFAULT_SETTINGS.pauseChatEnabled);
+  let pauseOnMouseLeave = $state(DEFAULT_SETTINGS.pauseOnMouseLeave);
+  let pauseBottomThresholdPx = $state(DEFAULT_SETTINGS.pauseBottomThresholdPx);
+  let pauseScrollIntentWindowMs = $state(DEFAULT_SETTINGS.pauseScrollIntentWindowMs);
+  let pauseMouseleaveUnpauseCooldownMs = $state(DEFAULT_SETTINGS.pauseMouseleaveUnpauseCooldownMs);
   let blacklist = loadBlacklist();
   let keymods: Keymods = {
     ctrl: false,
@@ -253,9 +258,6 @@
   let nextBeforeRowID: number | null = $state(null);
   let loadingHistory = $state(false);
   let historyExhausted = $state(false);
-  const BOTTOM_THRESHOLD_PX = 128;
-  const USER_SCROLL_INTENT_WINDOW_MS = 2000;
-  const MOUSELEAVE_UNPAUSE_COOLDOWN_MS = 2000;
   let lastUserScrollTs = $state(0);
   let lastScrollTop = $state(0);
   let programmaticScrollTs = $state(0);
@@ -663,6 +665,7 @@
   }
 
   function pauseChat() {
+    if (!pauseChatEnabled) return;
     paused = true;
   }
 
@@ -677,6 +680,11 @@
   }
 
   function togglePause() {
+    if (!pauseChatEnabled) {
+      paused = false;
+      newMessageCount = 0;
+      return;
+    }
     if (paused) {
       unpauseChat();
     } else {
@@ -768,15 +776,17 @@
     const previousScrollTop = lastScrollTop;
     lastScrollTop = container.scrollTop;
     const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
-    const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
-    if (isAtBottom) {
-      if (paused) {
-        unpauseChat();
+    const isAtBottom = distanceFromBottom <= pauseBottomThresholdPx;
+    if (pauseChatEnabled) {
+      if (isAtBottom) {
+        if (paused) {
+          unpauseChat();
+        }
+      } else if (container.scrollTop < previousScrollTop && now - lastUserScrollTs < pauseScrollIntentWindowMs) {
+        paused = true;
       }
-    } else if (
-      container.scrollTop < previousScrollTop &&
-      now - lastUserScrollTs < USER_SCROLL_INTENT_WINDOW_MS) {
-      paused = true;
+    } else if (paused) {
+      unpauseChat();
     }
 
     if (isFetchHistoryOnLoad() && container.scrollTop <= 50) {
@@ -849,9 +859,14 @@
   }
 
   function handleMouseLeave() {
-      if (!paused) return;
-      unpauseChat();
+    if (!pauseChatEnabled) return;
+    if (!pauseOnMouseLeave) return;
+    if (!paused) return;
+    if (pauseMouseleaveUnpauseCooldownMs > 0 && Date.now() - lastUserScrollTs < pauseMouseleaveUnpauseCooldownMs) {
+      return;
     }
+    unpauseChat();
+  }
 
   function handleKeyDown(e: KeyboardEvent) {
     switch (e.key) {
@@ -897,6 +912,16 @@
     }
   }
 
+  function clearChatUIHistory() {
+    messages = [];
+    messageQueue = [];
+    paused = false;
+    newMessageCount = 0;
+    nextBeforeTs = null;
+    nextBeforeRowID = null;
+    historyExhausted = true;
+  }
+
   onMount(() => {
     let lastSettings: Settings | null = null;
 
@@ -904,6 +929,15 @@
       chatDebug = isChatDebugEnabled();
       const wasSettingsDebug = settingsDebug;
       settingsDebug = !!nextSettings.settingsDebug;
+      pauseChatEnabled = !!nextSettings.pauseChatEnabled;
+      pauseOnMouseLeave = !!nextSettings.pauseOnMouseLeave;
+      pauseBottomThresholdPx = Math.max(0, nextSettings.pauseBottomThresholdPx || 0);
+      pauseScrollIntentWindowMs = Math.max(0, nextSettings.pauseScrollIntentWindowMs || 0);
+      pauseMouseleaveUnpauseCooldownMs = Math.max(0, nextSettings.pauseMouseleaveUnpauseCooldownMs || 0);
+
+      if (!pauseChatEnabled && paused) {
+        unpauseChat();
+      }
 
       if (lastSettings) {
         const apiChanged = lastSettings.apiBaseUrl !== nextSettings.apiBaseUrl;
@@ -962,6 +996,7 @@
     document.addEventListener('keyup', handleKeyUp);
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('elora:clear-chat-ui', clearChatUIHistory);
 
     window.addEventListener('beforeunload', () => {
       if (ws) {
@@ -980,6 +1015,7 @@
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('elora:clear-chat-ui', clearChatUIHistory);
     };
   });
 </script>

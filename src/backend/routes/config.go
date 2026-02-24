@@ -97,6 +97,12 @@ func currentRuntimeConfig() runtimeconfig.Config {
 	return runtimeState.current
 }
 
+func defaultRuntimeConfig() runtimeconfig.Config {
+	runtimeState.mu.RLock()
+	defer runtimeState.mu.RUnlock()
+	return runtimeState.defaults
+}
+
 // EffectiveRuntimeConfig exposes the active effective runtime config for other packages.
 func EffectiveRuntimeConfig() runtimeconfig.Config {
 	return currentRuntimeConfig()
@@ -116,12 +122,22 @@ func applyRuntimeConfig(cfg runtimeconfig.Config) {
 
 func SetupConfigRoutes(r *mux.Router) {
 	r.HandleFunc("/api/config", handleGetConfig).Methods(http.MethodGet)
+	r.HandleFunc("/api/config/defaults", handleGetConfigDefaults).Methods(http.MethodGet)
 	r.HandleFunc("/api/config", handlePutConfig).Methods(http.MethodPut)
 }
 
 func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, configEnvelope{
 		Config:         currentRuntimeConfig(),
+		EnvOnlySecrets: runtimeconfig.RedactedSecretsFromEnv(),
+		Changed:        false,
+		ReconnectWS:    false,
+	})
+}
+
+func handleGetConfigDefaults(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, configEnvelope{
+		Config:         defaultRuntimeConfig(),
 		EnvOnlySecrets: runtimeconfig.RedactedSecretsFromEnv(),
 		Changed:        false,
 		ReconnectWS:    false,
@@ -163,6 +179,9 @@ func handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	restartRequired := changedSubsystemsRequiringRestart(previous, normalized)
 	reconnectWS := previous.APIBaseURL != normalized.APIBaseURL || previous.WSURL != normalized.WSURL
 	if !changed {
+		// Best-effort re-sync even on no-op PUT so operators can recover from
+		// transient startup sync failures without changing values.
+		syncGnastyConfigBestEffort(normalized, "put-nochange")
 		writeJSON(w, configEnvelope{
 			Config:          normalized,
 			EnvOnlySecrets:  runtimeconfig.RedactedSecretsFromEnv(),

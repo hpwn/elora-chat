@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import ExportPanel from './ExportPanel.svelte';
   import { apiPath } from '$lib/config';
-  import { pushRecent, settings, type Settings } from '$lib/stores/settings';
+  import { DEFAULT_SETTINGS, pushRecent, settings, type Settings } from '$lib/stores/settings';
   import type { RuntimeConfig, RuntimeConfigResponse } from '$lib/types/runtime-config';
 
   type TopTwitchItem = {
@@ -25,6 +25,11 @@
   let wsUrlDraft = '';
   let twitchDraft = '';
   let youtubeDraft = '';
+  let pauseChatEnabledDraft = true;
+  let pauseOnMouseLeaveDraft = true;
+  let pauseBottomThresholdDraft = 128;
+  let pauseScrollIntentWindowDraft = 2000;
+  let pauseMouseleaveCooldownDraft = 0;
 
   let twitchTopLoading = false;
   let youtubeTopLoading = false;
@@ -92,6 +97,11 @@
     wsUrlDraft = $settings.wsUrl;
     twitchDraft = $settings.twitchUrl || $settings.recentTwitch[0] || '';
     youtubeDraft = $settings.youtubeUrl || $settings.recentYouTube[0] || '';
+    pauseChatEnabledDraft = $settings.pauseChatEnabled;
+    pauseOnMouseLeaveDraft = $settings.pauseOnMouseLeave;
+    pauseBottomThresholdDraft = $settings.pauseBottomThresholdPx;
+    pauseScrollIntentWindowDraft = $settings.pauseScrollIntentWindowMs;
+    pauseMouseleaveCooldownDraft = $settings.pauseMouseleaveUnpauseCooldownMs;
   }
 
   async function applyConnectionSettings() {
@@ -127,6 +137,72 @@
     if (updated?.youtubeSourceUrl) {
       updateSettings({ recentYouTube: pushRecent($settings.recentYouTube, updated.youtubeSourceUrl) });
     }
+  }
+
+  function applyPauseChatSettings() {
+    updateSettings({
+      pauseChatEnabled: !!pauseChatEnabledDraft,
+      pauseOnMouseLeave: !!pauseOnMouseLeaveDraft,
+      pauseBottomThresholdPx: Math.max(0, Math.floor(Number(pauseBottomThresholdDraft) || 0)),
+      pauseScrollIntentWindowMs: Math.max(0, Math.floor(Number(pauseScrollIntentWindowDraft) || 0)),
+      pauseMouseleaveUnpauseCooldownMs: Math.max(0, Math.floor(Number(pauseMouseleaveCooldownDraft) || 0))
+    });
+    syncDraftsFromSettings();
+  }
+
+  function resetPauseChatSettingsToDefaults() {
+    updateSettings({
+      pauseChatEnabled: DEFAULT_SETTINGS.pauseChatEnabled,
+      pauseOnMouseLeave: DEFAULT_SETTINGS.pauseOnMouseLeave,
+      pauseBottomThresholdPx: DEFAULT_SETTINGS.pauseBottomThresholdPx,
+      pauseScrollIntentWindowMs: DEFAULT_SETTINGS.pauseScrollIntentWindowMs,
+      pauseMouseleaveUnpauseCooldownMs: DEFAULT_SETTINGS.pauseMouseleaveUnpauseCooldownMs
+    });
+    syncDraftsFromSettings();
+  }
+
+  function clearHistoryFromUI() {
+    window.dispatchEvent(new CustomEvent('elora:clear-chat-ui'));
+  }
+
+  async function resetAllSettingsToDefaults() {
+    const current = backendConfig ?? (await loadBackendConfig());
+    if (!current) return;
+
+    configError = '';
+    try {
+      const response = await fetch(apiPath('/api/config/defaults'));
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as RuntimeConfigResponse;
+      const defaults = payload.config;
+      const resetConfig: RuntimeConfig = {
+        ...defaults,
+        apiBaseUrl: current.apiBaseUrl,
+        wsUrl: current.wsUrl,
+        twitchChannel: current.twitchChannel,
+        youtubeSourceUrl: current.youtubeSourceUrl
+      };
+      const updated = await saveBackendConfig(resetConfig);
+      if (!updated) return;
+    } catch (error) {
+      configError = error instanceof Error ? error.message : 'Failed to reset settings to defaults';
+      return;
+    }
+
+    settings.update((currentSettings) => ({
+      ...DEFAULT_SETTINGS,
+      apiBaseUrl: currentSettings.apiBaseUrl,
+      wsUrl: currentSettings.wsUrl,
+      showBadges: currentSettings.showBadges,
+      hideYouTubeAt: currentSettings.hideYouTubeAt,
+      twitchUrl: currentSettings.twitchUrl,
+      youtubeUrl: currentSettings.youtubeUrl,
+      recentTwitch: currentSettings.recentTwitch,
+      recentYouTube: currentSettings.recentYouTube
+    }));
+    syncDraftsFromSettings();
   }
 
   function toTwitchURL(channel: string): string {
@@ -385,28 +461,30 @@
       {/if}
       {#if activeTab === 'quick'}
         <section class="section">
-          <h3>Connection</h3>
-          <label>
-            API Base URL
+          <h3>Pause Chat</h3>
+          <label class="toggle">
             <input
-              type="text"
-              bind:value={apiBaseDraft}
-              on:blur={applyConnectionSettings}
-              placeholder="http://localhost:8080"
+              type="checkbox"
+              bind:checked={pauseChatEnabledDraft}
+              on:change={applyPauseChatSettings}
             />
+            Enable pause chat
           </label>
-          <label>
-            WS URL
+          <label class="toggle">
             <input
-              type="text"
-              bind:value={wsUrlDraft}
-              on:blur={applyConnectionSettings}
-              placeholder="ws://localhost:8080/ws/chat"
+              type="checkbox"
+              bind:checked={pauseOnMouseLeaveDraft}
+              disabled={!pauseChatEnabledDraft}
+              on:change={applyPauseChatSettings}
             />
+            On mouse leave
           </label>
-          <button type="button" on:click={applyConnectionSettings}>Apply connection</button>
-          <p class="current">Current API: {$settings.apiBaseUrl || '(default)'}</p>
-          <p class="current">Current WS: {$settings.wsUrl || '(derived from API)'}</p>
+          <button type="button" on:click={resetPauseChatSettingsToDefaults}>Reset pause chat defaults</button>
+        </section>
+
+        <section class="section">
+          <h3>History</h3>
+          <button type="button" on:click={clearHistoryFromUI}>Clear history (UI only)</button>
         </section>
 
         <section class="section">
@@ -481,6 +559,114 @@
           {/if}
         </section>
       {:else if activeTab === 'advanced'}
+        <section class="section">
+          <h3>Feature Flags</h3>
+          <label class="toggle">
+            <input
+              checked={$settings.showBadges}
+              on:change={async (event) => {
+                const checked = (event.currentTarget as HTMLInputElement).checked;
+                await applyBackendConfig((current) => ({
+                  ...current,
+                  features: { ...current.features, showBadges: checked }
+                }));
+              }}
+              type="checkbox"
+            />
+            Show badges
+          </label>
+          <label class="toggle">
+            <input
+              checked={$settings.hideYouTubeAt}
+              on:change={async (event) => {
+                const checked = (event.currentTarget as HTMLInputElement).checked;
+                await applyBackendConfig((current) => ({
+                  ...current,
+                  features: { ...current.features, hideYouTubeAt: checked }
+                }));
+              }}
+              type="checkbox"
+            />
+            Hide @ prefix for YouTube users
+          </label>
+          <label class="toggle">
+            <input
+              checked={$settings.fetchHistoryOnLoad}
+              on:change={(event) => updateSettings({ fetchHistoryOnLoad: (event.currentTarget as HTMLInputElement).checked })}
+              type="checkbox"
+            />
+            Fetch history on load
+          </label>
+          <label class="toggle">
+            <input
+              checked={$settings.chatDebug}
+              on:change={(event) => updateSettings({ chatDebug: (event.currentTarget as HTMLInputElement).checked })}
+              type="checkbox"
+            />
+            Chat debug
+          </label>
+          <label class="toggle">
+            <input
+              checked={$settings.settingsDebug}
+              on:change={(event) => updateSettings({ settingsDebug: (event.currentTarget as HTMLInputElement).checked })}
+              type="checkbox"
+            />
+            Settings debug (show apply/connect events in chat)
+          </label>
+        </section>
+
+        <section class="section">
+          <h3>Pause Chat Tuning</h3>
+          <label>
+            Bottom threshold (px)
+            <input type="number" min="0" bind:value={pauseBottomThresholdDraft} on:blur={applyPauseChatSettings} />
+          </label>
+          <label>
+            Scroll intent window (ms)
+            <input type="number" min="0" bind:value={pauseScrollIntentWindowDraft} on:blur={applyPauseChatSettings} />
+          </label>
+          <label>
+            Mouseleave unpause cooldown (ms)
+            <input type="number" min="0" bind:value={pauseMouseleaveCooldownDraft} on:blur={applyPauseChatSettings} />
+          </label>
+          <button type="button" on:click={applyPauseChatSettings}>Apply pause chat tuning</button>
+          <button type="button" on:click={resetPauseChatSettingsToDefaults}>Reset pause chat defaults</button>
+          <p class="current">Bottom threshold: {$settings.pauseBottomThresholdPx}px</p>
+          <p class="current">Scroll intent window: {$settings.pauseScrollIntentWindowMs}ms</p>
+          <p class="current">Mouseleave cooldown: {$settings.pauseMouseleaveUnpauseCooldownMs}ms</p>
+        </section>
+
+        <section class="section">
+          <h3>Reset</h3>
+          <button type="button" on:click={resetAllSettingsToDefaults}>Reset all settings to defaults</button>
+          <p class="current">Resets backend + local settings to defaults while preserving API/WS/source URLs.</p>
+        </section>
+
+        <section class="section">
+          <h3>Connection</h3>
+          <label>
+            API Base URL
+            <input
+              type="text"
+              bind:value={apiBaseDraft}
+              on:blur={applyConnectionSettings}
+              placeholder="http://localhost:8080"
+            />
+          </label>
+          <label>
+            WS URL
+            <input
+              type="text"
+              bind:value={wsUrlDraft}
+              on:blur={applyConnectionSettings}
+              placeholder="ws://localhost:8080/ws/chat"
+            />
+          </label>
+          <button type="button" on:click={applyConnectionSettings}>Apply connection</button>
+          <p class="current">Current API: {$settings.apiBaseUrl || '(default)'}</p>
+          <p class="current">Current WS: {$settings.wsUrl || '(derived from API)'}</p>
+        </section>
+
         <section class="section">
           <h3>Sources</h3>
           <div class="apply-row">
@@ -616,61 +802,6 @@
           <button type="button" on:click={applyAdvancedSettings}>Apply advanced runtime config</button>
         </section>
 
-        <section class="section">
-          <h3>Feature Flags</h3>
-          <label class="toggle">
-            <input
-              checked={$settings.showBadges}
-              on:change={async (event) => {
-                const checked = (event.currentTarget as HTMLInputElement).checked;
-                await applyBackendConfig((current) => ({
-                  ...current,
-                  features: { ...current.features, showBadges: checked }
-                }));
-              }}
-              type="checkbox"
-            />
-            Show badges
-          </label>
-          <label class="toggle">
-            <input
-              checked={$settings.hideYouTubeAt}
-              on:change={async (event) => {
-                const checked = (event.currentTarget as HTMLInputElement).checked;
-                await applyBackendConfig((current) => ({
-                  ...current,
-                  features: { ...current.features, hideYouTubeAt: checked }
-                }));
-              }}
-              type="checkbox"
-            />
-            Hide @ prefix for YouTube users
-          </label>
-          <label class="toggle">
-            <input
-              checked={$settings.fetchHistoryOnLoad}
-              on:change={(event) => updateSettings({ fetchHistoryOnLoad: (event.currentTarget as HTMLInputElement).checked })}
-              type="checkbox"
-            />
-            Fetch history on load
-          </label>
-          <label class="toggle">
-            <input
-              checked={$settings.chatDebug}
-              on:change={(event) => updateSettings({ chatDebug: (event.currentTarget as HTMLInputElement).checked })}
-              type="checkbox"
-            />
-            Chat debug
-          </label>
-          <label class="toggle">
-            <input
-              checked={$settings.settingsDebug}
-              on:change={(event) => updateSettings({ settingsDebug: (event.currentTarget as HTMLInputElement).checked })}
-              type="checkbox"
-            />
-            Settings debug (show apply/connect events in chat)
-          </label>
-        </section>
       {:else}
         <section class="section">
           <ExportPanel />
