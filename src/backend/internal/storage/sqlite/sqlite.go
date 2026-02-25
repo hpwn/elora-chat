@@ -165,9 +165,16 @@ type Store struct {
 	db        *sql.DB
 	path      string
 	ephemeral bool
+	insertSQL string
+	insertMode string
 	initOnce  sync.Once
 	initErr   error
 }
+
+const (
+	insertModeLegacy = "legacy"
+	insertModeGnasty = "gnasty"
+)
 
 // New creates a new SQLite store with the provided configuration.
 func New(cfg Config) *Store {
@@ -226,8 +233,8 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		// SQLite PRAGMAs are connection-local; keep a single connection by default so
-		// busy_timeout/journal_mode/foreign_keys apply consistently and reduce SQLITE_BUSY.
+		// Required SQLite PRAGMAs are also encoded in the DSN so every pooled connection
+		// receives them. We keep init-time PRAGMA checks to validate effective runtime state.
 		maxConns := s.cfg.MaxConns
 		if maxConns <= 0 {
 			maxConns = 1
@@ -241,10 +248,7 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		desiredJournalMode := s.cfg.JournalMode
-		if desiredJournalMode == "" {
-			desiredJournalMode = "WAL"
-		}
+		desiredJournalMode := s.effectiveJournalMode()
 		journalModeRow := db.QueryRowContext(ctx, fmt.Sprintf("PRAGMA journal_mode=%s;", desiredJournalMode))
 		var journalMode string
 		if err := journalModeRow.Scan(&journalMode); err != nil {
@@ -253,10 +257,8 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		if s.cfg.BusyTimeoutMS <= 0 {
-			s.cfg.BusyTimeoutMS = defaultBusyTimeoutMS
-		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", s.cfg.BusyTimeoutMS)); err != nil {
+		effectiveBusyTimeoutMS := s.effectiveBusyTimeoutMS()
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", effectiveBusyTimeoutMS)); err != nil {
 			_ = db.Close()
 			s.initErr = fmt.Errorf("sqlite: set busy_timeout: %w", err)
 			return
@@ -273,7 +275,24 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		log.Printf("sqlite: opened database (mode=%s, path=%s, journal_mode=%s)", s.storageMode(), path, journalMode)
+		insertMode, insertSQL, err := detectInsertStrategy(ctx, db)
+		if err != nil {
+			_ = db.Close()
+			s.initErr = err
+			return
+		}
+		s.insertMode = insertMode
+		s.insertSQL = insertSQL
+
+		log.Printf(
+			"sqlite: opened database (mode=%s, path=%s, max_conns=%d, busy_timeout_ms=%d, journal_mode=%s, insert_mode=%s)",
+			s.storageMode(),
+			path,
+			maxConns,
+			effectiveBusyTimeoutMS,
+			journalMode,
+			insertMode,
+		)
 
 		s.db = db
 	})
@@ -290,21 +309,213 @@ func (s *Store) InsertMessage(ctx context.Context, m *storage.Message) error {
 		return errors.New("sqlite: message is nil")
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, ts, username, platform, text, emotes_json, badges_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID,
-		m.Timestamp.UTC().UnixMilli(),
-		m.Username,
-		m.Platform,
-		m.Text,
-		m.EmotesJSON,
-		m.BadgesJSON,
-		m.RawJSON,
+	if strings.TrimSpace(s.insertSQL) == "" {
+		return errors.New("sqlite: insert strategy not initialized")
+	}
+
+	ts := m.Timestamp.UTC().UnixMilli()
+	emotes := strings.TrimSpace(m.EmotesJSON)
+	if emotes == "" {
+		emotes = "[]"
+	}
+	badges := strings.TrimSpace(m.BadgesJSON)
+	if badges == "" {
+		badges = "[]"
+	}
+	raw := m.RawJSON
+
+	var (
+		err  error
+		args []any
 	)
+
+	switch s.insertMode {
+	case insertModeGnasty:
+		args = []any{
+			m.Platform,
+			m.ID, // seed rows use generated ID as deterministic platform_msg_id
+			ts,
+			m.Username,
+			m.Text,
+			emotes,
+			badges,
+			raw,
+		}
+	default:
+		args = []any{
+			m.ID,
+			ts,
+			m.Username,
+			m.Platform,
+			m.Text,
+			emotes,
+			badges,
+			raw,
+		}
+	}
+
+	err = s.execWithBusyRetry(ctx, "insert message", func() error {
+		_, execErr := s.db.ExecContext(ctx, s.insertSQL, args...)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: insert message: %w", err)
 	}
 	return nil
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "sqlite locked") ||
+		strings.Contains(msg, "sqlite_locked") ||
+		strings.Contains(msg, "sqlitelocked") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		time.Sleep(d)
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func busyRetrySchedule(maxWait time.Duration) []time.Duration {
+	if maxWait <= 0 {
+		maxWait = defaultBusyTimeoutMS * time.Millisecond
+	}
+	const (
+		minStep = 25 * time.Millisecond
+		maxStep = 500 * time.Millisecond
+	)
+
+	schedule := make([]time.Duration, 0, 16)
+	total := time.Duration(0)
+	step := minStep
+	for total < maxWait {
+		remaining := maxWait - total
+		d := step
+		if d > remaining {
+			d = remaining
+		}
+		if d <= 0 {
+			break
+		}
+		schedule = append(schedule, d)
+		total += d
+		if step < 250*time.Millisecond {
+			step += 25 * time.Millisecond
+		} else if step < maxStep {
+			step += 50 * time.Millisecond
+		}
+		if step > maxStep {
+			step = maxStep
+		}
+	}
+	if len(schedule) == 0 {
+		schedule = append(schedule, minStep)
+	}
+	return schedule
+}
+
+func execWithBusyRetry(ctx context.Context, op string, maxWait time.Duration, fn func() error) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+
+	backoffs := busyRetrySchedule(maxWait)
+	start := time.Now()
+	var lastErr error
+	for i := 0; i < len(backoffs); i++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		if i == len(backoffs)-1 {
+			break
+		}
+		if err := sleepWithContext(ctx, backoffs[i]); err != nil {
+			return err
+		}
+	}
+	op = strings.TrimSpace(op)
+	if op == "" {
+		op = "sqlite write"
+	}
+	log.Printf(
+		"sqlite: busy retry exhausted op=%s attempts=%d elapsed_ms=%d err=%v",
+		op,
+		len(backoffs),
+		time.Since(start).Milliseconds(),
+		lastErr,
+	)
+	return lastErr
+}
+
+func (s *Store) execWithBusyRetry(ctx context.Context, op string, fn func() error) error {
+	return execWithBusyRetry(ctx, op, time.Duration(s.effectiveBusyTimeoutMS())*time.Millisecond, fn)
+}
+
+func detectInsertStrategy(ctx context.Context, db *sql.DB) (mode, insertSQL string, err error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(messages);")
+	if err != nil {
+		return "", "", fmt.Errorf("sqlite: inspect messages table: %w", err)
+	}
+	defer rows.Close()
+
+	types := make(map[string]string)
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return "", "", fmt.Errorf("sqlite: scan messages table info: %w", err)
+		}
+		types[strings.ToLower(strings.TrimSpace(name))] = strings.ToUpper(strings.TrimSpace(ctype))
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", fmt.Errorf("sqlite: iterate messages table info: %w", err)
+	}
+
+	idType := types["id"]
+	_, hasPlatformMsgID := types["platform_msg_id"]
+	if hasPlatformMsgID && strings.Contains(idType, "INT") {
+		return insertModeGnasty,
+			`INSERT INTO messages (platform, platform_msg_id, ts, username, text, emotes_json, badges_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			nil
+	}
+
+	return insertModeLegacy,
+		`INSERT INTO messages (id, ts, username, platform, text, emotes_json, badges_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		nil
 }
 
 // GetRecent returns the most recent chat messages subject to the provided filters.
@@ -513,7 +724,14 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (int, error) 
 		return 0, errors.New("sqlite: store not initialized")
 	}
 
-	res, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE ts < ?`, cutoff.UTC().UnixMilli())
+	var (
+		res sql.Result
+		err error
+	)
+	err = s.execWithBusyRetry(ctx, "purge before", func() error {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM messages WHERE ts < ?`, cutoff.UTC().UnixMilli())
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: purge before: %w", err)
 	}
@@ -532,10 +750,16 @@ func (s *Store) PurgeAll(ctx context.Context) error {
 		return errors.New("sqlite: store not initialized")
 	}
 
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM messages`); err != nil {
+	if err := s.execWithBusyRetry(ctx, "purge messages", func() error {
+		_, execErr := s.db.ExecContext(ctx, `DELETE FROM messages`)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: purge messages: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
+	if err := s.execWithBusyRetry(ctx, "vacuum", func() error {
+		_, execErr := s.db.ExecContext(ctx, `VACUUM`)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: vacuum: %w", err)
 	}
 	return nil
@@ -671,18 +895,21 @@ func (s *Store) UpsertConfig(ctx context.Context, cfg *storage.ConfigRecord) err
 		updatedAt = time.Now().UTC()
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO config_kv(key, version, value_json, updated_at)
+	err := s.execWithBusyRetry(ctx, "upsert config", func() error {
+		_, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO config_kv(key, version, value_json, updated_at)
          VALUES(?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET
            version=excluded.version,
            value_json=excluded.value_json,
            updated_at=excluded.updated_at`,
-		cfg.Key,
-		cfg.Version,
-		cfg.ValueJSON,
-		updatedAt.UnixMilli(),
-	)
+			cfg.Key,
+			cfg.Version,
+			cfg.ValueJSON,
+			updatedAt.UnixMilli(),
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert config: %w", err)
 	}
@@ -707,20 +934,23 @@ func (s *Store) UpsertSession(ctx context.Context, sess *storage.Session) error 
 		updated = time.Now().UTC().Unix()
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions(token, service, data_json, token_expiry, updated_at)
+	err := s.execWithBusyRetry(ctx, "upsert session", func() error {
+		_, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO sessions(token, service, data_json, token_expiry, updated_at)
          VALUES(?, ?, ?, ?, ?)
          ON CONFLICT(token) DO UPDATE SET
            service=excluded.service,
            data_json=excluded.data_json,
            token_expiry=excluded.token_expiry,
            updated_at=excluded.updated_at`,
-		sess.Token,
-		sess.Service,
-		sess.DataJSON,
-		expiry,
-		updated,
-	)
+			sess.Token,
+			sess.Service,
+			sess.DataJSON,
+			expiry,
+			updated,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert session: %w", err)
 	}
@@ -732,7 +962,10 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	if s.db == nil {
 		return errors.New("sqlite: store not initialized")
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token = ?`, token); err != nil {
+	if err := s.execWithBusyRetry(ctx, "delete session", func() error {
+		_, execErr := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token = ?`, token)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: delete session: %w", err)
 	}
 	return nil
@@ -800,8 +1033,32 @@ func (s *Store) storageMode() string {
 	return "persistent"
 }
 
+func (s *Store) effectiveBusyTimeoutMS() int {
+	if s.cfg.BusyTimeoutMS <= 0 {
+		return defaultBusyTimeoutMS
+	}
+	return s.cfg.BusyTimeoutMS
+}
+
+func (s *Store) effectiveJournalMode() string {
+	mode := strings.TrimSpace(s.cfg.JournalMode)
+	if mode == "" {
+		return "WAL"
+	}
+	return strings.ToUpper(mode)
+}
+
+func (s *Store) requiredPragmas() []string {
+	return []string{
+		fmt.Sprintf("_pragma=busy_timeout(%d)", s.effectiveBusyTimeoutMS()),
+		"_pragma=foreign_keys(ON)",
+		fmt.Sprintf("_pragma=journal_mode(%s)", s.effectiveJournalMode()),
+	}
+}
+
 func (s *Store) buildDSN(path string) string {
 	params := []string{"cache=shared", "mode=rwc"}
+	params = append(params, s.requiredPragmas()...)
 	params = append(params, s.parseExtraPragmas()...)
 
 	query := strings.Join(params, "&")

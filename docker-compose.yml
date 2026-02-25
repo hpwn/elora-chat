@@ -12,6 +12,7 @@ services:
     environment:
       TZ: ${TZ}
       LOG_LEVEL: ${LOG_LEVEL}
+      ELORA_DEV_SEED_ENABLED: ${ELORA_DEV_SEED_ENABLED:-}
       ELORA_GNASTY_ADMIN_BASE: ${ELORA_GNASTY_ADMIN_BASE:-http://gnasty-harvester:8765}
     volumes:
       - ./data:/data

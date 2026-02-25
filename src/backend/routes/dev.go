@@ -37,8 +37,8 @@ func SetupDevRoutes(r *mux.Router) {
 		return
 	}
 
+	// Intentionally unauthenticated; guarded by explicit env opt-in and non-prod checks.
 	seed := r.PathPrefix("/api/dev/seed").Subrouter()
-	seed.Use(SessionMiddleware)
 	seed.HandleFunc("/marker", handleSeedMarker).Methods(http.MethodPost)
 	seed.HandleFunc("/burst", handleSeedBurst).Methods(http.MethodPost)
 }

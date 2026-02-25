@@ -2,6 +2,34 @@
 
 ## Local Dev Bring-up
 
+For repeatable CLI workflows (build/start/restart/logs/ws/tests), prefer:
+
+```bash
+./scripts/devctl.sh help
+```
+
+Common commands:
+
+```bash
+./scripts/devctl.sh build --dev --app all
+./scripts/devctl.sh start --dev --twitch-channel rifftrax --twitch-nick hp_az --follow
+./scripts/devctl.sh restart --dev --seed-enabled
+./scripts/devctl.sh logs --service gnasty-harvester
+./scripts/devctl.sh ws --platform youtube
+./scripts/devctl.sh test --app all
+```
+
+`--dev` uses `docker-compose.dev.yml` so `gnasty-harvester` is built from local `../gnasty-chat`.
+`--seed-enabled` gates development-only `POST /api/dev/seed/*` endpoints for that run.
+`--seed-enabled` relies on compose env passthrough into `elora-chat` and does not persist to `.env`.
+In non-production mode, these seed endpoints are intentionally callable without a logged-in session when enabled.
+Seed insertion supports shared `gnasty.db` schema, so `/api/dev/seed/*` works with the default shared-volume DB topology.
+Seeding retries transient SQLite `SQLITE_BUSY` lock contention on shared `gnasty.db` during startup churn.
+SQLite lock handling applies required `busy_timeout`/`foreign_keys`/`journal_mode` pragmas via DSN for every pooled connection.
+During startup contention, seed requests may wait briefly instead of failing fast while SQLite write locks clear.
+For troubleshooting seed failures, use `curl -i` (instead of `-fsS`) so response status/body remain visible.
+`devctl ws` uses containerized websocat+Python directly (no `make ws*` dependency).
+
 1. Copy the example environment and adjust any overrides:
    ```bash
    cp .env.example .env

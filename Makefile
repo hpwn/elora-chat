@@ -21,7 +21,7 @@ JQ_IMAGE ?= ghcr.io/jqlang/jq:1.7.1
 PYTHON_IMAGE ?= python:3.11-slim
 WS_FILTER_SCRIPT ?= $(CURDIR)/scripts/ws_filter.py
 
-.PHONY: bootstrap up down logs ws ws-twitch ws-youtube ws-filter seed:marker seed:burst health healthz readyz configz
+.PHONY: bootstrap up down logs ws ws-twitch ws-youtube ws-filter seed\:marker seed\:burst health healthz readyz configz devctl dev-build dev-start dev-restart dev-test
 
 bootstrap:
 $(COMPOSE) pull --ignore-pull-failures
@@ -70,3 +70,18 @@ health:
 
 configz:
 	@curl -fsS "$(API_URL)/configz" | docker run --rm -i $(JQ_IMAGE) .
+
+devctl:
+	bash ./scripts/devctl.sh help
+
+dev-build:
+	bash ./scripts/devctl.sh build --dev --app all
+
+dev-start:
+	bash ./scripts/devctl.sh start --dev
+
+dev-restart:
+	bash ./scripts/devctl.sh restart --dev
+
+dev-test:
+	bash ./scripts/devctl.sh test --app all

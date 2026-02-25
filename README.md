@@ -56,6 +56,49 @@ Both containers now run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so bind-mou
 | `make seed:burst` | Inject a short burst of mixed Twitch/YouTube sample messages. |
 | `make down` | Stop the stack while preserving the shared volume. |
 
+### Unified dev CLI (elora + gnasty)
+
+Use `scripts/devctl.sh` for one-command workflows across this repo and a local `../gnasty-chat` clone:
+
+```bash
+# show help
+./scripts/devctl.sh help
+
+# build both apps (use local ../gnasty-chat source)
+./scripts/devctl.sh build --dev --app all
+
+# start stack with runtime channel overrides and tail logs
+./scripts/devctl.sh start --dev \
+  --twitch-channel rifftrax \
+  --youtube-url "https://youtube.com/@yourchannel/live" \
+  --twitch-nick hp_az \
+  --follow
+
+# rebuild + restart after code changes
+./scripts/devctl.sh restart --dev --seed-enabled --follow
+
+# watch websocket traffic (all|twitch|youtube)
+./scripts/devctl.sh ws --platform all
+
+# run full test suites for elora + gnasty
+./scripts/devctl.sh test --app all
+```
+
+Notes:
+
+- `--dev` enables `docker-compose.dev.yml`, so `gnasty-harvester` is built from `../gnasty-chat`.
+- Without `--dev`, gnasty builds from `../gnasty-chat` directly via `docker build` (tag resolved from `GNASTY_IMAGE` or defaults to `gnasty-chat:latest`).
+- Channel overrides (`--twitch-channel`, `--youtube-url`, `--twitch-nick`) apply to the current command only and do not edit `.env`.
+- Dev seeding endpoints are disabled by default; use `--seed-enabled` (or `ELORA_DEV_SEED_ENABLED=true`) when you need `POST /api/dev/seed/*`.
+- `--seed-enabled` relies on compose env passthrough into `elora-chat` and only applies to that invocation.
+- In non-production mode, `POST /api/dev/seed/*` is intentionally callable without a logged-in session when `--seed-enabled` is set.
+- Seed insertion supports shared `gnasty.db` schema in local mode, so `/api/dev/seed/*` works in the default shared-volume topology.
+- Seeding now retries transient SQLite `SQLITE_BUSY` lock contention on shared `gnasty.db` during startup churn.
+- SQLite lock handling applies required `busy_timeout`/`foreign_keys`/`journal_mode` pragmas via DSN for every pooled connection.
+- During startup contention, seed requests may wait briefly instead of failing fast while SQLite write locks clear.
+- For troubleshooting seed failures, prefer `curl -i` (instead of `-fsS`) to keep response status/body visible.
+- `devctl ws` runs websocat + filter directly and does not rely on `make ws*`.
+
 All of the commands read configuration from `.env`, so update that file (or export overrides) before running them.
 
 ### Which mode am I in?
@@ -162,7 +205,7 @@ The backend now persists chat history to SQLite by default. Ephemeral mode keeps
 
 SQLite is the only storage backend. All chat history and authentication sessions use the same database.
 
-Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
+Write-ahead logging, foreign keys, and sensible busy timeouts are enforced via SQLite DSN pragmas so every pooled connection gets the same settings.
 
 ### Live from SQLite (DB tailer)
 If another process such as **gnasty-chat** writes directly to the same SQLite file, Elora can broadcast those rows live without

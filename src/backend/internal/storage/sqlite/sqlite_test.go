@@ -930,3 +930,265 @@ func TestSQLiteConfigRecordRoundTrip(t *testing.T) {
 		t.Fatalf("expected UpdatedAt to be set")
 	}
 }
+
+func TestSQLiteInsertMessageGnastySchema(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "gnasty.db")
+
+	bootstrapDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open bootstrap db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = bootstrapDB.Close()
+	})
+
+	schema := `CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  platform_msg_id TEXT,
+  ts INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  text TEXT NOT NULL,
+  emotes_json TEXT NOT NULL DEFAULT '[]',
+  raw_json TEXT NOT NULL DEFAULT '',
+  badges_json TEXT NOT NULL DEFAULT '[]',
+  colour TEXT NOT NULL DEFAULT ''
+);`
+	if _, err := bootstrapDB.Exec(schema); err != nil {
+		t.Fatalf("create gnasty schema: %v", err)
+	}
+	if _, err := bootstrapDB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS messages_uq_platform_msg ON messages(platform, platform_msg_id);`); err != nil {
+		t.Fatalf("create gnasty unique index: %v", err)
+	}
+	_ = bootstrapDB.Close()
+
+	store := New(Config{Mode: "persistent", Path: dbPath})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	msg := &storage.Message{
+		ID:         "seed-msg-1",
+		Timestamp:  time.Now().UTC().Truncate(time.Millisecond),
+		Username:   "seed-user",
+		Platform:   "Twitch",
+		Text:       "hello from seed",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"author":"seed-user","message":"hello from seed"}`,
+	}
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+
+	checkDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open check db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = checkDB.Close()
+	})
+
+	var (
+		gotPlatform      string
+		gotPlatformMsgID string
+		gotText          string
+	)
+	if err := checkDB.QueryRowContext(ctx, `SELECT platform, platform_msg_id, text FROM messages LIMIT 1`).Scan(&gotPlatform, &gotPlatformMsgID, &gotText); err != nil {
+		t.Fatalf("query inserted row: %v", err)
+	}
+	if gotPlatform != msg.Platform {
+		t.Fatalf("expected platform %q, got %q", msg.Platform, gotPlatform)
+	}
+	if gotPlatformMsgID != msg.ID {
+		t.Fatalf("expected platform_msg_id %q, got %q", msg.ID, gotPlatformMsgID)
+	}
+	if gotText != msg.Text {
+		t.Fatalf("expected text %q, got %q", msg.Text, gotText)
+	}
+}
+
+func TestSQLiteBuildDSNIncludesRequiredPragmas(t *testing.T) {
+	store := New(Config{
+		Mode:            "persistent",
+		Path:            "/tmp/test.db",
+		BusyTimeoutMS:   1234,
+		JournalMode:     "wal",
+		PragmasExtraCSV: "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY",
+	})
+
+	dsn := store.buildDSN("/tmp/test.db")
+	required := []string{
+		"_pragma=busy_timeout(1234)",
+		"_pragma=foreign_keys(ON)",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=mmap_size(268435456)",
+		"_pragma=cache_size(-100000)",
+		"_pragma=temp_store(MEMORY)",
+	}
+	for _, part := range required {
+		if !strings.Contains(dsn, part) {
+			t.Fatalf("expected DSN to contain %q, got %q", part, dsn)
+		}
+	}
+}
+
+func TestSQLiteInsertMessageRetriesOnBusy(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "busy-retry.db")
+
+	store := New(Config{Mode: "persistent", Path: dbPath, BusyTimeoutMS: 2500})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10")
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = lockDB.Close()
+	})
+
+	if _, err := lockDB.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = lockDB.ExecContext(context.Background(), "ROLLBACK")
+	})
+
+	go func() {
+		time.Sleep(1800 * time.Millisecond)
+		_, _ = lockDB.ExecContext(context.Background(), "COMMIT")
+	}()
+
+	msg := &storage.Message{
+		ID:         "busy-ok-1",
+		Timestamp:  time.Now().UTC(),
+		Username:   "busy-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"message":"hello"}`,
+	}
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+}
+
+func TestSQLiteInsertMessageRetriesOnBusyWithPooledStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "busy-retry-pooled.db")
+
+	store := New(Config{Mode: "persistent", Path: dbPath, BusyTimeoutMS: 2500, MaxConns: 16})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10")
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = lockDB.Close()
+	})
+
+	if _, err := lockDB.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = lockDB.ExecContext(context.Background(), "ROLLBACK")
+	})
+
+	go func() {
+		time.Sleep(1800 * time.Millisecond)
+		_, _ = lockDB.ExecContext(context.Background(), "COMMIT")
+	}()
+
+	msg := &storage.Message{
+		ID:         "busy-ok-pooled-1",
+		Timestamp:  time.Now().UTC(),
+		Username:   "busy-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"message":"hello"}`,
+	}
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+}
+
+func TestSQLiteInsertMessageReturnsBusyAfterRetriesExhausted(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "busy-fail.db")
+
+	store := New(Config{Mode: "persistent", Path: dbPath, BusyTimeoutMS: 400})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10")
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = lockDB.Close()
+	})
+
+	if _, err := lockDB.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = lockDB.ExecContext(context.Background(), "ROLLBACK")
+	})
+
+	msg := &storage.Message{
+		ID:         "busy-fail-1",
+		Timestamp:  time.Now().UTC(),
+		Username:   "busy-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"message":"hello"}`,
+	}
+
+	err = store.InsertMessage(ctx, msg)
+	if err == nil {
+		t.Fatalf("expected busy error, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "busy") && !strings.Contains(strings.ToLower(err.Error()), "locked") {
+		t.Fatalf("expected SQLITE_BUSY/locked error, got: %v", err)
+	}
+}
