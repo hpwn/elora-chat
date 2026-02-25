@@ -19,6 +19,9 @@ const BADGE_BASE_COLORS = {
   bits200000: '#ffea00'
 } as const;
 
+export const TWITCH_BROADCASTER_BADGE_SRC =
+  'https://static-cdn.jtvnw.net/badges/v1/5527c58c-fb7d-422d-b71b-f309dcb85cc1/3';
+
 type BadgeVersionIcon = {
   src: string;
   text?: string;
@@ -55,7 +58,7 @@ function createBitsEntry(version: string, text: string, colorKey: keyof typeof B
 const BADGE_ICON_MAP: Record<string, BadgeIconEntry> = {
   broadcaster: {
     label: 'Broadcaster',
-    defaultSrc: createBadgeSvg(BADGE_BASE_COLORS.broadcaster, 'HOST'),
+    defaultSrc: TWITCH_BROADCASTER_BADGE_SRC,
     defaultText: 'HOST'
   },
   moderator: {

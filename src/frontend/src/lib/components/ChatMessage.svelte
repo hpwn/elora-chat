@@ -3,7 +3,7 @@
   import type { SvelteSet } from 'svelte/reactivity';
   import { getContext } from 'svelte';
   import { loadImage, formatMessageFragments, validNameColors, sanitizeMessage } from '$lib/utils';
-  import { resolveBadgeIcon } from '$lib/chat/badge-icons';
+  import { resolveBadgeIcon, TWITCH_BROADCASTER_BADGE_SRC } from '$lib/chat/badge-icons';
   import { isChatDebugEnabled } from '$lib/config';
   import { TwitchIcon, YoutubeIcon } from './icons';
   import YoutubeBadgeGlyph from './YoutubeBadgeGlyph.svelte';
@@ -154,7 +154,16 @@
         return id !== 'owner' && id !== 'broadcaster' && id !== 'channel_owner';
       });
       badgesForRender.length = 0;
-      badgesForRender.push({ id: 'broadcaster', platform: 'youtube', title: 'Broadcaster' }, ...filtered);
+      badgesForRender.push(
+        {
+          id: 'broadcaster',
+          platform: 'youtube',
+          title: 'Broadcaster',
+          imageUrl: TWITCH_BROADCASTER_BADGE_SRC,
+          images: [{ id: 'broadcaster', url: TWITCH_BROADCASTER_BADGE_SRC, width: 18, height: 18 }]
+        },
+        ...filtered
+      );
     }
 
     badgeViews = badgesForRender.flatMap((badge) => {

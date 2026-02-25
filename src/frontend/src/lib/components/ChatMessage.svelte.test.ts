@@ -4,6 +4,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import ChatMessage from './ChatMessage.svelte';
 import { FragmentType, type Message } from '$lib/types/messages';
+import { TWITCH_BROADCASTER_BADGE_SRC } from '$lib/chat/badge-icons';
 
 describe('ChatMessage', () => {
   test('renders fallback text when fragments are empty', () => {
@@ -188,6 +189,42 @@ describe('ChatMessage', () => {
     const ownerBadge = screen.getByAltText('Broadcaster') as HTMLImageElement;
     expect(ownerBadge).toBeInTheDocument();
     expect(ownerBadge.tagName).toBe('IMG');
+    expect(ownerBadge.src).toContain(encodeURIComponent(TWITCH_BROADCASTER_BADGE_SRC));
+    expect(screen.queryByText('HOST', { selector: '.badge-label' })).not.toBeInTheDocument();
+  });
+
+  test('renders youtube owner token message with twitch broadcaster badge image source', () => {
+    const message: Message = {
+      author: 'OwnerUser',
+      message: 'hello',
+      colour: '#ffffff',
+      source: 'YouTube',
+      badges: [],
+      displayBadges: [{ id: 'owner', platform: 'youtube', title: 'Channel owner' }],
+      emotes: [],
+      fragments: [{ type: FragmentType.Text, text: 'hello', emote: null }]
+    };
+
+    render(ChatMessage, {
+      props: { message },
+      context: new Map<string, any>([
+        ['blacklist', new SvelteSet<string>()],
+        [
+          'keymods',
+          {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            reset: vi.fn()
+          }
+        ]
+      ])
+    });
+
+    const ownerBadge = screen.getByAltText('Broadcaster') as HTMLImageElement;
+    expect(ownerBadge).toBeInTheDocument();
+    expect(ownerBadge.tagName).toBe('IMG');
+    expect(ownerBadge.src).toContain(encodeURIComponent(TWITCH_BROADCASTER_BADGE_SRC));
     expect(screen.queryByText('HOST', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 
@@ -484,5 +521,6 @@ describe('ChatMessage', () => {
     const broadcaster = screen.getByAltText('Broadcaster 1') as HTMLImageElement;
     expect(broadcaster).toBeInTheDocument();
     expect(broadcaster.tagName).toBe('IMG');
+    expect(broadcaster.src).toContain(encodeURIComponent(TWITCH_BROADCASTER_BADGE_SRC));
   });
 });

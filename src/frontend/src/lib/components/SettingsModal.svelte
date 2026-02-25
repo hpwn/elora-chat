@@ -263,6 +263,27 @@
       .filter((item) => item.length > 0);
   }
 
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object';
+  }
+
+  function isRuntimeConfigResponse(value: unknown): value is RuntimeConfigResponse {
+    return isRecord(value) && 'config' in value && isRecord(value.config);
+  }
+
+  function getErrorMessage(value: unknown): string | null {
+    if (!isRecord(value)) return null;
+    const message = value.message;
+    if (typeof message === 'string' && message.trim().length > 0) {
+      return message;
+    }
+    const error = value.error;
+    if (typeof error === 'string' && error.trim().length > 0) {
+      return error;
+    }
+    return null;
+  }
+
   async function applyAdvancedSettings() {
     await applyBackendConfig((current) => ({
       ...current,
@@ -331,22 +352,22 @@
   async function saveBackendConfig(next: RuntimeConfig): Promise<RuntimeConfig | null> {
     configError = '';
     try {
-      const putPayload = 'config' in (next as RuntimeConfig | RuntimeConfigResponse) ? (next as RuntimeConfigResponse).config : next;
+      const putPayload: RuntimeConfig = next;
       const response = await fetch(apiPath('/api/config'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(putPayload)
       });
-      const payload = (await response.json().catch(() => null)) as RuntimeConfigResponse | { error?: string; message?: string } | null;
+      const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
         const fallback = `HTTP ${response.status}`;
-        const message = payload && typeof payload === 'object' ? payload.message || payload.error || fallback : fallback;
+        const message = getErrorMessage(payload) ?? fallback;
         throw new Error(message);
       }
-      if (!payload || typeof payload !== 'object' || !('config' in payload)) {
+      if (!isRuntimeConfigResponse(payload)) {
         throw new Error('Runtime config response missing config payload');
       }
-      const updated = (payload as RuntimeConfigResponse).config;
+      const updated = payload.config;
       backendConfig = updated;
       syncSettingsFromBackend(updated);
       return updated;
