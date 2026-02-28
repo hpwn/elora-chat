@@ -54,3 +54,6 @@ env.local.smoke.*
 
 # local scratch
 .tmp_env_inventory/
+
+# local soak outputs
+artifacts/
