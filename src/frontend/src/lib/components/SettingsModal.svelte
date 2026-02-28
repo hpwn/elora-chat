@@ -1,6 +1,14 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import ExportPanel from './ExportPanel.svelte';
+  import {
+    ALERT_TYPES_BY_PLATFORM,
+    buildAlertPreferenceKey,
+    normalizeTwitchChannelIdentity,
+    normalizeYouTubeSourceIdentity,
+    type AlertPlatform,
+    type AlertType
+  } from '$lib/alerts/preferences';
   import { apiPath } from '$lib/config';
   import { DEFAULT_SETTINGS, pushRecent, settings, type Settings } from '$lib/stores/settings';
   import type { RuntimeConfig, RuntimeConfigResponse } from '$lib/types/runtime-config';
@@ -102,6 +110,51 @@
     pauseBottomThresholdDraft = $settings.pauseBottomThresholdPx;
     pauseScrollIntentWindowDraft = $settings.pauseScrollIntentWindowMs;
     pauseMouseleaveCooldownDraft = $settings.pauseMouseleaveUnpauseCooldownMs;
+  }
+
+  function activeAlertIdentity(platform: AlertPlatform): string | null {
+    if (platform === 'twitch') {
+      return normalizeTwitchChannelIdentity($settings.twitchUrl);
+    }
+    return normalizeYouTubeSourceIdentity($settings.youtubeUrl);
+  }
+
+  function isAlertToggleEnabled(platform: AlertPlatform, type: AlertType): boolean {
+    const identity = activeAlertIdentity(platform);
+    if (!identity) return true;
+    const key = buildAlertPreferenceKey(platform, identity);
+    const current = $settings.alertPreferences.byChannel[key];
+    if (!current) return true;
+    return current[type] !== false;
+  }
+
+  function updateAlertMaster(enabled: boolean) {
+    updateSettings({
+      alertPreferences: {
+        ...$settings.alertPreferences,
+        enabled
+      }
+    });
+  }
+
+  function updateAlertType(platform: AlertPlatform, type: AlertType, enabled: boolean) {
+    const identity = activeAlertIdentity(platform);
+    if (!identity) return;
+
+    const key = buildAlertPreferenceKey(platform, identity);
+    const prevByChannel = $settings.alertPreferences.byChannel;
+    const prevChannel = prevByChannel[key] ?? {};
+    const nextChannel = { ...prevChannel, [type]: enabled };
+
+    updateSettings({
+      alertPreferences: {
+        ...$settings.alertPreferences,
+        byChannel: {
+          ...prevByChannel,
+          [key]: nextChannel
+        }
+      }
+    });
   }
 
   async function applyConnectionSettings() {
@@ -506,6 +559,48 @@
         <section class="section">
           <h3>History</h3>
           <button type="button" on:click={clearHistoryFromUI}>Clear history (UI only)</button>
+        </section>
+
+        <section class="section">
+          <h3>Alerts</h3>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={$settings.alertPreferences.enabled}
+              on:change={(event) => updateAlertMaster((event.currentTarget as HTMLInputElement).checked)}
+            />
+            Enable alert events in chat
+          </label>
+
+          <div class="alert-group">
+            <p class="current">Twitch channel: {normalizeTwitchChannelIdentity($settings.twitchUrl) ?? '(not set)'}</p>
+            {#each ALERT_TYPES_BY_PLATFORM.twitch as type}
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={isAlertToggleEnabled('twitch', type)}
+                  disabled={!$settings.alertPreferences.enabled || !normalizeTwitchChannelIdentity($settings.twitchUrl)}
+                  on:change={(event) => updateAlertType('twitch', type, (event.currentTarget as HTMLInputElement).checked)}
+                />
+                twitch.{type}
+              </label>
+            {/each}
+          </div>
+
+          <div class="alert-group">
+            <p class="current">YouTube source: {normalizeYouTubeSourceIdentity($settings.youtubeUrl) ?? '(not set)'}</p>
+            {#each ALERT_TYPES_BY_PLATFORM.youtube as type}
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={isAlertToggleEnabled('youtube', type)}
+                  disabled={!$settings.alertPreferences.enabled || !normalizeYouTubeSourceIdentity($settings.youtubeUrl)}
+                  on:change={(event) => updateAlertType('youtube', type, (event.currentTarget as HTMLInputElement).checked)}
+                />
+                youtube.{type}
+              </label>
+            {/each}
+          </div>
         </section>
 
         <section class="section">
@@ -982,6 +1077,15 @@
     flex-direction: row;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .alert-group {
+    border: 1px solid #2f2f37;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
   .error {

@@ -105,6 +105,7 @@ func main() {
 	routes.SetupAuthRoutes(r)
 	routes.SetupSendRoutes(r)
 	routes.SetupMessageRoutes(r)
+	routes.SetupAlertRoutes(r)
 	routes.SetupDevRoutes(r)
 	routes.SetupDebugRoutes(r)
 	routes.SetupSourceRoutes(r)

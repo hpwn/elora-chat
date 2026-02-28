@@ -1,5 +1,11 @@
 import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
+import {
+  ALL_ALERT_TYPES,
+  DEFAULT_ALERT_PREFERENCES,
+  type AlertPreferences,
+  type AlertType
+} from '$lib/alerts/preferences';
 
 export type Settings = {
   apiBaseUrl: string;
@@ -18,6 +24,7 @@ export type Settings = {
   youtubeUrl: string;
   recentTwitch: string[];
   recentYouTube: string[];
+  alertPreferences: AlertPreferences;
 };
 
 const KEY = 'elora.settings.v2';
@@ -40,7 +47,8 @@ export const DEFAULT_SETTINGS: Settings = {
   twitchUrl: '',
   youtubeUrl: '',
   recentTwitch: [],
-  recentYouTube: []
+  recentYouTube: [],
+  alertPreferences: { ...DEFAULT_ALERT_PREFERENCES, byChannel: {} }
 };
 
 function readString(value: unknown, fallback = ''): string {
@@ -71,6 +79,35 @@ function readRecent(value: unknown, max = MAX_RECENT_DEFAULT): string[] {
     if (out.length >= max) break;
   }
   return out;
+}
+
+function readAlertPreferences(value: unknown): AlertPreferences {
+  if (!value || typeof value !== 'object') {
+    return { ...DEFAULT_ALERT_PREFERENCES, byChannel: {} };
+  }
+
+  const record = value as Record<string, unknown>;
+  const enabled = typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_ALERT_PREFERENCES.enabled;
+  const byChannelRaw = record.byChannel;
+  const byChannel: Record<string, Partial<Record<AlertType, boolean>>> = {};
+
+  if (byChannelRaw && typeof byChannelRaw === 'object') {
+    for (const [channelKey, channelValue] of Object.entries(byChannelRaw as Record<string, unknown>)) {
+      if (typeof channelKey !== 'string') continue;
+      if (!channelValue || typeof channelValue !== 'object') continue;
+      const nextState: Partial<Record<AlertType, boolean>> = {};
+      for (const [typeKey, typeValue] of Object.entries(channelValue as Record<string, unknown>)) {
+        if (!ALL_ALERT_TYPES.includes(typeKey as AlertType)) continue;
+        if (typeof typeValue !== 'boolean') continue;
+        nextState[typeKey as AlertType] = typeValue;
+      }
+      if (Object.keys(nextState).length > 0) {
+        byChannel[channelKey] = nextState;
+      }
+    }
+  }
+
+  return { enabled, byChannel };
 }
 
 export function pushRecent(list: string[], value: string, max = MAX_RECENT_DEFAULT): string[] {
@@ -135,7 +172,8 @@ function loadSettings(): Settings {
       twitchUrl: readString(partial.twitchUrl),
       youtubeUrl: readString(partial.youtubeUrl),
       recentTwitch: readRecent(partial.recentTwitch),
-      recentYouTube: readRecent(partial.recentYouTube)
+      recentYouTube: readRecent(partial.recentYouTube),
+      alertPreferences: readAlertPreferences(partial.alertPreferences)
     };
   } catch (error) {
     console.warn('Failed to load settings from storage', error);

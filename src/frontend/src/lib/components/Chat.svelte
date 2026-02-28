@@ -4,6 +4,12 @@
   import { onMount, setContext } from 'svelte';
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
+  import { describeAlert, normalizeAlertPayload, type NormalizedAlert } from '$lib/alerts/normalize';
+  import {
+    buildAlertPreferenceKey,
+    normalizeTwitchChannelIdentity,
+    normalizeYouTubeSourceIdentity
+  } from '$lib/alerts/preferences';
 
   import { apiPath, getHideYouTubeAt, getShowBadges, getWsUrl, isChatDebugEnabled, isFetchHistoryOnLoad } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
@@ -58,6 +64,8 @@
 
   let ws: WebSocket | null = $state(null);
   let currentWsUrl = $state('');
+  let alertStream: EventSource | null = $state(null);
+  let currentAlertStreamUrl = $state('');
   let settingsDebug = $state(false);
   let pendingTwitchChannel = $state<string | null>(null);
   let pendingYouTubeSource = $state<string | null>(null);
@@ -99,55 +107,6 @@
 
   function sourceLower(source: Message['source'] | 'unknown'): string {
     return typeof source === 'string' ? source.toLowerCase() : '';
-  }
-
-  function normalizeTwitchChannelIdentity(raw: unknown): string | null {
-    if (typeof raw !== 'string') return null;
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    try {
-      const parsed = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
-      if (!parsed.hostname.toLowerCase().includes('twitch.tv')) return null;
-      const login = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
-      return login ? login.toLowerCase() : null;
-    } catch {
-      const login = trimmed.replace(/^@/, '').replace(/^\/+/, '').split(/[/?#]/)[0] ?? '';
-      if (!login) return null;
-      return /^[a-z0-9_]+$/i.test(login) ? login.toLowerCase() : null;
-    }
-  }
-
-  function normalizeYouTubeSourceIdentity(raw: unknown): string | null {
-    if (typeof raw !== 'string') return null;
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
-      return `https://www.youtube.com/watch?v=${trimmed}`;
-    }
-
-    try {
-      const parsed = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
-      const hostname = parsed.hostname.toLowerCase();
-      if (hostname === 'youtu.be') {
-        const id = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
-        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
-      }
-      if (!hostname.includes('youtube.com')) return null;
-
-      const path = parsed.pathname.replace(/\/+$/, '');
-      if (path.startsWith('/@')) {
-        const handle = path.split('/').filter(Boolean)[0]?.slice(1) ?? '';
-        return handle ? `https://www.youtube.com/@${handle}/live` : null;
-      }
-      const id = parsed.searchParams.get('v') ?? '';
-      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
-    } catch {
-      const handle = trimmed.replace(/^@/, '');
-      if (/^[a-zA-Z0-9._-]+$/.test(handle)) {
-        return `https://www.youtube.com/@${handle}/live`;
-      }
-      return null;
-    }
   }
 
   function systemMessage(text: string): Message {
@@ -261,6 +220,10 @@
   let lastUserScrollTs = $state(0);
   let lastScrollTop = $state(0);
   let programmaticScrollTs = $state(0);
+  let currentSettingsSnapshot: Settings = { ...DEFAULT_SETTINGS };
+  let seenAlertKeys = new Set<string>();
+  let seenAlertKeyOrder: string[] = [];
+  const MAX_SEEN_ALERT_KEYS = 5000;
 
   function convertIncomingMessage(message: WsChatMessage): Message | null {
     if (chatDebug) {
@@ -721,24 +684,30 @@
     processing = true;
 
     let processed = 0;
+    try {
+      while (messageQueue.length > 0) {
+        const next = messageQueue.shift();
+        if (!next) {
+          continue;
+        }
 
-    while (messageQueue.length > 0) {
-      const next = messageQueue.shift();
-      if (!next) {
-        continue;
+        if (next.colour === '#000000') next.colour = '#CCCCCC';
+
+        // Prevent keyed-each collisions from duplicated upstream IDs.
+        next.id = uniqueMessageID(next.id, next.source, next.ts);
+
+        messages = [...messages, next];
+        processed++;
+
+        if (chatDebug) {
+          debugCounters.appended++;
+          incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
+        }
+
+        trimHistory();
       }
-
-      if (next.colour === '#000000') next.colour = '#CCCCCC';
-
-      messages = [...messages, next];
-      processed++;
-
-      if (chatDebug) {
-        debugCounters.appended++;
-        incrementCounter(debugCounters.appendedBySource, next.source ?? 'unknown');
-      }
-
-      trimHistory();
+    } catch (error) {
+      console.error('[chat] queue processing failed', error);
     }
 
     if (processed === 0) {
@@ -767,6 +736,32 @@
     if (messageQueue.length > 0) {
       setTimeout(processMessageQueue, 0);
     }
+  }
+
+  function uniqueMessageID(
+    candidate: Message['id'],
+    source: Message['source'],
+    ts: number
+  ): string {
+    const fallback = `${source}:${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const base = typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : fallback;
+
+    const existing = new Set<string>();
+    for (const m of messages) {
+      if (typeof m.id === 'string' && m.id.trim().length > 0) {
+        existing.add(m.id.trim());
+      }
+    }
+
+    if (!existing.has(base)) {
+      return base;
+    }
+
+    let suffix = 2;
+    while (existing.has(`${base}#${suffix}`)) {
+      suffix++;
+    }
+    return `${base}#${suffix}`;
   }
 
   function handleScroll() {
@@ -854,6 +849,136 @@
     };
   }
 
+  function defaultAlertStreamUrl(): string {
+    return apiPath('/api/alerts/stream');
+  }
+
+  function alertPlatformToMessageSource(platform: NormalizedAlert['platform']): Message['source'] {
+    if (platform === 'twitch') return 'Twitch';
+    if (platform === 'youtube') return 'YouTube';
+    return 'Test';
+  }
+
+  function shouldDisplayAlert(alert: NormalizedAlert, cfg: Settings): boolean {
+    const prefs = cfg.alertPreferences;
+    if (!prefs.enabled) return false;
+
+    if (alert.platform === 'twitch') {
+      const activeIdentity = normalizeTwitchChannelIdentity(cfg.twitchUrl);
+      if (!activeIdentity) return false;
+      const alertIdentity = normalizeTwitchChannelIdentity(alert.sourceChannel ?? '');
+      if (alertIdentity && alertIdentity !== activeIdentity) return false;
+      const key = buildAlertPreferenceKey('twitch', activeIdentity);
+      return prefs.byChannel[key]?.[alert.type] !== false;
+    }
+
+    if (alert.platform === 'youtube') {
+      const activeIdentity = normalizeYouTubeSourceIdentity(cfg.youtubeUrl);
+      if (!activeIdentity) return false;
+      const alertIdentity = normalizeYouTubeSourceIdentity(alert.sourceUrl ?? '');
+      if (alertIdentity && alertIdentity !== activeIdentity) return false;
+      const key = buildAlertPreferenceKey('youtube', activeIdentity);
+      return prefs.byChannel[key]?.[alert.type] !== false;
+    }
+
+    return false;
+  }
+
+  function queueAlert(alert: NormalizedAlert): void {
+    const source = alertPlatformToMessageSource(alert.platform);
+    const text = describeAlert(alert);
+    const ts = alert.ts || Date.now();
+
+    const message: Message = {
+      id: `alert:${source}:${alert.id}`,
+      ts,
+      author: alert.username || 'Alert',
+      badges: [],
+      displayBadges: [],
+      badges_raw: null,
+      colour: '#f59e0b',
+      usernameColor: '#f59e0b',
+      message: text,
+      fragments: [{ type: FragmentType.Text, text, emote: null }],
+      emotes: [],
+      source
+    };
+
+    messageQueue = [...messageQueue, message];
+    if (!processing) processMessageQueue();
+  }
+
+  function alertDedupKey(alert: NormalizedAlert): string {
+    return [
+      alert.platform,
+      alert.id,
+      alert.type,
+      String(alert.ts),
+      alert.username,
+      alert.sourceChannel ?? '',
+      alert.sourceUrl ?? '',
+      alert.message ?? '',
+      typeof alert.amount === 'number' ? String(alert.amount) : '',
+      alert.currency ?? ''
+    ].join('|');
+  }
+
+  function rememberAlertKey(key: string): boolean {
+    if (seenAlertKeys.has(key)) {
+      return false;
+    }
+    seenAlertKeys.add(key);
+    seenAlertKeyOrder.push(key);
+    if (seenAlertKeyOrder.length > MAX_SEEN_ALERT_KEYS) {
+      const oldest = seenAlertKeyOrder.shift();
+      if (oldest) {
+        seenAlertKeys.delete(oldest);
+      }
+    }
+    return true;
+  }
+
+  function handleAlertEventData(rawData: unknown): void {
+    try {
+      const normalized = normalizeAlertPayload(rawData);
+      if (!normalized) return;
+      if (!shouldDisplayAlert(normalized, currentSettingsSnapshot)) return;
+      if (!rememberAlertKey(alertDedupKey(normalized))) return;
+      queueAlert(normalized);
+    } catch (error) {
+      console.error('[chat] alert event handling failed', error);
+    }
+  }
+
+  function closeAlertStream(): void {
+    if (!alertStream) return;
+    alertStream.close();
+    alertStream = null;
+    currentAlertStreamUrl = '';
+  }
+
+  function initializeAlertStream() {
+    if (typeof EventSource === 'undefined') {
+      return;
+    }
+
+    const streamUrl = defaultAlertStreamUrl();
+    if (alertStream && streamUrl === currentAlertStreamUrl) {
+      return;
+    }
+
+    closeAlertStream();
+    currentAlertStreamUrl = streamUrl;
+    const stream = new EventSource(streamUrl);
+    stream.addEventListener('alert', (event) => {
+      const msg = event as MessageEvent;
+      handleAlertEventData(msg.data);
+    });
+    stream.onmessage = (event) => handleAlertEventData(event.data);
+    stream.onerror = () => {};
+    alertStream = stream;
+  }
+
   function markUserScrollIntent() {
     lastUserScrollTs = Date.now();
   }
@@ -920,12 +1045,15 @@
     nextBeforeTs = null;
     nextBeforeRowID = null;
     historyExhausted = true;
+    seenAlertKeys = new Set<string>();
+    seenAlertKeyOrder = [];
   }
 
   onMount(() => {
     let lastSettings: Settings | null = null;
 
     const unsubscribeSettings = settings.subscribe((nextSettings) => {
+      currentSettingsSnapshot = { ...nextSettings };
       chatDebug = isChatDebugEnabled();
       const wasSettingsDebug = settingsDebug;
       settingsDebug = !!nextSettings.settingsDebug;
@@ -942,6 +1070,7 @@
       if (lastSettings) {
         const apiChanged = lastSettings.apiBaseUrl !== nextSettings.apiBaseUrl;
         const wsChanged = lastSettings.wsUrl !== nextSettings.wsUrl;
+        const alertsApiChanged = apiChanged;
         const twitchChanged = lastSettings.twitchUrl !== nextSettings.twitchUrl;
         const youtubeChanged = lastSettings.youtubeUrl !== nextSettings.youtubeUrl;
         const normalizedTwitch = normalizeTwitchChannelIdentity(nextSettings.twitchUrl);
@@ -970,6 +1099,10 @@
             emitSystem(`youtube: source set -> ${pendingYouTubeSource} (waiting for first matching message)`);
           }
         }
+
+        if (alertsApiChanged) {
+          initializeAlertStream();
+        }
       }
 
       const nextWsUrl = getWsUrl();
@@ -991,6 +1124,7 @@
       historyExhausted = true;
     }
     initializeWebSocket();
+    initializeAlertStream();
 
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
@@ -1003,6 +1137,7 @@
         ws.close();
         ws = null;
       }
+      closeAlertStream();
       saveBlacklist();
     });
 
@@ -1012,6 +1147,7 @@
         ws.close();
         ws = null;
       }
+      closeAlertStream();
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
       document.removeEventListener('visibilitychange', handleVisibilityChange);

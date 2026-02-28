@@ -1,0 +1,60 @@
+{
+  "status": "PASS",
+  "start": "2026-02-27T23:23:59-07:00",
+  "end": "2026-02-28T00:24:03-07:00",
+  "duration_seconds": 3600,
+  "filters": null,
+  "out_dir": "./artifacts/alerts-soak-20260227-232359",
+  "counts": {
+    "gnasty_start": 453,
+    "gnasty_end": 887,
+    "gnasty_delta": 434,
+    "elora_start": 453,
+    "elora_end": 887,
+    "elora_delta": 434
+  },
+  "stream_capture": {
+    "gnasty_events": 1,
+    "elora_events": 1,
+    "gnasty_unique_keys": 1,
+    "elora_unique_keys": 1,
+    "both_unique_keys": 1,
+    "gnasty_only_keys": 0,
+    "elora_only_keys": 0
+  },
+  "primary_parity": {
+    "gnasty_list_events": 0,
+    "elora_list_events": 0,
+    "gnasty_list_unique_keys": 0,
+    "elora_list_unique_keys": 0,
+    "both_list_unique_keys": 0,
+    "gnasty_only_list_keys": 0,
+    "elora_only_list_keys": 0
+  },
+  "errors": {
+    "gnasty_poll_errors": 0,
+    "elora_poll_errors": 0,
+    "gnasty_stream_dropped": true,
+    "elora_stream_dropped": true
+  },
+  "artifacts": {
+    "counts_log": "counts.log",
+    "gnasty_sse": "gnasty.sse",
+    "elora_sse": "elora.sse",
+    "gnasty_jsonl": "gnasty.jsonl",
+    "elora_jsonl": "elora.jsonl",
+    "gnasty_keys": "gnasty.keys",
+    "elora_keys": "elora.keys",
+    "gnasty_only_keys": "gnasty_only.keys",
+    "elora_only_keys": "elora_only.keys",
+    "gnasty_list_jsonl": "gnasty.list.jsonl",
+    "elora_list_jsonl": "elora.list.jsonl",
+    "gnasty_list_keys": "gnasty.list.keys",
+    "elora_list_keys": "elora.list.keys",
+    "gnasty_only_list_keys": "gnasty_only.list.keys",
+    "elora_only_list_keys": "elora_only.list.keys",
+    "gnasty_list_json": "gnasty.list.json",
+    "elora_list_json": "elora.list.json",
+    "summary_txt": "summary.txt"
+  }
+}

@@ -1,0 +1,38 @@
+status: PASS
+reason: count_and_list_parity_ok
+start: 2026-02-28T11:53:01-07:00
+end: 2026-02-28T12:53:05-07:00
+duration_seconds: 3600
+filters: <none>
+
+counts:
+  gnasty_start: 1093
+  gnasty_end: 1213
+  gnasty_delta: 120
+  elora_start: 1093
+  elora_end: 1213
+  elora_delta: 120
+
+stream_capture:
+  gnasty_events: 2
+  elora_events: 2
+  gnasty_unique_keys: 1
+  elora_unique_keys: 1
+  both_unique_keys: 1
+  gnasty_only_keys: 0
+  elora_only_keys: 0
+
+primary_parity:
+  gnasty_list_events: 120
+  elora_list_events: 120
+  gnasty_list_unique_keys: 120
+  elora_list_unique_keys: 120
+  both_list_unique_keys: 120
+  gnasty_only_list_keys: 0
+  elora_only_list_keys: 0
+
+errors:
+  gnasty_poll_errors: 0
+  elora_poll_errors: 0
+  gnasty_stream_dropped: 1
+  elora_stream_dropped: 1
