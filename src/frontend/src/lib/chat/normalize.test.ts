@@ -73,11 +73,7 @@ describe('normalizeWsPayload', () => {
     const obj = {
       author: 'BadgeTester',
       message: 'hi',
-      badges: [
-        'vip/1',
-        { id: 'moderator', version: '1' },
-        { name: 'founder' }
-      ]
+      badges: ['vip/1', { id: 'moderator', version: '1' }, { name: 'founder' }]
     };
     const out = normalizeWsPayload(obj);
     expect(out?.badges).toEqual([
@@ -119,9 +115,7 @@ describe('normalizeWsPayload', () => {
     const obj = { author: 'BotRix', message: 'Automated message', fragments: [] };
     const out = normalizeWsPayload(obj);
 
-    expect(out?.fragments).toEqual([
-      { type: 'text', text: 'Automated message', emote: null }
-    ]);
+    expect(out?.fragments).toEqual([{ type: 'text', text: 'Automated message', emote: null }]);
   });
 
   it('maps youtube member badges to image urls', () => {

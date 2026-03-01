@@ -9,7 +9,8 @@
   import YoutubeBadgeGlyph from './YoutubeBadgeGlyph.svelte';
 
   let { message }: { message: Message } = $props();
-  if (isChatDebugEnabled()) console.debug('[DBG] ChatMessage fragments', $state.snapshot(message.fragments));
+  if (isChatDebugEnabled())
+    console.debug('[DBG] ChatMessage fragments', $state.snapshot(message.fragments));
   let visible = $state(true);
 
   const blacklist: SvelteSet<string> = getContext('blacklist');
@@ -94,7 +95,9 @@
 
     const exactTokens = [idToken, codeToken, textToken];
     const looksLikeModerator =
-      exactTokens.some((token) => token === 'mod' || token === 'moderator' || token.includes('moderator')) ||
+      exactTokens.some(
+        (token) => token === 'mod' || token === 'moderator' || token.includes('moderator')
+      ) ||
       titleToken.includes('moderator') ||
       imageUrl.includes('yt-mod-wrench');
     if (looksLikeModerator) {
@@ -102,7 +105,8 @@
     }
 
     const looksLikeVerified =
-      exactTokens.some((token) => token === 'ver' || token === 'verified') || titleToken.includes('verified');
+      exactTokens.some((token) => token === 'ver' || token === 'verified') ||
+      titleToken.includes('verified');
     if (looksLikeVerified) {
       return 'verified';
     }
@@ -110,9 +114,14 @@
     return undefined;
   }
 
-  function preferredBadgeImageUrl(images: Array<{ url?: string; width?: number; height?: number }>): string | undefined {
+  function preferredBadgeImageUrl(
+    images: Array<{ url?: string; width?: number; height?: number }>
+  ): string | undefined {
     const valid = images
-      .filter((img) => img && typeof img === 'object' && typeof img.url === 'string' && img.url.trim().length > 0)
+      .filter(
+        (img) =>
+          img && typeof img === 'object' && typeof img.url === 'string' && img.url.trim().length > 0
+      )
       .map((img) => ({ ...img, url: (img.url as string).trim() }));
     if (valid.length === 0) return undefined;
 
@@ -123,8 +132,10 @@
       if (widthA !== widthB) {
         return widthB - widthA;
       }
-      const heightA = typeof a.height === 'number' && Number.isFinite(a.height) ? a.height : fallback;
-      const heightB = typeof b.height === 'number' && Number.isFinite(b.height) ? b.height : fallback;
+      const heightA =
+        typeof a.height === 'number' && Number.isFinite(a.height) ? a.height : fallback;
+      const heightB =
+        typeof b.height === 'number' && Number.isFinite(b.height) ? b.height : fallback;
       return heightB - heightA;
     });
 
@@ -140,7 +151,8 @@
           : [];
     const badgesForRender = [...rawBadges];
     const shouldInjectYoutubeOwnerBadge =
-      message.source === 'YouTube' && (hasYoutubeOwnerBadge(rawBadges) || isYoutubeOwnerByNameColour());
+      message.source === 'YouTube' &&
+      (hasYoutubeOwnerBadge(rawBadges) || isYoutubeOwnerByNameColour());
     if (shouldInjectYoutubeOwnerBadge) {
       const filtered = badgesForRender.filter((badge) => {
         if (!badge || typeof badge !== 'object') return true;
@@ -181,9 +193,10 @@
           ? badgeRecord.version.trim()
           : undefined;
       const icon = resolveBadgeIcon(id, version);
-      const title = typeof badgeRecord.title === 'string' && badgeRecord.title.trim().length > 0
-        ? badgeRecord.title
-        : undefined;
+      const title =
+        typeof badgeRecord.title === 'string' && badgeRecord.title.trim().length > 0
+          ? badgeRecord.title
+          : undefined;
       const badgeImages = Array.isArray(badgeRecord.images) ? badgeRecord.images : [];
       const imageUrl =
         typeof badgeRecord.imageUrl === 'string' && badgeRecord.imageUrl.trim().length > 0
@@ -203,8 +216,12 @@
       const preferredImage = preferredBadgeImageUrl(badgeImages);
       const badgeSrc = youtubeGlyph
         ? undefined
-        : preferredImage ?? imageUrl ?? (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined);
-      const fallbackSrc = youtubeGlyph ? undefined : (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined);
+        : (preferredImage ?? imageUrl ?? (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined));
+      const fallbackSrc = youtubeGlyph
+        ? undefined
+        : isYoutubeModerator
+          ? YT_MOD_WRENCH_PATH
+          : undefined;
       const iconSrc = youtubeGlyph ? undefined : icon.src;
       return [
         {
@@ -218,7 +235,11 @@
           fallbackSrc,
           alt:
             title ??
-            (youtubeGlyph === 'verified' ? 'Verified' : youtubeGlyph === 'moderator' ? 'Moderator' : icon.alt)
+            (youtubeGlyph === 'verified'
+              ? 'Verified'
+              : youtubeGlyph === 'moderator'
+                ? 'Moderator'
+                : icon.alt)
         }
       ];
     });
@@ -288,7 +309,11 @@
 
       {#each badgeViews as badge (badge.key)}
         {#if badge.youtubeGlyph}
-          <YoutubeBadgeGlyph kind={badge.youtubeGlyph} title={badge.alt} color={badge.youtubeGlyphColor} />
+          <YoutubeBadgeGlyph
+            kind={badge.youtubeGlyph}
+            title={badge.alt}
+            color={badge.youtubeGlyphColor}
+          />
         {:else if badge.src}
           <img
             class="badge-icon"

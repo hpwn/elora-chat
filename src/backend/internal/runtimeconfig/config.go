@@ -692,10 +692,7 @@ func envBoolAny(keys []string, def bool) bool {
 		if raw == "" {
 			continue
 		}
-		v, err := strconv.ParseBool(raw)
-		if err == nil {
-			return v
-		}
+		return envBool(key, def)
 	}
 	return def
 }

@@ -176,5 +176,4 @@
       transform: translateX(0.5rem) translateY(0.25rem);
     }
   }
-
 </style>

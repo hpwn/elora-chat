@@ -2,7 +2,10 @@ import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { settings, SETTINGS_STORAGE_KEY } from '$lib/stores/settings';
 
-const defaultOrigin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : 'http://localhost:8080';
+const defaultOrigin =
+  typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : 'http://localhost:8080';
 const fetchHistoryTruthyValues = new Set(['1', 'true', 'yes', 'on']);
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -70,7 +73,10 @@ export function isFetchHistoryOnLoad(): boolean {
     const configured = get(settings).fetchHistoryOnLoad;
     if (typeof configured === 'boolean') return configured;
   }
-  const fetchHistoryEnv = (import.meta.env.VITE_PUBLIC_FETCH_HISTORY_ON_LOAD ?? '').toString().trim().toLowerCase();
+  const fetchHistoryEnv = (import.meta.env.VITE_PUBLIC_FETCH_HISTORY_ON_LOAD ?? '')
+    .toString()
+    .trim()
+    .toLowerCase();
   return fetchHistoryTruthyValues.has(fetchHistoryEnv);
 }
 

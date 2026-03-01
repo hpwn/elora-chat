@@ -73,4 +73,3 @@ describe('describeAlert', () => {
     expect(text).toContain('great stream');
   });
 });
-

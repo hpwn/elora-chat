@@ -24,9 +24,13 @@ export function normalizeAlertPayload(input: unknown): NormalizedAlert | null {
   const type = normalizeAlertType(record.type ?? record.alert_type ?? record.kind);
   if (!type) return null;
 
-  const id = readString(record.id ?? record.alert_id ?? record.platform_event_id ?? record.uid) || cryptoRandom();
-  const username = readString(record.username ?? record.author ?? record.user ?? record.display_name) || 'Alert';
-  const sourceChannel = readString(record.source_channel ?? record.sourceChannel ?? record.channel) || undefined;
+  const id =
+    readString(record.id ?? record.alert_id ?? record.platform_event_id ?? record.uid) ||
+    cryptoRandom();
+  const username =
+    readString(record.username ?? record.author ?? record.user ?? record.display_name) || 'Alert';
+  const sourceChannel =
+    readString(record.source_channel ?? record.sourceChannel ?? record.channel) || undefined;
   const sourceUrl = readString(record.source_url ?? record.sourceUrl ?? record.url) || undefined;
   const message = readString(record.message ?? record.text ?? record.body) || undefined;
   const amount = readNumber(record.amount ?? record.value);

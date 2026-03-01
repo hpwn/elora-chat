@@ -48,7 +48,11 @@ function createBadgeSvg(background: string, text: string, textColor = '#ffffff')
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function createBitsEntry(version: string, text: string, colorKey: keyof typeof BADGE_BASE_COLORS): BadgeVersionIcon {
+function createBitsEntry(
+  version: string,
+  text: string,
+  colorKey: keyof typeof BADGE_BASE_COLORS
+): BadgeVersionIcon {
   return {
     src: createBadgeSvg(BADGE_BASE_COLORS[colorKey], text),
     text
@@ -165,7 +169,8 @@ export function resolveBadgeIcon(id: string, version?: string | null): ResolvedB
 
   const baseLabel = entry?.label ?? formatBadgeName(normalizedId || id);
   const alt = cleanVersion ? `${baseLabel} ${cleanVersion}` : baseLabel;
-  const label = text ?? (cleanVersion ? cleanVersion.toUpperCase() : baseLabel.slice(0, 3).toUpperCase());
+  const label =
+    text ?? (cleanVersion ? cleanVersion.toUpperCase() : baseLabel.slice(0, 3).toUpperCase());
 
   return { label, alt, src };
 }

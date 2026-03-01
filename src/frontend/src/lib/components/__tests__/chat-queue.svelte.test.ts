@@ -56,9 +56,33 @@ describe('Chat websocket queue', () => {
 
     const baseTs = Date.now();
     const incoming: WsChatMessage[] = [
-      { id: 'yt-1', ts: baseTs, username: 'yt-a', platform: 'YouTube', text: 'yt-one', emotes: [], badges: [] },
-      { id: 'tw-1', ts: baseTs, username: 'tw-a', platform: 'Twitch', text: 'tw-one', emotes: [], badges: [] },
-      { id: 'yt-2', ts: baseTs, username: 'yt-b', platform: 'YouTube', text: 'yt-two', emotes: [], badges: [] }
+      {
+        id: 'yt-1',
+        ts: baseTs,
+        username: 'yt-a',
+        platform: 'YouTube',
+        text: 'yt-one',
+        emotes: [],
+        badges: []
+      },
+      {
+        id: 'tw-1',
+        ts: baseTs,
+        username: 'tw-a',
+        platform: 'Twitch',
+        text: 'tw-one',
+        emotes: [],
+        badges: []
+      },
+      {
+        id: 'yt-2',
+        ts: baseTs,
+        username: 'yt-b',
+        platform: 'YouTube',
+        text: 'yt-two',
+        emotes: [],
+        badges: []
+      }
     ];
 
     for (const msg of incoming) __pushMockMessage(msg);
@@ -92,9 +116,33 @@ describe('Chat websocket queue', () => {
 
     const baseTs = Date.now();
     const incoming: WsChatMessage[] = [
-      { id: 'same-id', ts: baseTs + 1, username: 'yt-a', platform: 'YouTube', text: 'yt-one', emotes: [], badges: [] },
-      { id: 'same-id', ts: baseTs + 2, username: 'tw-a', platform: 'Twitch',  text: 'tw-one', emotes: [], badges: [] },
-      { id: 'same-id-2', ts: baseTs + 3, username: 'yt-b', platform: 'YouTube', text: 'yt-two', emotes: [], badges: [] }
+      {
+        id: 'same-id',
+        ts: baseTs + 1,
+        username: 'yt-a',
+        platform: 'YouTube',
+        text: 'yt-one',
+        emotes: [],
+        badges: []
+      },
+      {
+        id: 'same-id',
+        ts: baseTs + 2,
+        username: 'tw-a',
+        platform: 'Twitch',
+        text: 'tw-one',
+        emotes: [],
+        badges: []
+      },
+      {
+        id: 'same-id-2',
+        ts: baseTs + 3,
+        username: 'yt-b',
+        platform: 'YouTube',
+        text: 'yt-two',
+        emotes: [],
+        badges: []
+      }
     ];
 
     for (const msg of incoming) __pushMockMessage(msg);
@@ -116,9 +164,33 @@ describe('Chat websocket queue', () => {
 
     const baseTs = Date.now();
     const incoming: WsChatMessage[] = [
-      { id: 'dup-id', ts: baseTs + 1, username: 'yt-a', platform: 'YouTube', text: 'first', emotes: [], badges: [] },
-      { id: 'dup-id', ts: baseTs + 2, username: 'yt-b', platform: 'YouTube', text: 'second', emotes: [], badges: [] },
-      { id: 'dup-id', ts: baseTs + 3, username: 'yt-c', platform: 'YouTube', text: 'third', emotes: [], badges: [] }
+      {
+        id: 'dup-id',
+        ts: baseTs + 1,
+        username: 'yt-a',
+        platform: 'YouTube',
+        text: 'first',
+        emotes: [],
+        badges: []
+      },
+      {
+        id: 'dup-id',
+        ts: baseTs + 2,
+        username: 'yt-b',
+        platform: 'YouTube',
+        text: 'second',
+        emotes: [],
+        badges: []
+      },
+      {
+        id: 'dup-id',
+        ts: baseTs + 3,
+        username: 'yt-c',
+        platform: 'YouTube',
+        text: 'third',
+        emotes: [],
+        badges: []
+      }
     ];
 
     for (const msg of incoming) __pushMockMessage(msg);

@@ -87,12 +87,15 @@ function readAlertPreferences(value: unknown): AlertPreferences {
   }
 
   const record = value as Record<string, unknown>;
-  const enabled = typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_ALERT_PREFERENCES.enabled;
+  const enabled =
+    typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_ALERT_PREFERENCES.enabled;
   const byChannelRaw = record.byChannel;
   const byChannel: Record<string, Partial<Record<AlertType, boolean>>> = {};
 
   if (byChannelRaw && typeof byChannelRaw === 'object') {
-    for (const [channelKey, channelValue] of Object.entries(byChannelRaw as Record<string, unknown>)) {
+    for (const [channelKey, channelValue] of Object.entries(
+      byChannelRaw as Record<string, unknown>
+    )) {
       if (typeof channelKey !== 'string') continue;
       if (!channelValue || typeof channelValue !== 'object') continue;
       const nextState: Partial<Record<AlertType, boolean>> = {};
@@ -155,7 +158,11 @@ function loadSettings(): Settings {
       hideYouTubeAt: readBoolean(partial.hideYouTubeAt, DEFAULT_SETTINGS.hideYouTubeAt),
       pauseChatEnabled: readBoolean(partial.pauseChatEnabled, DEFAULT_SETTINGS.pauseChatEnabled),
       pauseOnMouseLeave: readBoolean(partial.pauseOnMouseLeave, DEFAULT_SETTINGS.pauseOnMouseLeave),
-      pauseBottomThresholdPx: readNumber(partial.pauseBottomThresholdPx, DEFAULT_SETTINGS.pauseBottomThresholdPx, 0),
+      pauseBottomThresholdPx: readNumber(
+        partial.pauseBottomThresholdPx,
+        DEFAULT_SETTINGS.pauseBottomThresholdPx,
+        0
+      ),
       pauseScrollIntentWindowMs: readNumber(
         partial.pauseScrollIntentWindowMs,
         DEFAULT_SETTINGS.pauseScrollIntentWindowMs,
@@ -166,7 +173,10 @@ function loadSettings(): Settings {
         DEFAULT_SETTINGS.pauseMouseleaveUnpauseCooldownMs,
         0
       ),
-      fetchHistoryOnLoad: readBoolean(partial.fetchHistoryOnLoad, DEFAULT_SETTINGS.fetchHistoryOnLoad),
+      fetchHistoryOnLoad: readBoolean(
+        partial.fetchHistoryOnLoad,
+        DEFAULT_SETTINGS.fetchHistoryOnLoad
+      ),
       chatDebug: readBoolean(partial.chatDebug, DEFAULT_SETTINGS.chatDebug),
       settingsDebug: readBoolean(partial.settingsDebug, DEFAULT_SETTINGS.settingsDebug),
       twitchUrl: readString(partial.twitchUrl),

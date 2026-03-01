@@ -188,7 +188,9 @@
       youtubeSourceUrl: input
     }));
     if (updated?.youtubeSourceUrl) {
-      updateSettings({ recentYouTube: pushRecent($settings.recentYouTube, updated.youtubeSourceUrl) });
+      updateSettings({
+        recentYouTube: pushRecent($settings.recentYouTube, updated.youtubeSourceUrl)
+      });
     }
   }
 
@@ -198,7 +200,10 @@
       pauseOnMouseLeave: !!pauseOnMouseLeaveDraft,
       pauseBottomThresholdPx: Math.max(0, Math.floor(Number(pauseBottomThresholdDraft) || 0)),
       pauseScrollIntentWindowMs: Math.max(0, Math.floor(Number(pauseScrollIntentWindowDraft) || 0)),
-      pauseMouseleaveUnpauseCooldownMs: Math.max(0, Math.floor(Number(pauseMouseleaveCooldownDraft) || 0))
+      pauseMouseleaveUnpauseCooldownMs: Math.max(
+        0,
+        Math.floor(Number(pauseMouseleaveCooldownDraft) || 0)
+      )
     });
     syncDraftsFromSettings();
   }
@@ -274,8 +279,12 @@
       youtubeUrl,
       showBadges: config.features.showBadges,
       hideYouTubeAt: config.features.hideYouTubeAt,
-      recentTwitch: twitchUrl ? pushRecent($settings.recentTwitch, twitchUrl) : $settings.recentTwitch,
-      recentYouTube: youtubeUrl ? pushRecent($settings.recentYouTube, youtubeUrl) : $settings.recentYouTube
+      recentTwitch: twitchUrl
+        ? pushRecent($settings.recentTwitch, twitchUrl)
+        : $settings.recentTwitch,
+      recentYouTube: youtubeUrl
+        ? pushRecent($settings.recentYouTube, youtubeUrl)
+        : $settings.recentYouTube
     });
     syncAdvancedDrafts(config);
     syncDraftsFromSettings();
@@ -430,7 +439,9 @@
     }
   }
 
-  async function applyBackendConfig(mutator: (current: RuntimeConfig) => RuntimeConfig): Promise<RuntimeConfig | null> {
+  async function applyBackendConfig(
+    mutator: (current: RuntimeConfig) => RuntimeConfig
+  ): Promise<RuntimeConfig | null> {
     const current = backendConfig ?? (await loadBackendConfig());
     if (!current) return null;
     return saveBackendConfig(mutator(current));
@@ -458,12 +469,20 @@
     try {
       const response = await fetch(apiPath('/api/sources/top/youtube'));
       if (!response.ok) {
-        const failure = await response
-          .json()
-          .catch(() => ({ error: 'top_live_failed', status: response.status } as { error?: string; status?: number; reason?: string; hint?: string }));
+        const failure = await response.json().catch(
+          () =>
+            ({ error: 'top_live_failed', status: response.status }) as {
+              error?: string;
+              status?: number;
+              reason?: string;
+              hint?: string;
+            }
+        );
         const reason = failure.reason ? ` (${failure.reason})` : '';
         const hint = failure.hint ? ` - ${failure.hint}` : '';
-        throw new Error(`${failure.error ?? 'top_live_failed'} [${failure.status ?? response.status}]${reason}${hint}`);
+        throw new Error(
+          `${failure.error ?? 'top_live_failed'} [${failure.status ?? response.status}]${reason}${hint}`
+        );
       }
       const payload = (await response.json()) as TopYouTubeItem[];
       youtubeTopList = Array.isArray(payload) ? payload.slice(0, 10) : [];
@@ -521,9 +540,17 @@
     </header>
 
     <nav class="tabs" aria-label="Settings tabs">
-      <button class:active={activeTab === 'quick'} type="button" on:click={() => setTab('quick')}>Quick</button>
-      <button class:active={activeTab === 'advanced'} type="button" on:click={() => setTab('advanced')}>Advanced</button>
-      <button class:active={activeTab === 'export'} type="button" on:click={() => setTab('export')}>Export</button>
+      <button class:active={activeTab === 'quick'} type="button" on:click={() => setTab('quick')}
+        >Quick</button
+      >
+      <button
+        class:active={activeTab === 'advanced'}
+        type="button"
+        on:click={() => setTab('advanced')}>Advanced</button
+      >
+      <button class:active={activeTab === 'export'} type="button" on:click={() => setTab('export')}
+        >Export</button
+      >
     </nav>
 
     <div class="modal__content">
@@ -553,7 +580,9 @@
             />
             On mouse leave
           </label>
-          <button type="button" on:click={resetPauseChatSettingsToDefaults}>Reset pause chat defaults</button>
+          <button type="button" on:click={resetPauseChatSettingsToDefaults}
+            >Reset pause chat defaults</button
+          >
         </section>
 
         <section class="section">
@@ -567,20 +596,29 @@
             <input
               type="checkbox"
               checked={$settings.alertPreferences.enabled}
-              on:change={(event) => updateAlertMaster((event.currentTarget as HTMLInputElement).checked)}
+              on:change={(event) =>
+                updateAlertMaster((event.currentTarget as HTMLInputElement).checked)}
             />
             Enable alert events in chat
           </label>
 
           <div class="alert-group">
-            <p class="current">Twitch channel: {normalizeTwitchChannelIdentity($settings.twitchUrl) ?? '(not set)'}</p>
+            <p class="current">
+              Twitch channel: {normalizeTwitchChannelIdentity($settings.twitchUrl) ?? '(not set)'}
+            </p>
             {#each ALERT_TYPES_BY_PLATFORM.twitch as type}
               <label class="toggle">
                 <input
                   type="checkbox"
                   checked={isAlertToggleEnabled('twitch', type)}
-                  disabled={!$settings.alertPreferences.enabled || !normalizeTwitchChannelIdentity($settings.twitchUrl)}
-                  on:change={(event) => updateAlertType('twitch', type, (event.currentTarget as HTMLInputElement).checked)}
+                  disabled={!$settings.alertPreferences.enabled ||
+                    !normalizeTwitchChannelIdentity($settings.twitchUrl)}
+                  on:change={(event) =>
+                    updateAlertType(
+                      'twitch',
+                      type,
+                      (event.currentTarget as HTMLInputElement).checked
+                    )}
                 />
                 twitch.{type}
               </label>
@@ -588,14 +626,22 @@
           </div>
 
           <div class="alert-group">
-            <p class="current">YouTube source: {normalizeYouTubeSourceIdentity($settings.youtubeUrl) ?? '(not set)'}</p>
+            <p class="current">
+              YouTube source: {normalizeYouTubeSourceIdentity($settings.youtubeUrl) ?? '(not set)'}
+            </p>
             {#each ALERT_TYPES_BY_PLATFORM.youtube as type}
               <label class="toggle">
                 <input
                   type="checkbox"
                   checked={isAlertToggleEnabled('youtube', type)}
-                  disabled={!$settings.alertPreferences.enabled || !normalizeYouTubeSourceIdentity($settings.youtubeUrl)}
-                  on:change={(event) => updateAlertType('youtube', type, (event.currentTarget as HTMLInputElement).checked)}
+                  disabled={!$settings.alertPreferences.enabled ||
+                    !normalizeYouTubeSourceIdentity($settings.youtubeUrl)}
+                  on:change={(event) =>
+                    updateAlertType(
+                      'youtube',
+                      type,
+                      (event.currentTarget as HTMLInputElement).checked
+                    )}
                 />
                 youtube.{type}
               </label>
@@ -619,7 +665,8 @@
           </div>
           <div class="chip-list">
             {#each $settings.recentTwitch as value}
-              <button type="button" class="chip" on:click={() => applyTwitch(value)}>{value}</button>
+              <button type="button" class="chip" on:click={() => applyTwitch(value)}>{value}</button
+              >
             {/each}
           </div>
           <p class="current">Current Twitch: {$settings.twitchUrl || '(not set)'}</p>
@@ -655,7 +702,9 @@
           </div>
           <div class="chip-list">
             {#each $settings.recentYouTube as value}
-              <button type="button" class="chip" on:click={() => applyYouTube(value)}>{value}</button>
+              <button type="button" class="chip" on:click={() => applyYouTube(value)}
+                >{value}</button
+              >
             {/each}
           </div>
           <p class="current">Current YouTube: {$settings.youtubeUrl || '(not set)'}</p>
@@ -708,7 +757,10 @@
           <label class="toggle">
             <input
               checked={$settings.fetchHistoryOnLoad}
-              on:change={(event) => updateSettings({ fetchHistoryOnLoad: (event.currentTarget as HTMLInputElement).checked })}
+              on:change={(event) =>
+                updateSettings({
+                  fetchHistoryOnLoad: (event.currentTarget as HTMLInputElement).checked
+                })}
               type="checkbox"
             />
             Fetch history on load
@@ -716,7 +768,8 @@
           <label class="toggle">
             <input
               checked={$settings.chatDebug}
-              on:change={(event) => updateSettings({ chatDebug: (event.currentTarget as HTMLInputElement).checked })}
+              on:change={(event) =>
+                updateSettings({ chatDebug: (event.currentTarget as HTMLInputElement).checked })}
               type="checkbox"
             />
             Chat debug
@@ -724,7 +777,10 @@
           <label class="toggle">
             <input
               checked={$settings.settingsDebug}
-              on:change={(event) => updateSettings({ settingsDebug: (event.currentTarget as HTMLInputElement).checked })}
+              on:change={(event) =>
+                updateSettings({
+                  settingsDebug: (event.currentTarget as HTMLInputElement).checked
+                })}
               type="checkbox"
             />
             Settings debug (show apply/connect events in chat)
@@ -735,18 +791,35 @@
           <h3>Pause Chat Tuning</h3>
           <label>
             Bottom threshold (px)
-            <input type="number" min="0" bind:value={pauseBottomThresholdDraft} on:blur={applyPauseChatSettings} />
+            <input
+              type="number"
+              min="0"
+              bind:value={pauseBottomThresholdDraft}
+              on:blur={applyPauseChatSettings}
+            />
           </label>
           <label>
             Scroll intent window (ms)
-            <input type="number" min="0" bind:value={pauseScrollIntentWindowDraft} on:blur={applyPauseChatSettings} />
+            <input
+              type="number"
+              min="0"
+              bind:value={pauseScrollIntentWindowDraft}
+              on:blur={applyPauseChatSettings}
+            />
           </label>
           <label>
             Mouseleave unpause cooldown (ms)
-            <input type="number" min="0" bind:value={pauseMouseleaveCooldownDraft} on:blur={applyPauseChatSettings} />
+            <input
+              type="number"
+              min="0"
+              bind:value={pauseMouseleaveCooldownDraft}
+              on:blur={applyPauseChatSettings}
+            />
           </label>
           <button type="button" on:click={applyPauseChatSettings}>Apply pause chat tuning</button>
-          <button type="button" on:click={resetPauseChatSettingsToDefaults}>Reset pause chat defaults</button>
+          <button type="button" on:click={resetPauseChatSettingsToDefaults}
+            >Reset pause chat defaults</button
+          >
           <p class="current">Bottom threshold: {$settings.pauseBottomThresholdPx}px</p>
           <p class="current">Scroll intent window: {$settings.pauseScrollIntentWindowMs}ms</p>
           <p class="current">Mouseleave cooldown: {$settings.pauseMouseleaveUnpauseCooldownMs}ms</p>
@@ -754,8 +827,12 @@
 
         <section class="section">
           <h3>Reset</h3>
-          <button type="button" on:click={resetAllSettingsToDefaults}>Reset all settings to defaults</button>
-          <p class="current">Resets backend + local settings to defaults while preserving API/WS/source URLs.</p>
+          <button type="button" on:click={resetAllSettingsToDefaults}
+            >Reset all settings to defaults</button
+          >
+          <p class="current">
+            Resets backend + local settings to defaults while preserving API/WS/source URLs.
+          </p>
         </section>
 
         <section class="section">
@@ -825,7 +902,11 @@
           </label>
           <label>
             Offset path
-            <input type="text" bind:value={tailerOffsetDraft} placeholder="/data/gnasty.db.offset.json" />
+            <input
+              type="text"
+              bind:value={tailerOffsetDraft}
+              placeholder="/data/gnasty.db.offset.json"
+            />
           </label>
         </section>
 
@@ -833,7 +914,11 @@
           <h3>WebSocket</h3>
           <label>
             Allowed origins (comma-separated)
-            <input type="text" bind:value={allowedOriginsDraft} placeholder="http://localhost:5173" />
+            <input
+              type="text"
+              bind:value={allowedOriginsDraft}
+              placeholder="http://localhost:5173"
+            />
           </label>
           <label>
             Ping interval (ms)
@@ -915,9 +1000,10 @@
             <input type="checkbox" bind:checked={gnastyYTDebugDraft} />
             YouTube debug
           </label>
-          <button type="button" on:click={applyAdvancedSettings}>Apply advanced runtime config</button>
+          <button type="button" on:click={applyAdvancedSettings}
+            >Apply advanced runtime config</button
+          >
         </section>
-
       {:else}
         <section class="section">
           <ExportPanel />

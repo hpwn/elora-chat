@@ -24,17 +24,17 @@ WS_FILTER_SCRIPT ?= $(CURDIR)/scripts/ws_filter.py
 .PHONY: bootstrap up down logs ws ws-twitch ws-youtube ws-filter seed\:marker seed\:burst health healthz readyz configz devctl dev-build dev-start dev-restart dev-test
 
 bootstrap:
-$(COMPOSE) pull --ignore-pull-failures
-$(COMPOSE) build
+	$(COMPOSE) pull --ignore-pull-failures
+	$(COMPOSE) build
 
 up:
-$(COMPOSE) up -d --remove-orphans
+	$(COMPOSE) up -d --remove-orphans
 
 down:
-$(COMPOSE) down --remove-orphans
+	$(COMPOSE) down --remove-orphans
 
 logs:
-$(COMPOSE) logs -f $(SERVICES)
+	$(COMPOSE) logs -f $(SERVICES)
 
 ws:
 	$(MAKE) ws-filter PLATFORM=
@@ -54,10 +54,10 @@ ws-filter:
 	docker run --rm -i -e PLATFORM="$(PLATFORM)" -v "$(WS_FILTER_SCRIPT)":/ws_filter.py:ro $(PYTHON_IMAGE) python -u /ws_filter.py
 
 seed\:marker:
-curl -fsS -X POST "$(API_URL)/api/dev/seed/marker"
+	curl -fsS -X POST "$(API_URL)/api/dev/seed/marker"
 
 seed\:burst:
-curl -fsS -X POST "$(API_URL)/api/dev/seed/burst"
+	curl -fsS -X POST "$(API_URL)/api/dev/seed/burst"
 
 healthz:
 	@curl -fsS "$(API_URL)/healthz" && echo " (health OK)"

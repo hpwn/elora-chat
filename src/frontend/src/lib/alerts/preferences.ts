@@ -11,7 +11,10 @@ export type AlertPreferences = {
   byChannel: Record<string, Partial<Record<AlertType, boolean>>>;
 };
 
-export const ALL_ALERT_TYPES: readonly AlertType[] = [...TWITCH_ALERT_TYPES, ...YOUTUBE_ALERT_TYPES];
+export const ALL_ALERT_TYPES: readonly AlertType[] = [
+  ...TWITCH_ALERT_TYPES,
+  ...YOUTUBE_ALERT_TYPES
+];
 
 export const ALERT_TYPES_BY_PLATFORM: Record<AlertPlatform, readonly AlertType[]> = {
   twitch: TWITCH_ALERT_TYPES,
@@ -82,8 +85,9 @@ export function normalizeAlertType(raw: unknown): AlertType | null {
   if (!lowered) return null;
 
   const stripped =
-    lowered.startsWith('twitch.') || lowered.startsWith('youtube.') ? lowered.split('.', 2)[1] : lowered;
+    lowered.startsWith('twitch.') || lowered.startsWith('youtube.')
+      ? lowered.split('.', 2)[1]
+      : lowered;
 
   return ALL_ALERT_TYPES.includes(stripped as AlertType) ? (stripped as AlertType) : null;
 }
-

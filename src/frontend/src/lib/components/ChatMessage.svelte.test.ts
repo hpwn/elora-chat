@@ -304,7 +304,9 @@ describe('ChatMessage', () => {
     const badgeIcon = screen.getByLabelText('Moderator');
     expect(badgeIcon.tagName).toBe('SPAN');
     expect(badgeIcon).toHaveAttribute('data-badge-glyph', 'moderator');
-    expect(badgeIcon.getAttribute('style') || '').toMatch(/color:\s*(#5e84f1|rgb\(94,\s*132,\s*241\))/i);
+    expect(badgeIcon.getAttribute('style') || '').toMatch(
+      /color:\s*(#5e84f1|rgb\(94,\s*132,\s*241\))/i
+    );
     expect(screen.queryByText('Moderator', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 
@@ -321,7 +323,9 @@ describe('ChatMessage', () => {
           id: 'moderator',
           platform: 'youtube',
           imageUrl: '/assets/badges/yt-mod-wrench.svg',
-          images: [{ id: 'yt-mod', url: '/assets/badges/yt-mod-wrench.svg', width: 16, height: 16 }],
+          images: [
+            { id: 'yt-mod', url: '/assets/badges/yt-mod-wrench.svg', width: 16, height: 16 }
+          ],
           title: 'Moderator'
         }
       ],
@@ -348,7 +352,9 @@ describe('ChatMessage', () => {
     const badgeIcon = screen.getByLabelText('Moderator');
     expect(badgeIcon).toBeInTheDocument();
     expect(badgeIcon).toHaveAttribute('data-badge-glyph', 'moderator');
-    expect(badgeIcon.getAttribute('style') || '').toMatch(/color:\s*(#1d9bf0|rgb\(29,\s*155,\s*240\))/i);
+    expect(badgeIcon.getAttribute('style') || '').toMatch(
+      /color:\s*(#1d9bf0|rgb\(29,\s*155,\s*240\))/i
+    );
   });
 
   test('falls back to shield icon when youtube moderator badge lacks images', () => {
@@ -427,7 +433,9 @@ describe('ChatMessage', () => {
     const verifiedIcon = screen.getByLabelText('Verified');
     expect(verifiedIcon).toBeInTheDocument();
     expect(verifiedIcon).toHaveAttribute('data-badge-glyph', 'verified');
-    expect(verifiedIcon.getAttribute('style') || '').toMatch(/color:\s*(#909090|rgb\(144,\s*144,\s*144\))/i);
+    expect(verifiedIcon.getAttribute('style') || '').toMatch(
+      /color:\s*(#909090|rgb\(144,\s*144,\s*144\))/i
+    );
     expect(screen.queryByText('VER', { selector: '.badge-label' })).not.toBeInTheDocument();
   });
 
@@ -483,7 +491,9 @@ describe('ChatMessage', () => {
     const badgeImg = screen.getByAltText('Subscriber 2') as HTMLImageElement;
     expect(badgeImg).toBeInTheDocument();
     expect(badgeImg.tagName).toBe('IMG');
-    expect(badgeImg.src).toContain(encodeURIComponent('https://static.twitchcdn.net/badges/v1/subscriber_2x.png'));
+    expect(badgeImg.src).toContain(
+      encodeURIComponent('https://static.twitchcdn.net/badges/v1/subscriber_2x.png')
+    );
   });
 
   test('keeps twitch broadcaster rendering unchanged', () => {

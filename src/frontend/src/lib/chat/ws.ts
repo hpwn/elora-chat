@@ -8,7 +8,9 @@ export type OnMessage = (m: ChatMessage) => void;
 const textDecoder = new TextDecoder();
 
 let __latestOnMessage: OnMessage | null = null;
-export function __pushMockMessage(m: ChatMessage){__latestOnMessage?.(m);}
+export function __pushMockMessage(m: ChatMessage) {
+  __latestOnMessage?.(m);
+}
 
 export function connectChat(onMessage: OnMessage, url = defaultWsUrl()): WebSocket {
   __latestOnMessage = onMessage;

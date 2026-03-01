@@ -86,7 +86,10 @@ function normalizeFromString(raw: string): ChatMessage[] {
 
   // NDJSON fallback
   if (trimmed.includes('\n')) {
-    const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const lines = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
     const out: ChatMessage[] = [];
     for (const line of lines) {
       if (!line || line === KEEPALIVE) continue;
@@ -114,20 +117,29 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   const id = String(obj.id ?? obj.message_id ?? cryptoRandom());
 
   const usernameRaw = obj.author ?? obj.username ?? obj.name ?? '(unknown)';
-  const username = typeof usernameRaw === 'string' && usernameRaw.trim() ? usernameRaw : '(unknown)';
+  const username =
+    typeof usernameRaw === 'string' && usernameRaw.trim() ? usernameRaw : '(unknown)';
 
   const platformRaw = obj.source ?? obj.platform ?? obj.service ?? 'Unknown';
   const platform = typeof platformRaw === 'string' && platformRaw.trim() ? platformRaw : 'Unknown';
   const sourceChannelRaw = obj.source_channel ?? obj.sourceChannel;
-  const sourceChannel = typeof sourceChannelRaw === 'string' && sourceChannelRaw.trim() ? sourceChannelRaw.trim() : undefined;
+  const sourceChannel =
+    typeof sourceChannelRaw === 'string' && sourceChannelRaw.trim()
+      ? sourceChannelRaw.trim()
+      : undefined;
   const sourceUrlRaw = obj.source_url ?? obj.sourceUrl;
-  const sourceUrl = typeof sourceUrlRaw === 'string' && sourceUrlRaw.trim() ? sourceUrlRaw.trim() : undefined;
+  const sourceUrl =
+    typeof sourceUrlRaw === 'string' && sourceUrlRaw.trim() ? sourceUrlRaw.trim() : undefined;
 
   const textRaw = obj.message ?? obj.text ?? obj.body ?? '';
   const text = typeof textRaw === 'string' ? textRaw : '';
 
-  const usernameColorRaw = (obj.username_color ?? obj.usernameColor ?? obj.colour ?? obj.color) as unknown;
-  const usernameColor = typeof usernameColorRaw === 'string' && usernameColorRaw.trim() ? usernameColorRaw : undefined;
+  const usernameColorRaw = (obj.username_color ??
+    obj.usernameColor ??
+    obj.colour ??
+    obj.color) as unknown;
+  const usernameColor =
+    typeof usernameColorRaw === 'string' && usernameColorRaw.trim() ? usernameColorRaw : undefined;
 
   const emotes = coerceArray(obj.emotes, obj.emotes_json);
   let fragments = coerceArray(
@@ -136,7 +148,9 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
   );
   const badgesRaw = coerceArray(obj.badges, obj.badges_json);
   const badges = normalizeBadges(badgesRaw);
-  const badgesRawPayload = coerceRawBadges((obj as any).badges_raw ?? (obj as any).badgesRaw ?? null);
+  const badgesRawPayload = coerceRawBadges(
+    (obj as any).badges_raw ?? (obj as any).badgesRaw ?? null
+  );
   const displayBadges = buildDisplayBadges(badges, badgesRawPayload);
 
   if ((!Array.isArray(fragments) || fragments.length === 0) && text.trim().length > 0) {
@@ -149,7 +163,7 @@ function normalizeObject(obj: Record<string, unknown> | null | undefined): ChatM
     return null;
   }
 
-  const raw = typeof obj.raw_json === 'string' ? safeJson(obj.raw_json, obj) : obj.raw ?? obj;
+  const raw = typeof obj.raw_json === 'string' ? safeJson(obj.raw_json, obj) : (obj.raw ?? obj);
 
   return {
     id,
@@ -197,7 +211,10 @@ function normalizeBadges(badges: unknown[]): Badge[] {
     const images: BadgeImage[] = imagesRaw.flatMap((img) => {
       if (!img || typeof img !== 'object') return [] as BadgeImage[];
       const imageRecord = img as Record<string, any>;
-      const url = typeof imageRecord.url === 'string' && imageRecord.url.trim().length > 0 ? imageRecord.url : undefined;
+      const url =
+        typeof imageRecord.url === 'string' && imageRecord.url.trim().length > 0
+          ? imageRecord.url
+          : undefined;
       if (!url) return [] as BadgeImage[];
       return [
         {
@@ -209,14 +226,13 @@ function normalizeBadges(badges: unknown[]): Badge[] {
       ];
     });
 
-    const base =
-      version
-        ? platform
-          ? { id, version, platform }
-          : { id, version }
-        : platform
-          ? { id, platform }
-          : { id };
+    const base = version
+      ? platform
+        ? { id, version, platform }
+        : { id, version }
+      : platform
+        ? { id, platform }
+        : { id };
 
     out.push(images.length > 0 ? { ...base, images } : base);
   }
@@ -225,7 +241,9 @@ function normalizeBadges(badges: unknown[]): Badge[] {
 
 function selectPreferredBadgeImage(images: BadgeImage[]): BadgeImage | undefined {
   if (!Array.isArray(images) || images.length === 0) return undefined;
-  const validImages = images.filter((img) => typeof img?.url === 'string' && img.url.trim().length > 0);
+  const validImages = images.filter(
+    (img) => typeof img?.url === 'string' && img.url.trim().length > 0
+  );
   if (validImages.length === 0) return undefined;
 
   const getValue = (value: number | undefined, defaultFallback: number) => {
@@ -254,11 +272,15 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
 
   return badges.map((badge) => {
     const baseImages = Array.isArray(badge.images) ? [...badge.images] : [];
-    const renderer = isYoutubePlatform(badge.platform) ? youtubeRenderers[youtubeIndex++] : undefined;
+    const renderer = isYoutubePlatform(badge.platform)
+      ? youtubeRenderers[youtubeIndex++]
+      : undefined;
 
     const badgeId = typeof badge.id === 'string' ? badge.id : '';
     const rendererModerator = renderer?.iconType === 'MODERATOR';
-    const youtubeModerator = (isYoutubePlatform(badge.platform) || rendererModerator) && badgeId.toLowerCase() === 'moderator';
+    const youtubeModerator =
+      (isYoutubePlatform(badge.platform) || rendererModerator) &&
+      badgeId.toLowerCase() === 'moderator';
 
     let imageUrl = selectPreferredBadgeImage(baseImages)?.url ?? badge.imageUrl;
     let title = badge.title;
@@ -271,7 +293,11 @@ function buildDisplayBadges(badges: Badge[], badgesRaw: unknown): DisplayBadge[]
         if (thumbnail.url) {
           const hasThumb = baseImages.some((img) => img.url === thumbnail.url);
           if (!hasThumb) {
-            baseImages.push({ url: thumbnail.url, width: thumbnail.width, height: thumbnail.height });
+            baseImages.push({
+              url: thumbnail.url,
+              width: thumbnail.width,
+              height: thumbnail.height
+            });
           }
         }
       }
@@ -322,7 +348,8 @@ type YoutubeRenderer = {
 };
 
 function extractYoutubeBadgeRenderers(raw: unknown): YoutubeRenderer[] {
-  const youtube = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).youtube : undefined;
+  const youtube =
+    raw && typeof raw === 'object' ? (raw as Record<string, unknown>).youtube : undefined;
   if (!youtube || typeof youtube !== 'object') return [];
 
   const authorBadgesRaw = (youtube as Record<string, unknown>).authorBadges;
@@ -348,8 +375,12 @@ function extractYoutubeBadgeRenderers(raw: unknown): YoutubeRenderer[] {
       }
     }
 
-    const tooltip = typeof renderer.tooltip === 'string' && renderer.tooltip.trim().length > 0 ? renderer.tooltip : undefined;
-    const iconType = typeof renderer.icon?.iconType === 'string' ? renderer.icon.iconType : undefined;
+    const tooltip =
+      typeof renderer.tooltip === 'string' && renderer.tooltip.trim().length > 0
+        ? renderer.tooltip
+        : undefined;
+    const iconType =
+      typeof renderer.icon?.iconType === 'string' ? renderer.icon.iconType : undefined;
 
     return [
       {
@@ -460,20 +491,22 @@ function normalizeEmote(input: any): Emote | null {
     if (!img || typeof img !== 'object') return [];
     const url = typeof img.url === 'string' ? img.url : undefined;
     if (!url) return [];
-    return [{
-      url,
-      width: typeof img.width === 'number' ? img.width : 0,
-      height: typeof img.height === 'number' ? img.height : 0,
-      id: typeof img.id === 'string' ? img.id : `${name || 'emote'}-${url}`
-    }];
+    return [
+      {
+        url,
+        width: typeof img.width === 'number' ? img.width : 0,
+        height: typeof img.height === 'number' ? img.height : 0,
+        id: typeof img.id === 'string' ? img.id : `${name || 'emote'}-${url}`
+      }
+    ];
   });
 
   return {
-    id: typeof input.id === 'string' ? input.id : (name || ''),
+    id: typeof input.id === 'string' ? input.id : name || '',
     name,
     images: images.length > 0 ? images : [],
     // Keep locations if present; otherwise empty
-    locations: Array.isArray(input.locations) ? input.locations as string[] : []
+    locations: Array.isArray(input.locations) ? (input.locations as string[]) : []
   };
 }
 
@@ -482,12 +515,17 @@ function mapFragmentType(t: any): FragmentType | null {
   if (typeof t === 'string') {
     const k = t.toLowerCase();
     switch (k) {
-      case 'text':   return FragmentType.Text;
-      case 'emote':  return FragmentType.Emote;
+      case 'text':
+        return FragmentType.Text;
+      case 'emote':
+        return FragmentType.Emote;
       case 'color':
-      case 'colour': return FragmentType.Colour;
-      case 'effect': return FragmentType.Effect;
-      case 'pattern':return FragmentType.Pattern;
+      case 'colour':
+        return FragmentType.Colour;
+      case 'effect':
+        return FragmentType.Effect;
+      case 'pattern':
+        return FragmentType.Pattern;
     }
   }
   return null;

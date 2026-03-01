@@ -4,14 +4,25 @@
   import { onMount, setContext } from 'svelte';
   import ChatMessage from './ChatMessage.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
-  import { describeAlert, normalizeAlertPayload, type NormalizedAlert } from '$lib/alerts/normalize';
+  import {
+    describeAlert,
+    normalizeAlertPayload,
+    type NormalizedAlert
+  } from '$lib/alerts/normalize';
   import {
     buildAlertPreferenceKey,
     normalizeTwitchChannelIdentity,
     normalizeYouTubeSourceIdentity
   } from '$lib/alerts/preferences';
 
-  import { apiPath, getHideYouTubeAt, getShowBadges, getWsUrl, isChatDebugEnabled, isFetchHistoryOnLoad } from '$lib/config';
+  import {
+    apiPath,
+    getHideYouTubeAt,
+    getShowBadges,
+    getWsUrl,
+    isChatDebugEnabled,
+    isFetchHistoryOnLoad
+  } from '$lib/config';
   import { connectChat, type ChatMessage as WsChatMessage } from '$lib/chat/ws';
   import { normalizeWsPayload } from '$lib/chat/normalize';
   import { DEFAULT_SETTINGS, settings, type Settings } from '$lib/stores/settings';
@@ -21,7 +32,13 @@
   let chatDebug = $state(isChatDebugEnabled());
   const DEFAULT_COLOUR = '#ffffff';
   const DEFAULT_SOURCE: Message['source'] = 'YouTube';
-  const ALLOWED_SOURCES = new Set<Message['source']>(['YouTube', 'Twitch', 'Test', 'youtube', 'twitch']);
+  const ALLOWED_SOURCES = new Set<Message['source']>([
+    'YouTube',
+    'Twitch',
+    'Test',
+    'youtube',
+    'twitch'
+  ]);
   const HISTORY_PAGE_LIMIT = 200;
   const HISTORY_TRIM_LIMIT: number | null = null;
   const SHORTCODE_REGEX = /:([a-z0-9_\-+]+):/gi;
@@ -31,9 +48,7 @@
     ['face_with_tears_of_joy', 'joy'],
     ['grinning_squinting_face', 'laughing']
   ]);
-  const ytShortcodeOverrides = new Map<string, string>([
-    ['grinning_squinting_face', '😆']
-  ]);
+  const ytShortcodeOverrides = new Map<string, string>([['grinning_squinting_face', '😆']]);
   const keywordSet = (EmojilibNS as any).default ?? (EmojilibNS as any);
 
   if (keywordSet && typeof keywordSet === 'object') {
@@ -94,7 +109,11 @@
   setContext('blacklist', blacklist);
   setContext('keymods', keymods);
 
-  function incrementCounter(map: PlatformCounter, platform: Message['source'] | 'unknown', delta = 1) {
+  function incrementCounter(
+    map: PlatformCounter,
+    platform: Message['source'] | 'unknown',
+    delta = 1
+  ) {
     const current = map.get(platform) ?? 0;
     map.set(platform, current + delta);
   }
@@ -175,7 +194,19 @@
 
     const urls = record.urls;
     if (urls && typeof urls === 'object') {
-      const preferredKeys = ['4x', '3x', '2x', '1x', '4', '3', '2', '1', 'large', 'medium', 'small'];
+      const preferredKeys = [
+        '4x',
+        '3x',
+        '2x',
+        '1x',
+        '4',
+        '3',
+        '2',
+        '1',
+        'large',
+        'medium',
+        'small'
+      ];
       for (const key of preferredKeys) {
         const candidate = pickString((urls as Record<string, unknown>)[key]);
         if (candidate) return candidate;
@@ -189,13 +220,17 @@
     const images = Array.isArray(record.images) ? record.images : [];
     for (const img of images) {
       if (!img || typeof img !== 'object') continue;
-      const url = pickString((img as Record<string, unknown>).url ?? (img as Record<string, unknown>).src);
+      const url = pickString(
+        (img as Record<string, unknown>).url ?? (img as Record<string, unknown>).src
+      );
       if (url) return url;
     }
 
     const image = record.image;
     if (image && typeof image === 'object') {
-      const url = pickString((image as Record<string, unknown>).url ?? (image as Record<string, unknown>).src);
+      const url = pickString(
+        (image as Record<string, unknown>).url ?? (image as Record<string, unknown>).src
+      );
       if (url) return url;
     }
 
@@ -235,13 +270,18 @@
         username: (message as any).username
       });
     }
-    let author = message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
+    let author =
+      message.username && message.username.trim().length > 0 ? message.username : 'Unknown';
     const tsCandidate = typeof message.ts === 'number' ? message.ts : Number(message.ts);
     const ts = Number.isFinite(tsCandidate) ? tsCandidate : Date.now();
 
-    const sourceCandidate = typeof message.platform === 'string' ? (message.platform as Message['source']) : DEFAULT_SOURCE;
+    const sourceCandidate =
+      typeof message.platform === 'string'
+        ? (message.platform as Message['source'])
+        : DEFAULT_SOURCE;
     const source = ALLOWED_SOURCES.has(sourceCandidate) ? sourceCandidate : DEFAULT_SOURCE;
-    const idCandidate = typeof message.id === 'string' && message.id.trim().length > 0 ? message.id.trim() : '';
+    const idCandidate =
+      typeof message.id === 'string' && message.id.trim().length > 0 ? message.id.trim() : '';
     const rawId = idCandidate || `${ts}-${Math.random().toString(36).slice(2, 8)}`;
     const id = rawId.startsWith(source + ':') ? rawId : `${source}:${rawId}`;
 
@@ -261,15 +301,19 @@
           ? (message as any).username_color
           : '';
     const rawColour = typeof message.colour === 'string' ? message.colour : '';
-    const colourCandidate = rawUsernameColor && rawUsernameColor.trim().length > 0 ? rawUsernameColor : rawColour;
-    const colour = colourCandidate && colourCandidate.trim().length > 0 ? colourCandidate : DEFAULT_COLOUR;
+    const colourCandidate =
+      rawUsernameColor && rawUsernameColor.trim().length > 0 ? rawUsernameColor : rawColour;
+    const colour =
+      colourCandidate && colourCandidate.trim().length > 0 ? colourCandidate : DEFAULT_COLOUR;
 
     if (getHideYouTubeAt() && source === 'YouTube' && author.startsWith('@')) {
       author = author.slice(1).trim() || author;
     }
 
     const emotes = coerceEmotes(message.emotes);
-    let fragments = Array.isArray((message as any).fragments) ? coerceFragments((message as any).fragments, source) : [];
+    let fragments = Array.isArray((message as any).fragments)
+      ? coerceFragments((message as any).fragments, source)
+      : [];
 
     if (fragments.length === 0 && text.trim().length > 0) {
       const normalizedText = source === 'YouTube' ? shortcodesToUnicode(text) : text;
@@ -279,10 +323,12 @@
     const badgeInput = message.displayBadges ?? message.badges;
     const showBadges = getShowBadges();
     const badges = showBadges ? coerceBadges(badgeInput) : [];
-    const badges_raw = showBadges ? (message.badges_raw ?? (message as any).badgesRaw ?? null) : null;
+    const badges_raw = showBadges
+      ? (message.badges_raw ?? (message as any).badgesRaw ?? null)
+      : null;
 
     return {
-        id,
+      id,
       ts,
       author,
       message: text,
@@ -303,7 +349,8 @@
     for (const emote of emotes) {
       if (!emote || typeof emote !== 'object') continue;
       const record = emote as Record<string, unknown>;
-      const name = typeof record.name === 'string' && record.name.trim().length > 0 ? record.name : undefined;
+      const name =
+        typeof record.name === 'string' && record.name.trim().length > 0 ? record.name : undefined;
       if (!name) continue;
       const id = typeof record.id === 'string' && record.id.trim().length > 0 ? record.id : name;
       const imagesRaw = Array.isArray(record.images) ? record.images : [];
@@ -345,7 +392,10 @@
   function normalizeApiMessage(item: any): WsChatMessage | null {
     if (!item || typeof item !== 'object') return null;
 
-    const rawPayload = typeof item.raw_json === 'string' ? safeJsonParse<Record<string, unknown> | null>(item.raw_json, null) : null;
+    const rawPayload =
+      typeof item.raw_json === 'string'
+        ? safeJsonParse<Record<string, unknown> | null>(item.raw_json, null)
+        : null;
     const normalizedFromRaw = rawPayload ? normalizeWsPayload(rawPayload) : null;
     if (normalizedFromRaw) {
       return normalizedFromRaw;
@@ -360,15 +410,21 @@
     const platformCandidate = typeof item.platform === 'string' ? item.platform.trim() : '';
     const platform = platformCandidate ? platformCandidate : DEFAULT_SOURCE;
     const source = ALLOWED_SOURCES.has(platform as any) ? (platform as any) : DEFAULT_SOURCE;
-    const idCandidate = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id.trim() : `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const idCandidate =
+      typeof item.id === 'string' && item.id.trim().length > 0
+        ? item.id.trim()
+        : `${ts}-${Math.random().toString(36).slice(2, 8)}`;
     const id = idCandidate.startsWith(source + ':') ? idCandidate : `${source}:${idCandidate}`;
     const emotes = safeJsonParse<any[]>(item.emotes_json, []);
 
     return {
-        id,
+      id,
       ts,
-      username: typeof item.username === 'string' && item.username.trim().length > 0 ? item.username : '(unknown)',
-        platform: source,
+      username:
+        typeof item.username === 'string' && item.username.trim().length > 0
+          ? item.username
+          : '(unknown)',
+      platform: source,
       text,
       fragments: text ? [{ type: 'text', text, emote: null }] : [],
       emotes,
@@ -487,11 +543,19 @@
       const typeRaw = typeof r.type === 'string' ? r.type.toLowerCase() : 'text';
       let type: FragmentType = FragmentType.Text;
       switch (typeRaw) {
-        case 'emote':   type = FragmentType.Emote; break;
+        case 'emote':
+          type = FragmentType.Emote;
+          break;
         case 'colour':
-        case 'color':   type = FragmentType.Colour; break;
-        case 'effect':  type = FragmentType.Effect; break;
-        case 'pattern': type = FragmentType.Pattern; break;
+        case 'color':
+          type = FragmentType.Colour;
+          break;
+        case 'effect':
+          type = FragmentType.Effect;
+          break;
+        case 'pattern':
+          type = FragmentType.Pattern;
+          break;
         // default -> Text
       }
 
@@ -521,24 +585,34 @@
             const url =
               typeof ir.url === 'string' ? ir.url : typeof ir.src === 'string' ? ir.src : undefined;
             if (!url) return [] as Message['emotes'][number]['images'];
-            return [{
-              id: typeof ir.id === 'string' ? ir.id : `${id}-${url}`,
-              url,
-              width: typeof ir.width === 'number' ? ir.width : 0,
-              height: typeof ir.height === 'number' ? ir.height : 0,
-            }];
+            return [
+              {
+                id: typeof ir.id === 'string' ? ir.id : `${id}-${url}`,
+                url,
+                width: typeof ir.width === 'number' ? ir.width : 0,
+                height: typeof ir.height === 'number' ? ir.height : 0
+              }
+            ];
           });
 
           if (pickedUrl && !images.some((img) => img.url === pickedUrl)) {
             images = [{ id: `${id}-${pickedUrl}`, url: pickedUrl, width: 0, height: 0 }, ...images];
           }
 
-          emote = { id, name, images, locations: locationsRaw, ...(pickedUrl ? { url: pickedUrl } : {}) };
+          emote = {
+            id,
+            name,
+            images,
+            locations: locationsRaw,
+            ...(pickedUrl ? { url: pickedUrl } : {})
+          };
         }
       }
 
       const normalizedText =
-        source === 'YouTube' && type === FragmentType.Text && emote === null ? shortcodesToUnicode(text) : text;
+        source === 'YouTube' && type === FragmentType.Text && emote === null
+          ? shortcodesToUnicode(text)
+          : text;
 
       out.push({ type, text: normalizedText, emote });
     }
@@ -546,8 +620,9 @@
     return out;
   }
 
-
-  function coerceBadges(badges: WsChatMessage['badges'] | WsChatMessage['displayBadges']): Message['badges'] {
+  function coerceBadges(
+    badges: WsChatMessage['badges'] | WsChatMessage['displayBadges']
+  ): Message['badges'] {
     if (!Array.isArray(badges)) return [];
     const out: Message['badges'] = [];
     type BadgeImage = NonNullable<Message['badges'][number]['images']>[number];
@@ -573,7 +648,8 @@
       const platformCandidate = record.platform;
       const platform = typeof platformCandidate === 'string' ? platformCandidate : undefined;
       const imagesRaw = Array.isArray(record.images) ? record.images : [];
-      const imageUrl = typeof (record as any).imageUrl === 'string' ? (record as any).imageUrl : undefined;
+      const imageUrl =
+        typeof (record as any).imageUrl === 'string' ? (record as any).imageUrl : undefined;
       const title = typeof (record as any).title === 'string' ? (record as any).title : undefined;
       const images: BadgeImage[] = imagesRaw.flatMap((img) => {
         if (!img || typeof img !== 'object') return [] as BadgeImage[];
@@ -590,14 +666,13 @@
         ];
       });
 
-      const base =
-        version
-          ? platform
-            ? { id, version, platform }
-            : { id, version }
-          : platform
-            ? { id, platform }
-            : { id };
+      const base = version
+        ? platform
+          ? { id, version, platform }
+          : { id, version }
+        : platform
+          ? { id, platform }
+          : { id };
 
       const badgeWithImages = images.length > 0 ? { ...base, images } : base;
       const withMeta = {
@@ -744,7 +819,8 @@
     ts: number
   ): string {
     const fallback = `${source}:${ts}-${Math.random().toString(36).slice(2, 8)}`;
-    const base = typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : fallback;
+    const base =
+      typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : fallback;
 
     const existing = new Set<string>();
     for (const m of messages) {
@@ -770,14 +846,18 @@
     const now = Date.now();
     const previousScrollTop = lastScrollTop;
     lastScrollTop = container.scrollTop;
-    const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
+    const distanceFromBottom =
+      container.scrollHeight - (container.scrollTop + container.clientHeight);
     const isAtBottom = distanceFromBottom <= pauseBottomThresholdPx;
     if (pauseChatEnabled) {
       if (isAtBottom) {
         if (paused) {
           unpauseChat();
         }
-      } else if (container.scrollTop < previousScrollTop && now - lastUserScrollTs < pauseScrollIntentWindowMs) {
+      } else if (
+        container.scrollTop < previousScrollTop &&
+        now - lastUserScrollTs < pauseScrollIntentWindowMs
+      ) {
         paused = true;
       }
     } else if (paused) {
@@ -817,12 +897,20 @@
 
       const normalizedSource = sourceLower(normalized.source);
       const twitchIdentity = normalizeTwitchChannelIdentity((incoming as any)?.sourceChannel);
-      if (pendingTwitchChannel !== null && normalizedSource === 'twitch' && twitchIdentity === pendingTwitchChannel) {
+      if (
+        pendingTwitchChannel !== null &&
+        normalizedSource === 'twitch' &&
+        twitchIdentity === pendingTwitchChannel
+      ) {
         emitSystem(`twitch: receiving messages [ok] channel=${pendingTwitchChannel}`);
         pendingTwitchChannel = null;
       }
       const youtubeIdentity = normalizeYouTubeSourceIdentity((incoming as any)?.sourceUrl);
-      if (pendingYouTubeSource !== null && normalizedSource === 'youtube' && youtubeIdentity === pendingYouTubeSource) {
+      if (
+        pendingYouTubeSource !== null &&
+        normalizedSource === 'youtube' &&
+        youtubeIdentity === pendingYouTubeSource
+      ) {
         emitSystem(`youtube: receiving messages [ok] source=${pendingYouTubeSource}`);
         pendingYouTubeSource = null;
       }
@@ -987,7 +1075,10 @@
     if (!pauseChatEnabled) return;
     if (!pauseOnMouseLeave) return;
     if (!paused) return;
-    if (pauseMouseleaveUnpauseCooldownMs > 0 && Date.now() - lastUserScrollTs < pauseMouseleaveUnpauseCooldownMs) {
+    if (
+      pauseMouseleaveUnpauseCooldownMs > 0 &&
+      Date.now() - lastUserScrollTs < pauseMouseleaveUnpauseCooldownMs
+    ) {
       return;
     }
     unpauseChat();
@@ -1061,7 +1152,10 @@
       pauseOnMouseLeave = !!nextSettings.pauseOnMouseLeave;
       pauseBottomThresholdPx = Math.max(0, nextSettings.pauseBottomThresholdPx || 0);
       pauseScrollIntentWindowMs = Math.max(0, nextSettings.pauseScrollIntentWindowMs || 0);
-      pauseMouseleaveUnpauseCooldownMs = Math.max(0, nextSettings.pauseMouseleaveUnpauseCooldownMs || 0);
+      pauseMouseleaveUnpauseCooldownMs = Math.max(
+        0,
+        nextSettings.pauseMouseleaveUnpauseCooldownMs || 0
+      );
 
       if (!pauseChatEnabled && paused) {
         unpauseChat();
@@ -1089,14 +1183,18 @@
         if (twitchChanged && settingsDebug) {
           pendingTwitchChannel = normalizedTwitch;
           if (pendingTwitchChannel) {
-            emitSystem(`twitch: channel set -> ${pendingTwitchChannel} (waiting for first matching message)`);
+            emitSystem(
+              `twitch: channel set -> ${pendingTwitchChannel} (waiting for first matching message)`
+            );
           }
         }
 
         if (youtubeChanged && settingsDebug) {
           pendingYouTubeSource = normalizedYouTube;
           if (pendingYouTubeSource) {
-            emitSystem(`youtube: source set -> ${pendingYouTubeSource} (waiting for first matching message)`);
+            emitSystem(
+              `youtube: source set -> ${pendingYouTubeSource} (waiting for first matching message)`
+            );
           }
         }
 
@@ -1160,7 +1258,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     id="chat-container"
-    class:paused={paused}
+    class:paused
     aria-label="Chat messages"
     role="list"
     onmouseleave={handleMouseLeave}
@@ -1169,11 +1267,9 @@
     onpointerdown={markUserScrollIntent}
     onscroll={handleScroll}
     bind:this={container}
-  
-      onmousedown={markUserScrollIntent}
-    
-      onauxclick={markUserScrollIntent}
-    >
+    onmousedown={markUserScrollIntent}
+    onauxclick={markUserScrollIntent}
+  >
     {#each messages as message (message.id)}
       {#if !blacklist.has(message.author)}
         <ChatMessage {message} />
@@ -1234,5 +1330,3 @@
     z-index: 2;
   }
 </style>
-
-
