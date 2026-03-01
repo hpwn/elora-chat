@@ -419,7 +419,7 @@ func normalizeWSURL(raw string) (string, error) {
 func normalizeTwitchChannel(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", fmt.Errorf("must be a non-empty twitch channel or URL")
+		return "", nil
 	}
 
 	if strings.Contains(raw, ".") && !strings.Contains(raw, "://") {
@@ -466,7 +466,7 @@ func normalizeTwitchChannel(raw string) (string, error) {
 func normalizeYouTubeURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", fmt.Errorf("must be a non-empty YouTube handle or URL")
+		return "", nil
 	}
 
 	if id, ok := normalizeYouTubeVideoID(raw); ok {

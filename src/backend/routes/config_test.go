@@ -524,6 +524,52 @@ func TestPutConfigNoopReturnsChangedFalse(t *testing.T) {
 	}
 }
 
+func TestPutConfigNoopAllowsEmptyOptionalSources(t *testing.T) {
+	resetRuntimeConfigForTest(t)
+	t.Setenv("TWITCH_CHANNEL", "")
+	t.Setenv("YOUTUBE_URL", "")
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	InitRoutes(chatStore)
+	router := newConfigRouter()
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d body=%s", getRR.Code, getRR.Body.String())
+	}
+
+	var current configAPIResponse
+	if err := json.Unmarshal(getRR.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current config: %v", err)
+	}
+	if current.Config.TwitchChannel != "" {
+		t.Fatalf("expected empty twitch source, got %q", current.Config.TwitchChannel)
+	}
+	if current.Config.YouTubeSourceURL != "" {
+		t.Fatalf("expected empty youtube source, got %q", current.Config.YouTubeSourceURL)
+	}
+
+	body, _ := json.Marshal(current.Config)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var updated configAPIResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode updated config: %v", err)
+	}
+	if updated.Changed {
+		t.Fatalf("expected changed=false for no-op put")
+	}
+}
+
 func TestPutConfigGnastyUnreachableIsWarningOnly(t *testing.T) {
 	resetRuntimeConfigForTest(t)
 	t.Setenv("ELORA_GNASTY_ADMIN_BASE", "http://127.0.0.1:1")

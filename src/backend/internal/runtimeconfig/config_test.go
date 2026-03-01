@@ -61,17 +61,25 @@ func TestNormalizeYouTubeAddsSchemeForSchemelessURL(t *testing.T) {
 	}
 }
 
-func TestNormalizeReturnsFieldSpecificErrorsForEmptyAndMalformed(t *testing.T) {
-	_, twitchEmptyErr := normalizeTwitchChannel("   ")
-	if twitchEmptyErr == nil {
-		t.Fatalf("expected twitch empty error")
+func TestNormalizeAllowsEmptyOptionalSources(t *testing.T) {
+	twitch, twitchErr := normalizeTwitchChannel("   ")
+	if twitchErr != nil {
+		t.Fatalf("expected empty twitch source to be allowed: %v", twitchErr)
+	}
+	if twitch != "" {
+		t.Fatalf("expected empty twitch source, got %q", twitch)
 	}
 
-	_, ytEmptyErr := normalizeYouTubeURL("   ")
-	if ytEmptyErr == nil {
-		t.Fatalf("expected youtube empty error")
+	youtube, ytErr := normalizeYouTubeURL("   ")
+	if ytErr != nil {
+		t.Fatalf("expected empty youtube source to be allowed: %v", ytErr)
 	}
+	if youtube != "" {
+		t.Fatalf("expected empty youtube source, got %q", youtube)
+	}
+}
 
+func TestNormalizeReturnsFieldSpecificErrorsForMalformed(t *testing.T) {
 	_, ytMalformedErr := normalizeYouTubeURL("https://www.youtube.com/watch?v=bad")
 	if ytMalformedErr == nil {
 		t.Fatalf("expected malformed youtube URL error")
