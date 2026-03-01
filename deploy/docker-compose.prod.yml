@@ -1,0 +1,27 @@
+services:
+  elora-chat:
+    ports: !reset []
+    expose:
+      - "8080"
+
+  gnasty-harvester:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - elora-chat
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - elora
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

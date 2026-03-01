@@ -56,6 +56,20 @@ Both containers now run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so bind-mou
 | `make seed:burst` | Inject a short burst of mixed Twitch/YouTube sample messages. |
 | `make down` | Stop the stack while preserving the shared volume. |
 
+### Send route test gate
+
+Use the canonical container harness before pushing changes that touch Twitch send flow:
+
+```bash
+./scripts/test-send-route.sh
+```
+
+Override the Go image if needed:
+
+```bash
+GO_IMAGE=golang:1.24.3 ./scripts/test-send-route.sh
+```
+
 ### Unified dev CLI (elora + gnasty)
 
 Use `scripts/devctl.sh` for one-command workflows across this repo and a local `../gnasty-chat` clone:
@@ -104,6 +118,10 @@ All of the commands read configuration from `.env`, so update that file (or expo
 ### Which mode am I in?
 
 Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field confirms gnasty-chat is powering the shared SQLite handoff. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
+
+### Backup Server (Ubuntu + Caddy)
+
+For an always-on backup deployment behind your own domain (Namecheap DNS + Caddy reverse proxy + production compose override), see [docs/backup-server.md](docs/backup-server.md).
 
 ## gnasty + SQLite (default topology)
 

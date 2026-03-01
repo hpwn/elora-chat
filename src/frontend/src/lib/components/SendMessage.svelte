@@ -1,8 +1,14 @@
 <script lang="ts">
   import { authState } from '$lib/api/auth.svelte';
+  import { normalizeTwitchChannelIdentity } from '$lib/alerts/preferences';
+  import { settings } from '$lib/stores/settings';
   import { buildApiUrl } from '$lib/utils';
 
   let message = '';
+  $: twitchChannel = normalizeTwitchChannelIdentity($settings.twitchUrl);
+  $: inputPlaceholder = twitchChannel
+    ? `Send to Twitch: ${twitchChannel}`
+    : 'Send to Twitch: (no channel configured)';
 
   function sendMessage(event: Event) {
     event.preventDefault();
@@ -38,7 +44,7 @@
 </script>
 
 <form id="message-send-container" on:submit={sendMessage}>
-  <input id="message-input" type="text" placeholder="Type a message..." bind:value={message} />
+  <input id="message-input" type="text" placeholder={inputPlaceholder} bind:value={message} />
   <button id="send-message-button" type="submit" disabled={!authState.loggedIn}>send</button>
 </form>
 
