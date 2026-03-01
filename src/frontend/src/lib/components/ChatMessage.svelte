@@ -2,20 +2,258 @@
   import type { Message, Keymods } from '$lib/types/messages';
   import type { SvelteSet } from 'svelte/reactivity';
   import { getContext } from 'svelte';
-  import { loadImage, formatMessageFragments, validNameColors } from '$lib/utils';
+  import { loadImage, formatMessageFragments, validNameColors, sanitizeMessage } from '$lib/utils';
+  import { resolveBadgeIcon, TWITCH_BROADCASTER_BADGE_SRC } from '$lib/chat/badge-icons';
+  import { isChatDebugEnabled } from '$lib/config';
   import { TwitchIcon, YoutubeIcon } from './icons';
+  import YoutubeBadgeGlyph from './YoutubeBadgeGlyph.svelte';
 
   let { message }: { message: Message } = $props();
+  if (isChatDebugEnabled())
+    console.debug('[DBG] ChatMessage fragments', $state.snapshot(message.fragments));
   let visible = $state(true);
 
   const blacklist: SvelteSet<string> = getContext('blacklist');
   const keymods: Keymods = getContext('keymods');
 
   const { messageWithHTML, effects } = formatMessageFragments(message.fragments);
+  const fallbackMessage = sanitizeMessage(message.message ?? '');
+  const hasFragmentHtml = messageWithHTML.trim().length > 0;
+  const hasFallbackHtml = fallbackMessage.trim().length > 0;
+  const shouldRender = hasFragmentHtml || hasFallbackHtml;
+  const displayHtml = hasFragmentHtml ? messageWithHTML : fallbackMessage;
+  const messageClasses = ['message-text', hasFragmentHtml ? effects : ''].filter(Boolean).join(' ');
 
   const hexColour = validNameColors.get(message.colour);
   if (hexColour != undefined) {
     message.colour = hexColour;
+  }
+
+  type DisplayBadge = {
+    key: string;
+    id: string;
+    version?: string;
+    icon: ReturnType<typeof resolveBadgeIcon>;
+    youtubeGlyph?: 'verified' | 'moderator';
+    youtubeGlyphColor?: string;
+    src?: string;
+    fallbackSrc?: string;
+    alt: string;
+  };
+
+  let badgeViews = $state<DisplayBadge[]>([]);
+  const YT_MOD_WRENCH_PATH = '/assets/badges/yt-mod-wrench.svg';
+  const YT_OWNER_COLOUR = '#ffd600';
+  const YT_VERIFIED_GLYPH_COLOUR = '#909090';
+  const youtubeModeratorColour = '#5e84f1';
+
+  function trimmedString(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  function normalizeBadgeToken(value: unknown): string {
+    const trimmed = trimmedString(value);
+    return trimmed ? trimmed.toLowerCase() : '';
+  }
+
+  function hasYoutubeOwnerBadge(badges: unknown[]): boolean {
+    return badges.some((badge) => {
+      if (!badge || typeof badge !== 'object') return false;
+      const badgeRecord = badge as Record<string, unknown>;
+      const platform = normalizeBadgeToken(badgeRecord.platform) || message.source.toLowerCase();
+      if (platform !== 'youtube') return false;
+      const id =
+        normalizeBadgeToken(badgeRecord.id) ||
+        normalizeBadgeToken(badgeRecord.code) ||
+        normalizeBadgeToken(badgeRecord.text);
+      return id === 'owner' || id === 'broadcaster' || id === 'channel_owner';
+    });
+  }
+
+  function isYoutubeOwnerByNameColour(): boolean {
+    if (message.source !== 'YouTube') return false;
+    const nameColour = normalizeBadgeToken(message.usernameColor ?? message.colour);
+    return nameColour === YT_OWNER_COLOUR;
+  }
+
+  function detectYoutubeBadgeGlyph(
+    source: Message['source'],
+    badgeRecord: Record<string, unknown>
+  ): 'verified' | 'moderator' | undefined {
+    const platform = normalizeBadgeToken(badgeRecord.platform) || source.toLowerCase();
+    if (platform !== 'youtube') {
+      return undefined;
+    }
+
+    const idToken = normalizeBadgeToken(badgeRecord.id);
+    const codeToken = normalizeBadgeToken(badgeRecord.code);
+    const textToken = normalizeBadgeToken(badgeRecord.text);
+    const titleToken = normalizeBadgeToken(badgeRecord.title);
+    const imageUrl = normalizeBadgeToken(badgeRecord.imageUrl);
+
+    const exactTokens = [idToken, codeToken, textToken];
+    const looksLikeModerator =
+      exactTokens.some(
+        (token) => token === 'mod' || token === 'moderator' || token.includes('moderator')
+      ) ||
+      titleToken.includes('moderator') ||
+      imageUrl.includes('yt-mod-wrench');
+    if (looksLikeModerator) {
+      return 'moderator';
+    }
+
+    const looksLikeVerified =
+      exactTokens.some((token) => token === 'ver' || token === 'verified') ||
+      titleToken.includes('verified');
+    if (looksLikeVerified) {
+      return 'verified';
+    }
+
+    return undefined;
+  }
+
+  function preferredBadgeImageUrl(
+    images: Array<{ url?: string; width?: number; height?: number }>
+  ): string | undefined {
+    const valid = images
+      .filter(
+        (img) =>
+          img && typeof img === 'object' && typeof img.url === 'string' && img.url.trim().length > 0
+      )
+      .map((img) => ({ ...img, url: (img.url as string).trim() }));
+    if (valid.length === 0) return undefined;
+
+    const fallback = -1;
+    const sorted = [...valid].sort((a, b) => {
+      const widthA = typeof a.width === 'number' && Number.isFinite(a.width) ? a.width : fallback;
+      const widthB = typeof b.width === 'number' && Number.isFinite(b.width) ? b.width : fallback;
+      if (widthA !== widthB) {
+        return widthB - widthA;
+      }
+      const heightA =
+        typeof a.height === 'number' && Number.isFinite(a.height) ? a.height : fallback;
+      const heightB =
+        typeof b.height === 'number' && Number.isFinite(b.height) ? b.height : fallback;
+      return heightB - heightA;
+    });
+
+    return sorted[0].url;
+  }
+
+  $effect(() => {
+    const rawBadges =
+      Array.isArray(message.displayBadges) && message.displayBadges.length > 0
+        ? message.displayBadges
+        : Array.isArray(message.badges)
+          ? message.badges
+          : [];
+    const badgesForRender = [...rawBadges];
+    const shouldInjectYoutubeOwnerBadge =
+      message.source === 'YouTube' &&
+      (hasYoutubeOwnerBadge(rawBadges) || isYoutubeOwnerByNameColour());
+    if (shouldInjectYoutubeOwnerBadge) {
+      const filtered = badgesForRender.filter((badge) => {
+        if (!badge || typeof badge !== 'object') return true;
+        const badgeRecord = badge as unknown as Record<string, unknown>;
+        const platform = normalizeBadgeToken(badgeRecord.platform) || message.source.toLowerCase();
+        if (platform !== 'youtube') return true;
+        const id =
+          normalizeBadgeToken(badgeRecord.id) ||
+          normalizeBadgeToken(badgeRecord.code) ||
+          normalizeBadgeToken(badgeRecord.text);
+        return id !== 'owner' && id !== 'broadcaster' && id !== 'channel_owner';
+      });
+      badgesForRender.length = 0;
+      badgesForRender.push(
+        {
+          id: 'broadcaster',
+          platform: 'youtube',
+          title: 'Broadcaster',
+          imageUrl: TWITCH_BROADCASTER_BADGE_SRC,
+          images: [{ id: 'broadcaster', url: TWITCH_BROADCASTER_BADGE_SRC, width: 18, height: 18 }]
+        },
+        ...filtered
+      );
+    }
+
+    badgeViews = badgesForRender.flatMap((badge) => {
+      if (!badge || typeof badge !== 'object') return [] as DisplayBadge[];
+      const badgeRecord = badge as unknown as Record<string, unknown>;
+      const id =
+        trimmedString(badgeRecord.id) ??
+        trimmedString(badgeRecord.code) ??
+        trimmedString(badgeRecord.text) ??
+        trimmedString(badgeRecord.title) ??
+        '';
+      if (!id) return [] as DisplayBadge[];
+      const version =
+        typeof badgeRecord.version === 'string' && badgeRecord.version.trim().length > 0
+          ? badgeRecord.version.trim()
+          : undefined;
+      const icon = resolveBadgeIcon(id, version);
+      const title =
+        typeof badgeRecord.title === 'string' && badgeRecord.title.trim().length > 0
+          ? badgeRecord.title
+          : undefined;
+      const badgeImages = Array.isArray(badgeRecord.images) ? badgeRecord.images : [];
+      const imageUrl =
+        typeof badgeRecord.imageUrl === 'string' && badgeRecord.imageUrl.trim().length > 0
+          ? badgeRecord.imageUrl
+          : undefined;
+      const platform = typeof badgeRecord.platform === 'string' ? badgeRecord.platform : undefined;
+      const idLower = id.toLowerCase();
+      const platformLower = platform?.toLowerCase();
+      const isYoutubeModerator = platformLower === 'youtube' && idLower === 'moderator';
+      const youtubeGlyph = detectYoutubeBadgeGlyph(message.source, badgeRecord);
+      const youtubeGlyphColor =
+        youtubeGlyph === 'verified'
+          ? YT_VERIFIED_GLYPH_COLOUR
+          : youtubeGlyph === 'moderator'
+            ? (trimmedString(message.usernameColor) ?? youtubeModeratorColour)
+            : undefined;
+      const preferredImage = preferredBadgeImageUrl(badgeImages);
+      const badgeSrc = youtubeGlyph
+        ? undefined
+        : (preferredImage ?? imageUrl ?? (isYoutubeModerator ? YT_MOD_WRENCH_PATH : undefined));
+      const fallbackSrc = youtubeGlyph
+        ? undefined
+        : isYoutubeModerator
+          ? YT_MOD_WRENCH_PATH
+          : undefined;
+      const iconSrc = youtubeGlyph ? undefined : icon.src;
+      return [
+        {
+          key: `${id}-${version ?? 'default'}`,
+          id,
+          version,
+          icon: { ...icon, src: iconSrc },
+          youtubeGlyph,
+          youtubeGlyphColor,
+          src: badgeSrc,
+          fallbackSrc,
+          alt:
+            title ??
+            (youtubeGlyph === 'verified'
+              ? 'Verified'
+              : youtubeGlyph === 'moderator'
+                ? 'Moderator'
+                : icon.alt)
+        }
+      ];
+    });
+  });
+
+  function badgeImageSource(src: string | undefined): string | undefined {
+    if (!src) return undefined;
+    if (src.startsWith('data:')) {
+      return src;
+    }
+    if (src.startsWith('/')) {
+      return src;
+    }
+    return loadImage(src);
   }
 
   function toggleVisible() {
@@ -47,7 +285,7 @@
   }
 </script>
 
-{#if messageWithHTML !== ''}
+{#if shouldRender}
   <div
     role="button"
     aria-pressed="false"
@@ -55,6 +293,8 @@
     onkeypress={keyHandler}
     onclick={handleClickMessage}
     class="chat-message"
+    data-platform={message.source}
+    data-author={message.author}
   >
     <span class="sender">
       {#if message.source === 'Twitch'}
@@ -67,24 +307,41 @@
         </span>
       {/if}
 
-      {#each message.badges as badge}
-        {#if badge.icons && badge.icons.length > 0}
+      {#each badgeViews as badge (badge.key)}
+        {#if badge.youtubeGlyph}
+          <YoutubeBadgeGlyph
+            kind={badge.youtubeGlyph}
+            title={badge.alt}
+            color={badge.youtubeGlyphColor}
+          />
+        {:else if badge.src}
           <img
             class="badge-icon"
-            src={loadImage(badge.icons[badge.icons.length - 1].url)}
-            title={badge.title}
-            alt={badge.title}
+            src={badgeImageSource(badge.src)}
+            title={badge.alt}
+            alt={badge.alt}
           />
+        {:else if badge.icon.src || badge.fallbackSrc}
+          <img
+            class="badge-icon"
+            src={badgeImageSource(badge.icon.src ?? badge.fallbackSrc)}
+            title={badge.alt}
+            alt={badge.alt}
+          />
+        {:else}
+          <span class="badge-label" title={badge.alt} aria-label={badge.alt}>
+            {badge.icon.label}
+          </span>
         {/if}
       {/each}
-      <span class="message-username" style="color: {message.colour}">
+      <span class="message-username" style="color: {message.usernameColor ?? message.colour}">
         {message.author}:
       </span>
     </span>
 
     {#if visible}
-      <span class={['message-text', effects].filter(Boolean).join(' ')}>
-        {@html messageWithHTML}
+      <span class={messageClasses}>
+        {@html displayHtml}
       </span>
     {/if}
   </div>
@@ -111,10 +368,35 @@
       vertical-align: middle;
     }
 
+    .badge-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 4px;
+      margin-right: 5px;
+      border-radius: 4px;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      background: rgba(226, 232, 240, 0.7);
+      color: #0f172a;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      line-height: 1;
+    }
+
     .emote-image {
       height: 28px;
       margin: 0 0.2rem; /* top/bottom left/right */
       vertical-align: middle;
+    }
+
+    .chat-emote {
+      height: 1.2em;
+      width: auto;
+      vertical-align: -0.2em;
     }
 
     .message-text > img + img {

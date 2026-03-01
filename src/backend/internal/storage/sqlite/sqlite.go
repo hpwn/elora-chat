@@ -11,8 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +20,134 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const defaultBusyTimeoutMS = 5000
+
+// isBenignMigrationError returns true when an ALTER/CREATE failed because the artifact already exists.
+func isBenignMigrationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "duplicate column name"),
+		strings.Contains(msg, "already exists"),
+		strings.Contains(msg, "duplicate column"),
+		strings.Contains(msg, "not unique"),
+		strings.Contains(msg, "constraint failed: migrations.name"):
+		return true
+	default:
+		return false
+	}
+}
+
+func ensureMigrationsTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
+        name TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+)`)
+	return err
+}
+
 //go:embed migrations/*.sql
-var migrationsFS embed.FS
+var embeddedMigrationFiles embed.FS
+
+var embeddedMigrationsFS = func() fs.FS {
+	sub, err := fs.Sub(embeddedMigrationFiles, "migrations")
+	if err != nil {
+		panic("sqlite: embed migrations: " + err.Error())
+	}
+	return sub
+}()
+
+// applyMigrationsIdempotent applies .sql files from the migrations dir.
+// If a migration was already applied (row exists) or errors with a benign
+// "already exists / duplicate column" message, it is treated as success.
+func applyMigrationsIdempotent(ctx context.Context, db *sql.DB, migFS fs.FS, logger func(format string, args ...any)) error {
+	if err := ensureMigrationsTable(db); err != nil {
+		return fmt.Errorf("ensure migrations table: %w", err)
+	}
+
+	files, err := fs.ReadDir(migFS, ".")
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".sql") {
+			continue
+		}
+		name := f.Name()
+
+		// already applied?
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM migrations WHERE name=?`, name).Scan(&n); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if n > 0 {
+			if logger != nil {
+				logger("sqlite: migration %s already applied, skipping", name)
+			}
+			continue
+		}
+
+		b, err := fs.ReadFile(migFS, name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		sqlText := strings.TrimSpace(string(b))
+		if sqlText == "" {
+			// record empty migration as applied
+			if _, err := tx.ExecContext(ctx, `INSERT INTO migrations(name, applied_at) VALUES(?, ?)`, name, time.Now().UnixMilli()); err != nil && !isBenignMigrationError(err) {
+				return fmt.Errorf("record empty migration %s: %w", name, err)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, sqlText); err != nil {
+			if isBenignMigrationError(err) {
+				if logger != nil {
+					logger("sqlite: benign migration error on %s (%v); marking as applied", name, err)
+				}
+			} else {
+				return fmt.Errorf("apply migration %s: %w", name, err)
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO migrations(name, applied_at) VALUES(?, ?)`, name, time.Now().UnixMilli()); err != nil && !isBenignMigrationError(err) {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
+	}
+	return nil
+}
+
+// DebugRawQueryOpts controls filtering for DebugRawMessages.
+type DebugRawQueryOpts struct {
+	Limit    int
+	Platform string
+	BeforeTS *int64
+	AfterTS  *int64
+}
+
+// DebugRawMessage represents a raw row fetched directly from SQLite.
+type DebugRawMessage struct {
+	RowID    int64  `json:"rowid"`
+	Platform string `json:"platform"`
+	Username string `json:"username"`
+	Text     string `json:"text"`
+	TS       int64  `json:"ts"`
+}
 
 // Config controls how the SQLite store is configured.
 type Config struct {
@@ -32,6 +156,7 @@ type Config struct {
 	MaxConns        int
 	BusyTimeoutMS   int
 	PragmasExtraCSV string
+	JournalMode     string
 }
 
 // Store implements storage.Store backed by SQLite.
@@ -40,9 +165,16 @@ type Store struct {
 	db        *sql.DB
 	path      string
 	ephemeral bool
+	insertSQL string
+	insertMode string
 	initOnce  sync.Once
 	initErr   error
 }
+
+const (
+	insertModeLegacy = "legacy"
+	insertModeGnasty = "gnasty"
+)
 
 // New creates a new SQLite store with the provided configuration.
 func New(cfg Config) *Store {
@@ -101,10 +233,14 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		if s.cfg.MaxConns > 0 {
-			db.SetMaxOpenConns(s.cfg.MaxConns)
-			db.SetMaxIdleConns(s.cfg.MaxConns)
+		// Required SQLite PRAGMAs are also encoded in the DSN so every pooled connection
+		// receives them. We keep init-time PRAGMA checks to validate effective runtime state.
+		maxConns := s.cfg.MaxConns
+		if maxConns <= 0 {
+			maxConns = 1
 		}
+		db.SetMaxOpenConns(maxConns)
+		db.SetMaxIdleConns(maxConns)
 
 		if err := db.PingContext(ctx); err != nil {
 			_ = db.Close()
@@ -112,7 +248,8 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		journalModeRow := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL;")
+		desiredJournalMode := s.effectiveJournalMode()
+		journalModeRow := db.QueryRowContext(ctx, fmt.Sprintf("PRAGMA journal_mode=%s;", desiredJournalMode))
 		var journalMode string
 		if err := journalModeRow.Scan(&journalMode); err != nil {
 			_ = db.Close()
@@ -120,11 +257,8 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		busy := s.cfg.BusyTimeoutMS
-		if busy <= 0 {
-			busy = 5000
-		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", busy)); err != nil {
+		effectiveBusyTimeoutMS := s.effectiveBusyTimeoutMS()
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d;", effectiveBusyTimeoutMS)); err != nil {
 			_ = db.Close()
 			s.initErr = fmt.Errorf("sqlite: set busy_timeout: %w", err)
 			return
@@ -135,13 +269,30 @@ func (s *Store) Init(ctx context.Context) error {
 			return
 		}
 
-		if err := s.applyMigrations(ctx, db); err != nil {
+		if err := applyMigrationsIdempotent(ctx, db, embeddedMigrationsFS, log.Printf); err != nil {
 			_ = db.Close()
 			s.initErr = err
 			return
 		}
 
-		log.Printf("sqlite: opened database (mode=%s, path=%s, journal_mode=%s)", s.storageMode(), path, journalMode)
+		insertMode, insertSQL, err := detectInsertStrategy(ctx, db)
+		if err != nil {
+			_ = db.Close()
+			s.initErr = err
+			return
+		}
+		s.insertMode = insertMode
+		s.insertSQL = insertSQL
+
+		log.Printf(
+			"sqlite: opened database (mode=%s, path=%s, max_conns=%d, busy_timeout_ms=%d, journal_mode=%s, insert_mode=%s)",
+			s.storageMode(),
+			path,
+			maxConns,
+			effectiveBusyTimeoutMS,
+			journalMode,
+			insertMode,
+		)
 
 		s.db = db
 	})
@@ -158,20 +309,213 @@ func (s *Store) InsertMessage(ctx context.Context, m *storage.Message) error {
 		return errors.New("sqlite: message is nil")
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, ts, username, platform, text, emotes_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.ID,
-		m.Timestamp.UTC().UnixMilli(),
-		m.Username,
-		m.Platform,
-		m.Text,
-		m.EmotesJSON,
-		m.RawJSON,
+	if strings.TrimSpace(s.insertSQL) == "" {
+		return errors.New("sqlite: insert strategy not initialized")
+	}
+
+	ts := m.Timestamp.UTC().UnixMilli()
+	emotes := strings.TrimSpace(m.EmotesJSON)
+	if emotes == "" {
+		emotes = "[]"
+	}
+	badges := strings.TrimSpace(m.BadgesJSON)
+	if badges == "" {
+		badges = "[]"
+	}
+	raw := m.RawJSON
+
+	var (
+		err  error
+		args []any
 	)
+
+	switch s.insertMode {
+	case insertModeGnasty:
+		args = []any{
+			m.Platform,
+			m.ID, // seed rows use generated ID as deterministic platform_msg_id
+			ts,
+			m.Username,
+			m.Text,
+			emotes,
+			badges,
+			raw,
+		}
+	default:
+		args = []any{
+			m.ID,
+			ts,
+			m.Username,
+			m.Platform,
+			m.Text,
+			emotes,
+			badges,
+			raw,
+		}
+	}
+
+	err = s.execWithBusyRetry(ctx, "insert message", func() error {
+		_, execErr := s.db.ExecContext(ctx, s.insertSQL, args...)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: insert message: %w", err)
 	}
 	return nil
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "sqlite locked") ||
+		strings.Contains(msg, "sqlite_locked") ||
+		strings.Contains(msg, "sqlitelocked") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		time.Sleep(d)
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func busyRetrySchedule(maxWait time.Duration) []time.Duration {
+	if maxWait <= 0 {
+		maxWait = defaultBusyTimeoutMS * time.Millisecond
+	}
+	const (
+		minStep = 25 * time.Millisecond
+		maxStep = 500 * time.Millisecond
+	)
+
+	schedule := make([]time.Duration, 0, 16)
+	total := time.Duration(0)
+	step := minStep
+	for total < maxWait {
+		remaining := maxWait - total
+		d := step
+		if d > remaining {
+			d = remaining
+		}
+		if d <= 0 {
+			break
+		}
+		schedule = append(schedule, d)
+		total += d
+		if step < 250*time.Millisecond {
+			step += 25 * time.Millisecond
+		} else if step < maxStep {
+			step += 50 * time.Millisecond
+		}
+		if step > maxStep {
+			step = maxStep
+		}
+	}
+	if len(schedule) == 0 {
+		schedule = append(schedule, minStep)
+	}
+	return schedule
+}
+
+func execWithBusyRetry(ctx context.Context, op string, maxWait time.Duration, fn func() error) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+
+	backoffs := busyRetrySchedule(maxWait)
+	start := time.Now()
+	var lastErr error
+	for i := 0; i < len(backoffs); i++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		if i == len(backoffs)-1 {
+			break
+		}
+		if err := sleepWithContext(ctx, backoffs[i]); err != nil {
+			return err
+		}
+	}
+	op = strings.TrimSpace(op)
+	if op == "" {
+		op = "sqlite write"
+	}
+	log.Printf(
+		"sqlite: busy retry exhausted op=%s attempts=%d elapsed_ms=%d err=%v",
+		op,
+		len(backoffs),
+		time.Since(start).Milliseconds(),
+		lastErr,
+	)
+	return lastErr
+}
+
+func (s *Store) execWithBusyRetry(ctx context.Context, op string, fn func() error) error {
+	return execWithBusyRetry(ctx, op, time.Duration(s.effectiveBusyTimeoutMS())*time.Millisecond, fn)
+}
+
+func detectInsertStrategy(ctx context.Context, db *sql.DB) (mode, insertSQL string, err error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(messages);")
+	if err != nil {
+		return "", "", fmt.Errorf("sqlite: inspect messages table: %w", err)
+	}
+	defer rows.Close()
+
+	types := make(map[string]string)
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return "", "", fmt.Errorf("sqlite: scan messages table info: %w", err)
+		}
+		types[strings.ToLower(strings.TrimSpace(name))] = strings.ToUpper(strings.TrimSpace(ctype))
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", fmt.Errorf("sqlite: iterate messages table info: %w", err)
+	}
+
+	idType := types["id"]
+	_, hasPlatformMsgID := types["platform_msg_id"]
+	if hasPlatformMsgID && strings.Contains(idType, "INT") {
+		return insertModeGnasty,
+			`INSERT INTO messages (platform, platform_msg_id, ts, username, text, emotes_json, badges_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			nil
+	}
+
+	return insertModeLegacy,
+		`INSERT INTO messages (id, ts, username, platform, text, emotes_json, badges_json, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		nil
 }
 
 // GetRecent returns the most recent chat messages subject to the provided filters.
@@ -183,8 +527,11 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	if q.SinceTS != nil && q.BeforeTS != nil {
 		return nil, errors.New("sqlite: since_ts and before_ts are mutually exclusive")
 	}
+	if q.BeforeRowID != nil && q.BeforeTS == nil {
+		return nil, errors.New("sqlite: before_rowid requires before_ts")
+	}
 
-	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(raw_json, '') FROM messages`
+	query := `SELECT rowid, id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, '') FROM messages`
 	var (
 		clauses []string
 		args    []any
@@ -194,13 +541,18 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 		args = append(args, q.SinceTS.UTC().UnixMilli())
 	}
 	if q.BeforeTS != nil {
-		clauses = append(clauses, "ts < ?")
-		args = append(args, q.BeforeTS.UTC().UnixMilli())
+		if q.BeforeRowID != nil {
+			clauses = append(clauses, "(ts < ? OR (ts = ? AND rowid < ?))")
+			args = append(args, q.BeforeTS.UTC().UnixMilli(), q.BeforeTS.UTC().UnixMilli(), *q.BeforeRowID)
+		} else {
+			clauses = append(clauses, "ts < ?")
+			args = append(args, q.BeforeTS.UTC().UnixMilli())
+		}
 	}
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY ts DESC, id DESC"
+	query += " ORDER BY ts DESC, rowid DESC"
 	if q.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, q.Limit)
@@ -218,7 +570,7 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 			msg storage.Message
 			ts  int64
 		)
-		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.RawJSON); err != nil {
+		if err := rows.Scan(&msg.RowID, &msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.BadgesJSON, &msg.RawJSON); err != nil {
 			return nil, fmt.Errorf("sqlite: scan message: %w", err)
 		}
 		msg.Timestamp = time.UnixMilli(ts).UTC()
@@ -232,13 +584,154 @@ func (s *Store) GetRecent(ctx context.Context, q storage.QueryOpts) ([]storage.M
 	return results, nil
 }
 
+// DebugRawMessages queries the messages table directly with lightweight filters.
+// This is intended for debug tooling only and should not be exposed in production.
+func (s *Store) DebugRawMessages(ctx context.Context, opts DebugRawQueryOpts) ([]DebugRawMessage, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	query := `SELECT rowid, platform, username, text, ts FROM messages`
+	var (
+		clauses []string
+		args    []any
+	)
+	if opts.Platform != "" {
+		clauses = append(clauses, "platform = ?")
+		args = append(args, opts.Platform)
+	}
+	if opts.BeforeTS != nil {
+		clauses = append(clauses, "ts < ?")
+		args = append(args, *opts.BeforeTS)
+	}
+	if opts.AfterTS != nil {
+		clauses = append(clauses, "ts > ?")
+		args = append(args, *opts.AfterTS)
+	}
+
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY rowid DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: debug raw messages query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]DebugRawMessage, 0, limit)
+	for rows.Next() {
+		var row DebugRawMessage
+		if err := rows.Scan(&row.RowID, &row.Platform, &row.Username, &row.Text, &row.TS); err != nil {
+			return nil, fmt.Errorf("sqlite: debug raw messages scan: %w", err)
+		}
+		results = append(results, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: debug raw messages rows: %w", err)
+	}
+
+	return results, nil
+}
+
+// TailHead returns the most recent (ts,rowid) pair from the same row.
+// This avoids the inconsistent MAX(ts)/MAX(rowid) pair that can skip rows.
+func (s *Store) TailHead(ctx context.Context) (storage.TailPosition, error) {
+	if s.db == nil {
+		return storage.TailPosition{}, errors.New("sqlite: store not initialized")
+	}
+
+	var pos storage.TailPosition
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT ts, rowid
+		FROM messages
+		ORDER BY rowid DESC
+		LIMIT 1
+	`).Scan(&pos.TS, &pos.RowID)
+
+	// Empty table -> start at zero position
+	if err == sql.ErrNoRows {
+		return storage.TailPosition{}, nil
+	}
+	if err != nil {
+		return storage.TailPosition{}, fmt.Errorf("sqlite: tail head: %w", err)
+	}
+
+	return pos, nil
+}
+
+// TailNext returns up to limit messages strictly after the provided position ordered by timestamp then rowid.
+func (s *Store) TailNext(ctx context.Context, after storage.TailPosition, limit int) ([]storage.Message, storage.TailPosition, error) {
+	if s.db == nil {
+		return nil, after, errors.New("sqlite: store not initialized")
+	}
+
+	if limit <= 0 {
+		limit = 500
+	}
+
+	query := `SELECT id, ts, username, platform, text, emotes_json, COALESCE(badges_json, '[]'), COALESCE(raw_json, ''), rowid
+FROM messages
+WHERE rowid > ?
+ORDER BY rowid ASC
+LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, after.RowID, limit)
+	if err != nil {
+		return nil, after, fmt.Errorf("sqlite: tail next query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]storage.Message, 0, limit)
+	last := after
+
+	for rows.Next() {
+		var (
+			msg   storage.Message
+			ts    int64
+			rowID int64
+		)
+		if err := rows.Scan(&msg.ID, &ts, &msg.Username, &msg.Platform, &msg.Text, &msg.EmotesJSON, &msg.BadgesJSON, &msg.RawJSON, &rowID); err != nil {
+			return nil, after, fmt.Errorf("sqlite: tail next scan: %w", err)
+		}
+		msg.Timestamp = time.UnixMilli(ts).UTC()
+		results = append(results, msg)
+		last = storage.TailPosition{TS: ts, RowID: rowID}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, after, fmt.Errorf("sqlite: tail next rows: %w", err)
+	}
+
+	return results, last, nil
+}
+
 // PurgeBefore deletes chat messages with timestamps strictly less than the provided cutoff.
 func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (int, error) {
 	if s.db == nil {
 		return 0, errors.New("sqlite: store not initialized")
 	}
 
-	res, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE ts < ?`, cutoff.UTC().UnixMilli())
+	var (
+		res sql.Result
+		err error
+	)
+	err = s.execWithBusyRetry(ctx, "purge before", func() error {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM messages WHERE ts < ?`, cutoff.UTC().UnixMilli())
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: purge before: %w", err)
 	}
@@ -257,10 +750,16 @@ func (s *Store) PurgeAll(ctx context.Context) error {
 		return errors.New("sqlite: store not initialized")
 	}
 
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM messages`); err != nil {
+	if err := s.execWithBusyRetry(ctx, "purge messages", func() error {
+		_, execErr := s.db.ExecContext(ctx, `DELETE FROM messages`)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: purge messages: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
+	if err := s.execWithBusyRetry(ctx, "vacuum", func() error {
+		_, execErr := s.db.ExecContext(ctx, `VACUUM`)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: vacuum: %w", err)
 	}
 	return nil
@@ -293,6 +792,130 @@ func (s *Store) GetSession(ctx context.Context, token string) (*storage.Session,
 	}, nil
 }
 
+// LatestSessionByService returns the most recently updated session for the service.
+func (s *Store) LatestSessionByService(ctx context.Context, service string) (*storage.Session, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+	if strings.TrimSpace(service) == "" {
+		return nil, errors.New("sqlite: service is empty")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT token, service, data_json, token_expiry, updated_at FROM sessions WHERE service = ? ORDER BY updated_at DESC LIMIT 1`, service)
+	var (
+		tok, svc, data  string
+		expiry, updated int64
+	)
+	if err := row.Scan(&tok, &svc, &data, &expiry, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlite: latest session: %w", err)
+	}
+
+	return &storage.Session{
+		Token:       tok,
+		Service:     svc,
+		DataJSON:    data,
+		TokenExpiry: time.Unix(expiry, 0).UTC(),
+		UpdatedAt:   time.Unix(updated, 0).UTC(),
+	}, nil
+}
+
+// LatestSession returns the most recently updated session regardless of service.
+func (s *Store) LatestSession(ctx context.Context) (*storage.Session, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT token, service, data_json, token_expiry, updated_at FROM sessions ORDER BY updated_at DESC, token_expiry DESC, rowid DESC LIMIT 1`)
+	var (
+		tok, svc, data  string
+		expiry, updated int64
+	)
+	if err := row.Scan(&tok, &svc, &data, &expiry, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlite: latest session: %w", err)
+	}
+
+	return &storage.Session{
+		Token:       tok,
+		Service:     svc,
+		DataJSON:    data,
+		TokenExpiry: time.Unix(expiry, 0).UTC(),
+		UpdatedAt:   time.Unix(updated, 0).UTC(),
+	}, nil
+}
+
+// GetConfig fetches a persisted config blob by key.
+func (s *Store) GetConfig(ctx context.Context, key string) (*storage.ConfigRecord, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite: store not initialized")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errors.New("sqlite: config key is empty")
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT key, version, value_json, updated_at FROM config_kv WHERE key = ?`, key)
+	var (
+		record             storage.ConfigRecord
+		updatedAtUnixMilli int64
+	)
+	if err := row.Scan(&record.Key, &record.Version, &record.ValueJSON, &updatedAtUnixMilli); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlite: get config: %w", err)
+	}
+	record.UpdatedAt = time.UnixMilli(updatedAtUnixMilli).UTC()
+	return &record, nil
+}
+
+// UpsertConfig writes a config blob by key.
+func (s *Store) UpsertConfig(ctx context.Context, cfg *storage.ConfigRecord) error {
+	if s.db == nil {
+		return errors.New("sqlite: store not initialized")
+	}
+	if cfg == nil {
+		return errors.New("sqlite: config record is nil")
+	}
+	cfg.Key = strings.TrimSpace(cfg.Key)
+	if cfg.Key == "" {
+		return errors.New("sqlite: config key is empty")
+	}
+	if cfg.Version <= 0 {
+		return errors.New("sqlite: config version must be positive")
+	}
+
+	updatedAt := cfg.UpdatedAt.UTC()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+
+	err := s.execWithBusyRetry(ctx, "upsert config", func() error {
+		_, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO config_kv(key, version, value_json, updated_at)
+         VALUES(?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           version=excluded.version,
+           value_json=excluded.value_json,
+           updated_at=excluded.updated_at`,
+			cfg.Key,
+			cfg.Version,
+			cfg.ValueJSON,
+			updatedAt.UnixMilli(),
+		)
+		return execErr
+	})
+	if err != nil {
+		return fmt.Errorf("sqlite: upsert config: %w", err)
+	}
+	return nil
+}
+
 // UpsertSession creates or updates a stored session record.
 func (s *Store) UpsertSession(ctx context.Context, sess *storage.Session) error {
 	if s.db == nil {
@@ -311,20 +934,23 @@ func (s *Store) UpsertSession(ctx context.Context, sess *storage.Session) error 
 		updated = time.Now().UTC().Unix()
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions(token, service, data_json, token_expiry, updated_at)
+	err := s.execWithBusyRetry(ctx, "upsert session", func() error {
+		_, execErr := s.db.ExecContext(ctx,
+			`INSERT INTO sessions(token, service, data_json, token_expiry, updated_at)
          VALUES(?, ?, ?, ?, ?)
          ON CONFLICT(token) DO UPDATE SET
            service=excluded.service,
            data_json=excluded.data_json,
            token_expiry=excluded.token_expiry,
            updated_at=excluded.updated_at`,
-		sess.Token,
-		sess.Service,
-		sess.DataJSON,
-		expiry,
-		updated,
-	)
+			sess.Token,
+			sess.Service,
+			sess.DataJSON,
+			expiry,
+			updated,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert session: %w", err)
 	}
@@ -336,10 +962,24 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	if s.db == nil {
 		return errors.New("sqlite: store not initialized")
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token = ?`, token); err != nil {
+	if err := s.execWithBusyRetry(ctx, "delete session", func() error {
+		_, execErr := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token = ?`, token)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("sqlite: delete session: %w", err)
 	}
 	return nil
+}
+
+// Ping verifies that the database connection is healthy and writable.
+func (s *Store) Ping(ctx context.Context) error {
+	if s.db == nil {
+		return errors.New("sqlite: store not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.db.PingContext(ctx)
 }
 
 // Close terminates the database connection and cleans up any ephemeral files.
@@ -393,8 +1033,32 @@ func (s *Store) storageMode() string {
 	return "persistent"
 }
 
+func (s *Store) effectiveBusyTimeoutMS() int {
+	if s.cfg.BusyTimeoutMS <= 0 {
+		return defaultBusyTimeoutMS
+	}
+	return s.cfg.BusyTimeoutMS
+}
+
+func (s *Store) effectiveJournalMode() string {
+	mode := strings.TrimSpace(s.cfg.JournalMode)
+	if mode == "" {
+		return "WAL"
+	}
+	return strings.ToUpper(mode)
+}
+
+func (s *Store) requiredPragmas() []string {
+	return []string{
+		fmt.Sprintf("_pragma=busy_timeout(%d)", s.effectiveBusyTimeoutMS()),
+		"_pragma=foreign_keys(ON)",
+		fmt.Sprintf("_pragma=journal_mode(%s)", s.effectiveJournalMode()),
+	}
+}
+
 func (s *Store) buildDSN(path string) string {
 	params := []string{"cache=shared", "mode=rwc"}
+	params = append(params, s.requiredPragmas()...)
 	params = append(params, s.parseExtraPragmas()...)
 
 	query := strings.Join(params, "&")
@@ -430,77 +1094,4 @@ func (s *Store) parseExtraPragmas() []string {
 		pragmas = append(pragmas, "_pragma="+p)
 	}
 	return pragmas
-}
-
-func (s *Store) applyMigrations(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
-		return fmt.Errorf("sqlite: ensure schema_migrations: %w", err)
-	}
-
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
-	if err != nil {
-		return fmt.Errorf("sqlite: read migrations: %w", err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: begin migrations: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-
-		version, err := parseMigrationVersion(entry.Name())
-		if err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-
-		var exists int
-		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&exists); {
-		case err == nil:
-			continue
-		case errors.Is(err, sql.ErrNoRows):
-			// not applied
-		default:
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: check migration %s: %w", entry.Name(), err)
-		}
-
-		data, err := migrationsFS.ReadFile("migrations/" + entry.Name())
-		if err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: read migration %s: %w", entry.Name(), err)
-		}
-		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: apply migration %s: %w", entry.Name(), err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (?)`, version); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("sqlite: record migration %s: %w", entry.Name(), err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sqlite: commit migrations: %w", err)
-	}
-	return nil
-}
-
-func parseMigrationVersion(name string) (int, error) {
-	base := strings.TrimSuffix(name, filepath.Ext(name))
-	parts := strings.SplitN(base, "_", 2)
-	if len(parts) == 0 || parts[0] == "" {
-		return 0, fmt.Errorf("sqlite: invalid migration name %q", name)
-	}
-	version, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: invalid migration version in %q: %w", name, err)
-	}
-	return version, nil
 }

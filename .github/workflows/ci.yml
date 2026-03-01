@@ -11,6 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure legacy Python harvester files are absent
+        run: |
+          set -euo pipefail
+          matches=$(git ls-files -z -- 'python/**' 'python/requirements.txt' 'fetch_chat.py' 'scripts/fetch_chat.py' 'chat_downloader' 'chat_downloader/**' 'scripts/chat_downloader' 'scripts/chat_downloader/**' 2>/dev/null | tr '\0' '\n' | sed '/^$/d')
+          if [ -n "$matches" ]; then
+            echo "Legacy Python harvester files detected:" >&2
+            echo "$matches" >&2
+            echo 'Remove them before running CI.' >&2
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
 

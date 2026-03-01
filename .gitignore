@@ -37,6 +37,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Application data
+/data/
+
 # Python virutal environment
 python/venv
 
@@ -45,3 +48,12 @@ youtube-go.json
 .vscode/*
 !.vscode/settings.json
 env.local.smoke.*
+
+# local backups
+*.bak.*
+
+# local scratch
+.tmp_env_inventory/
+
+# local soak outputs
+artifacts/

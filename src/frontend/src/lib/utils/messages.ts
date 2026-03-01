@@ -29,10 +29,13 @@ export function loadImage(source: string): string {
 
 export function imageFromEmote(emote: Emote): HTMLImageElement {
   const emoteImg = document.createElement('img');
-  emoteImg.className = 'emote-image';
+  emoteImg.className = 'emote-image chat-emote';
   emoteImg.alt = emote.name;
   emoteImg.title = emote.name;
-  emoteImg.src = loadImage(emote.images[0].url);
+  const emoteUrl = emote.url ?? emote.images[0]?.url;
+  if (emoteUrl) {
+    emoteImg.src = loadImage(emoteUrl);
+  }
   return emoteImg;
 }
 

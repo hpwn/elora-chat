@@ -11,26 +11,75 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
+	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/twitch"
 )
 
-// Twitch OAuth configuration
-var twitchOAuthConfig = &oauth2.Config{
-	ClientID:     os.Getenv("TWITCH_CLIENT_ID"),
-	ClientSecret: os.Getenv("TWITCH_CLIENT_SECRET"),
-	RedirectURL:  os.Getenv("TWITCH_REDIRECT_URL"),
-	Scopes:       []string{"chat:edit", "chat:read"}, // Updated scopes
-	Endpoint:     twitch.Endpoint,                    // Make sure to import "golang.org/x/oauth2/twitch"
+var refreshLocks sync.Map // map[string]*sync.Mutex
+var serviceTokenMaintainerOnce sync.Once
+
+const twitchServiceTokenKey = "service:twitch"
+
+func lockRefresh(sessionToken string) func() {
+	if strings.TrimSpace(sessionToken) == "" {
+		return func() {}
+	}
+	muAny, _ := refreshLocks.LoadOrStore(sessionToken, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
+
+var gnastyReloadMu sync.Mutex
+var gnastyReloadUntil time.Time
+
+func triggerGnastyReloadThrottled(ctx context.Context) error {
+	gnastyReloadMu.Lock()
+	now := time.Now()
+	if now.Before(gnastyReloadUntil) {
+		gnastyReloadMu.Unlock()
+		return nil
+	}
+	gnastyReloadUntil = now.Add(1500 * time.Millisecond)
+	gnastyReloadMu.Unlock()
+	return triggerGnastyReload(ctx)
+}
+
+// Twitch OAuth configuration
+func newTwitchOAuthConfigFromEnv() *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     os.Getenv("TWITCH_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("TWITCH_OAUTH_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("TWITCH_OAUTH_REDIRECT_URL"),
+		Scopes:       []string{"chat:edit", "chat:read"}, // Updated scopes
+		Endpoint:     twitch.Endpoint,                    // Make sure to import "golang.org/x/oauth2/twitch"
+	}
+}
+
+var (
+	twitchOAuthConfig     = newTwitchOAuthConfigFromEnv()
+	twitchUserInfoURL     = "https://api.twitch.tv/helix/users"
+	twitchHTTPClient      = http.DefaultClient
+	gnastyHTTPClient      = &http.Client{Timeout: 2 * time.Second}
+	tokenSourceFromConfig = func(cfg *oauth2.Config, c context.Context, token *oauth2.Token) oauth2.TokenSource {
+		return cfg.TokenSource(c, token)
+	}
+	writeAccessTokenFile  = tokenfile.WriteAccessToken
+	writeRefreshTokenFile = tokenfile.WriteRefreshToken
+)
 
 // loginHandler to initiate OAuth with Twitch
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -42,19 +91,20 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	// Generate a new random state for the OAuth flow
 	state, err := generateState()
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("auth: failed to generate oauth state: %v", err)
+		writeTwitchLoginFailure(w, r)
 		return
 	}
 
 	// Store the state via the backing store with an expiration window.
 	if err := storeOAuthState(r.Context(), state); err != nil {
-		log.Printf("auth: failed to persist oauth state: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		log.Printf("auth: failed to persist oauth state via main db: %v", err)
+		writeTwitchLoginFailure(w, r)
 		return
 	}
 
 	// Construct the OAuth URL and redirect the user to the Twitch authentication page
-	url := twitchOAuthConfig.AuthCodeURL(state, oauth2.AccessTypeOnline)
+	url := twitchOAuthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
@@ -65,7 +115,6 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var oauthConfig *oauth2.Config = twitchOAuthConfig
-	var userInfoURL string = "https://api.twitch.tv/helix/users"
 	var service string = "twitch"
 
 	// Check if an error query parameter is present
@@ -85,77 +134,100 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Exchange the auth code for an access token
 	token, err := oauthConfig.Exchange(context.Background(), r.FormValue("code"))
 	if err != nil {
-		http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
-		return
+		log.Printf("auth: twitch token exchange failed: %v", err)
 	}
 
 	var req *http.Request
 	var res *http.Response
 
-	// For Twitch, manually set the headers and create the request
-	userInfoURL = "https://api.twitch.tv/helix/users"
-	req, err = http.NewRequest("GET", userInfoURL, nil)
-	if err != nil {
-		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
-		return
+	if token != nil {
+		// For Twitch, manually set the headers and create the request
+		req, err = http.NewRequest(http.MethodGet, twitchUserInfoURL, nil)
+		if err != nil {
+			http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Set necessary headers for Twitch API
+		req.Header.Set("Client-ID", oauthConfig.ClientID)
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		res, err = twitchHTTPClient.Do(req)
+
+		if err != nil || res.StatusCode != 200 {
+			http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+			return
+		}
+		defer res.Body.Close()
+
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			http.Error(w, "Failed to read response body", http.StatusInternalServerError)
+			return
+		}
+
+		// Unmarshal the user data
+		var userData map[string]any
+		if err = json.Unmarshal(body, &userData); err != nil {
+			http.Error(w, "Failed to parse user data: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Before generating a new session token, check if an existing session token is present
+		var sessionToken string
+		if cookie, err := r.Cookie("session_token"); err == nil {
+			// Use the existing session token if present
+			sessionToken = cookie.Value
+		} else {
+			// Generate a new session token if it does not exist
+			sessionToken = generateSessionToken()
+		}
+
+		// Include the service in the userData map
+		userData["service"] = service
+
+		// Assuming user data fetching was successful, include OAuth token in userData.
+		// The key for storing the token should match what you'll use in sendMessage functions.
+		if service == "twitch" {
+			userData["twitch_token"] = token.AccessToken
+		} else if service == "youtube" {
+			userData["youtube_token"] = token.AccessToken
+		}
+
+		// Store refresh token and expiry time if available
+		if token.RefreshToken != "" {
+			userData["refresh_token"] = token.RefreshToken
+		}
+		userData["token_expiry"] = token.Expiry.Unix() // Store as Unix timestamp for simplicity
+
+		// Now, use a function to update the session data with this service login
+		// This should include setting the session token in a cookie
+		updateSessionDataForService(w, userData, service, sessionToken)
+		if service == "twitch" {
+			if err := upsertServiceTokenRecord(context.Background(), token); err != nil {
+				log.Printf("auth: failed to persist twitch service token: %v", err)
+			}
+		}
 	}
-	// Set necessary headers for Twitch API
-	req.Header.Set("Client-ID", oauthConfig.ClientID)
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	res, err = http.DefaultClient.Do(req)
 
-	if err != nil || res.StatusCode != 200 {
-		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
-		return
-	}
-	defer res.Body.Close()
+	if shouldWriteGnastyTokens() {
+		wrote, err := persistGnastyTokens(token)
+		if err != nil {
+			log.Printf("auth: failed to persist gnasty tokens: %v", err)
+		}
+		if wrote || strings.TrimSpace(os.Getenv("ELORA_GNASTY_RELOAD_URL")) != "" {
+			reloadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		http.Error(w, "Failed to read response body", http.StatusInternalServerError)
-		return
-	}
-
-	// Unmarshal the user data
-	var userData map[string]any
-	if err = json.Unmarshal(body, &userData); err != nil {
-		http.Error(w, "Failed to parse user data: "+err.Error(), http.StatusInternalServerError)
-		return
+			if err := triggerGnastyReload(reloadCtx); err != nil {
+				if isDialOrHostError(err) {
+					log.Printf("auth: gnasty reload warning: %v", err)
+				} else {
+					log.Printf("auth: gnasty reload failed: %v", err)
+				}
+			}
+		}
 	}
 
-	// Before generating a new session token, check if an existing session token is present
-	var sessionToken string
-	if cookie, err := r.Cookie("session_token"); err == nil {
-		// Use the existing session token if present
-		sessionToken = cookie.Value
-	} else {
-		// Generate a new session token if it does not exist
-		sessionToken = generateSessionToken()
-	}
-
-	// Include the service in the userData map
-	userData["service"] = service
-
-	// Assuming user data fetching was successful, include OAuth token in userData.
-	// The key for storing the token should match what you'll use in sendMessage functions.
-	if service == "twitch" {
-		userData["twitch_token"] = token.AccessToken
-	} else if service == "youtube" {
-		userData["youtube_token"] = token.AccessToken
-	}
-
-	// Store refresh token and expiry time if available
-	if token.RefreshToken != "" {
-		userData["refresh_token"] = token.RefreshToken
-	}
-	userData["token_expiry"] = token.Expiry.Unix() // Store as Unix timestamp for simplicity
-
-	// Now, use a function to update the session data with this service login
-	// This should include setting the session token in a cookie
-	updateSessionDataForService(w, userData, service, sessionToken)
-
-	// Redirect the user to the main page or dashboard
-	http.Redirect(w, r, "/", http.StatusFound)
+	writeTwitchConnectedPage(w)
 }
 
 func updateSessionDataForService(w http.ResponseWriter, userData map[string]any, service string, sessionToken string) {
@@ -199,12 +271,14 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 	existingSessionData["updated_at"] = now.Unix()
 
 	expiry := now.Add(24 * time.Hour)
-	if ts, ok := toUnixSeconds(existingSessionData["token_expiry"]); ok {
-		expiry = time.Unix(ts, 0).UTC()
-	} else if !currentExpiry.IsZero() {
+
+	// never shorten an existing TTL if it's already further out
+	if !currentExpiry.IsZero() && currentExpiry.After(expiry) {
 		expiry = currentExpiry
 	}
-	if expiry.Before(now) {
+
+	// safety floor
+	if expiry.Before(now.Add(5 * time.Minute)) {
 		expiry = now.Add(5 * time.Minute)
 	}
 
@@ -227,9 +301,149 @@ func updateSessionDataForService(w http.ResponseWriter, userData map[string]any,
 		return
 	}
 
+	if service == "twitch" && tokenfile.PathFromEnv() != "" && !shouldWriteGnastyTokens() {
+		if tok, _ := existingSessionData["twitch_token"].(string); strings.TrimSpace(tok) != "" {
+			if err := tokenfile.Save(tok); err != nil {
+				if !errors.Is(err, tokenfile.ErrEmptyToken) {
+					log.Printf("auth: twitch token export skipped (%v)", err)
+				}
+			} else {
+				log.Printf("auth: twitch token exported to file")
+			}
+		}
+	}
+
 	if w != nil {
 		setSessionCookie(w, sessionToken)
 	}
+}
+
+func shouldWriteGnastyTokens() bool {
+	v := strings.TrimSpace(os.Getenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS"))
+	if v == "" {
+		return true
+	}
+	v = strings.ToLower(v)
+	switch v {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func persistGnastyTokens(token *oauth2.Token) (bool, error) {
+	if token == nil {
+		return false, nil
+	}
+
+	dataDir := strings.TrimSpace(os.Getenv("ELORA_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+
+	wrote := false
+
+	if access := strings.TrimSpace(token.AccessToken); access != "" {
+		accessPath := filepath.Join(dataDir, "twitch_irc.pass")
+		desired := desiredAccessTokenFileContent(access)
+		same, err := fileContentEquals(accessPath, desired)
+		if err != nil {
+			return wrote, err
+		}
+		if !same {
+			if err := writeAccessTokenFile(accessPath, access); err != nil {
+				return wrote, err
+			}
+			wrote = true
+		}
+	}
+
+	if refresh := strings.TrimSpace(token.RefreshToken); refresh != "" {
+		refreshPath := filepath.Join(dataDir, "twitch_refresh.pass")
+		desired := desiredRefreshTokenFileContent(refresh)
+		same, err := fileContentEquals(refreshPath, desired)
+		if err != nil {
+			return wrote, err
+		}
+		if !same {
+			if err := writeRefreshTokenFile(refreshPath, refresh); err != nil {
+				return wrote, err
+			}
+			wrote = true
+		}
+	}
+
+	return wrote, nil
+}
+
+func desiredAccessTokenFileContent(access string) string {
+	access = strings.TrimSpace(access)
+	if access == "" {
+		return ""
+	}
+	if !strings.HasPrefix(access, "oauth:") {
+		access = "oauth:" + access
+	}
+	return access + "\n"
+}
+
+func desiredRefreshTokenFileContent(refresh string) string {
+	refresh = strings.TrimSpace(refresh)
+	if refresh == "" {
+		return ""
+	}
+	return refresh + "\n"
+}
+
+func fileContentEquals(path, expected string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return string(data) == expected, nil
+}
+
+func triggerGnastyReload(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	url := strings.TrimSpace(os.Getenv("ELORA_GNASTY_RELOAD_URL"))
+	if url == "" {
+		port := strings.TrimSpace(os.Getenv("GNASTY_HTTP_PORT"))
+		if port == "" {
+			port = "8765"
+		}
+		url = fmt.Sprintf("http://gnasty:%s/admin/twitch/reload", port)
+	}
+	if url == "" {
+		return nil
+	}
+
+	client := gnastyHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 2 * time.Second}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("auth: failed to build gnasty reload request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("auth: gnasty reload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("auth: gnasty reload returned %s", resp.Status)
+	}
+	return nil
 }
 
 // Helper function to check if a service is already in the services slice
@@ -368,25 +582,48 @@ func SessionMiddleware(next http.Handler) http.Handler {
 func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session_token")
 	if err != nil {
-		// If the session token is not found, it means the user is not logged in.
-		// Instead of returning an error, return a response indicating no session is active.
-		// log.Println("Session token not found:", err)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"services": []}`)) // Indicate no services are logged in.
+		w.Write([]byte(`{"services": []}`))
 		return
 	}
 
 	sessionToken := cookie.Value
-	sess, _, err := loadSession(r.Context(), sessionToken)
+	sess, sessionData, expired, err := loadSessionAllowExpired(r.Context(), sessionToken)
 	if err != nil || sess == nil {
-		// If session data is not found in the store, it's likely the session has expired or is invalid.
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"services": []}`)) // Similarly, indicate no services are logged in.
+		w.Write([]byte(`{"services": []}`))
 		return
 	}
 
-	// If we reach this point, we have valid session data.
-	// Send the session data back to the client.
+	// If user has Twitch, refresh if needed.
+	if services, ok := sessionData["services"].([]any); ok {
+		for _, s := range services {
+			if name, ok := s.(string); ok && name == "twitch" {
+				if expired {
+					log.Printf("auth: check-session saw expired session ttl; attempting refresh + ttl extend token=%s…", sessionToken[:8])
+				}
+				if err := refreshToken("twitch", sessionToken, sessionData); err != nil {
+					log.Printf("auth: refreshToken in check-session failed: %v", err)
+				}
+				// reload so response is current (even if old ttl was expired)
+				if s2, _, _, err2 := loadSessionAllowExpired(r.Context(), sessionToken); err2 == nil && s2 != nil {
+					sess = s2
+				}
+				break
+			}
+		}
+	}
+
+	// Keep session TTL healthy (separate from OAuth token expiry).
+	if err := maybeExtendSessionTTL(r.Context(), sess, 24*time.Hour); err != nil {
+		log.Printf("auth: failed to extend session ttl: %v", err)
+	} else {
+		// reload once more if ttl update wrote
+		if s2, _, _, err2 := loadSessionAllowExpired(r.Context(), sessionToken); err2 == nil && s2 != nil {
+			sess = s2
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(sess.DataJSON))
 }
@@ -422,35 +659,68 @@ func refreshToken(service string, sessionToken string, sessionData map[string]an
 		return errors.New("session data unavailable")
 	}
 
-	expiryUnix, expiryOk := toUnixSeconds(sessionData["token_expiry"])
-	refreshTokenValue, refreshTokenOk := sessionData["refresh_token"].(string)
-	if !refreshTokenOk {
-		return nil
-	}
-	if expiryOk && time.Now().Unix() < expiryUnix {
-		// Token hasn't expired yet; nothing to do.
+	now := time.Now().Unix()
+	if expiryUnix, ok := toUnixSeconds(sessionData["token_expiry"]); ok && now < expiryUnix {
 		return nil
 	}
 
-	var oauthConfig *oauth2.Config = twitchOAuthConfig
+	unlock := lockRefresh(service + ":" + sessionToken)
+	defer unlock()
 
-	token := &oauth2.Token{
-		RefreshToken: refreshTokenValue,
+	sess, fresh, err := loadSession(context.Background(), sessionToken)
+	if err != nil {
+		return err
 	}
-	ts := oauthConfig.TokenSource(context.Background(), token)
-	newToken, err := ts.Token() // This refreshes the token
+	if sess == nil {
+		return nil
+	}
+	sessionData = fresh
+
+	now = time.Now().Unix()
+	if expiryUnix, ok := toUnixSeconds(sessionData["token_expiry"]); ok && now < expiryUnix {
+		return nil
+	}
+
+	refreshTokenValue, ok := sessionData["refresh_token"].(string)
+	if !ok || strings.TrimSpace(refreshTokenValue) == "" {
+		return nil
+	}
+
+	oauthConfig := twitchOAuthConfig
+	token := &oauth2.Token{RefreshToken: refreshTokenValue}
+	newToken, err := tokenSourceFromConfig(oauthConfig, context.Background(), token).Token()
 	if err != nil {
 		return fmt.Errorf("failed to refresh token: %v", err)
 	}
 
-	userData := map[string]any{
-		fmt.Sprintf("%s_token", service): newToken.AccessToken,
-		"refresh_token":                  newToken.RefreshToken,
-		"token_expiry":                   newToken.Expiry.Unix(),
+	if strings.TrimSpace(newToken.RefreshToken) == "" {
+		newToken.RefreshToken = refreshTokenValue
 	}
 
-	// Use the existing function to update the session data without resetting cookies.
+	userData := map[string]any{
+		fmt.Sprintf("%s_token", service): newToken.AccessToken,
+		"token_expiry":                   newToken.Expiry.Unix(),
+		"refresh_token":                  newToken.RefreshToken,
+	}
 	updateSessionDataForService(nil, userData, service, sessionToken)
+
+	sessionData[fmt.Sprintf("%s_token", service)] = newToken.AccessToken
+	sessionData["token_expiry"] = newToken.Expiry.Unix()
+	sessionData["refresh_token"] = newToken.RefreshToken
+
+	log.Printf("auth: refreshed %s token new_expiry=%d", service, newToken.Expiry.Unix())
+	if service == "twitch" {
+		if err := upsertServiceTokenRecord(context.Background(), newToken); err != nil {
+			log.Printf("auth: failed to persist twitch service token (session refresh): %v", err)
+		}
+	}
+
+	if service == "twitch" && shouldWriteGnastyTokens() {
+		_, perr := persistGnastyTokens(newToken)
+		if perr != nil {
+			log.Printf("auth: failed to persist gnasty tokens (refresh): %v", perr)
+		}
+	}
 
 	return nil
 }
@@ -459,9 +729,9 @@ func storeOAuthState(c context.Context, state string) error {
 	if chatStore == nil {
 		return errors.New("storage not configured")
 	}
-	if c == nil {
-		c = context.Background()
-	}
+
+	ctx, cancel := durableContext(c, 30*time.Second)
+	defer cancel()
 
 	payload, err := json.Marshal(map[string]any{"state": "valid"})
 	if err != nil {
@@ -469,7 +739,7 @@ func storeOAuthState(c context.Context, state string) error {
 	}
 
 	now := time.Now().UTC()
-	return chatStore.UpsertSession(c, &storage.Session{
+	return chatStore.UpsertSession(ctx, &storage.Session{
 		Token:       oauthStateKey(state),
 		Service:     "oauth",
 		DataJSON:    string(payload),
@@ -478,8 +748,56 @@ func storeOAuthState(c context.Context, state string) error {
 	})
 }
 
+func durableContext(parent context.Context, minTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), minTimeout)
+	}
+
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) >= minTimeout {
+		return parent, func() {}
+	}
+
+	return context.WithTimeout(context.Background(), minTimeout)
+}
+
 func oauthStateKey(state string) string {
 	return "oauth-state:" + state
+}
+
+func writeTwitchLoginFailure(w http.ResponseWriter, r *http.Request) {
+	message := "Twitch login failed, please try again."
+	status := http.StatusBadGateway
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": message})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte("<!DOCTYPE html><html><body><p>Twitch login failed, please try again.</p></body></html>"))
+}
+
+func writeTwitchConnectedPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<!DOCTYPE html><html><body>Connected ✔, redirecting back to Elora…<script>setTimeout(function(){ window.location.href = "/"; }, 1500);</script></body></html>`))
+}
+
+func isDialOrHostError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
 }
 
 func loadSession(c context.Context, token string) (*storage.Session, map[string]any, error) {
@@ -515,6 +833,56 @@ func loadSession(c context.Context, token string) (*storage.Session, map[string]
 	return sess, data, nil
 }
 
+func loadSessionAllowExpired(c context.Context, token string) (*storage.Session, map[string]any, bool, error) {
+	if chatStore == nil {
+		return nil, nil, false, errors.New("storage not configured")
+	}
+	if c == nil {
+		c = context.Background()
+	}
+
+	sess, err := chatStore.GetSession(c, token)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if sess == nil {
+		return nil, nil, false, nil
+	}
+
+	now := time.Now().UTC()
+	expired := !sess.TokenExpiry.IsZero() && !sess.TokenExpiry.After(now)
+
+	if sess.DataJSON == "" {
+		return sess, map[string]any{}, expired, nil
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(sess.DataJSON), &data); err != nil {
+		return sess, nil, expired, err
+	}
+	return sess, data, expired, nil
+}
+
+func maybeExtendSessionTTL(c context.Context, sess *storage.Session, ttl time.Duration) error {
+	if chatStore == nil || sess == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+
+	target := now.Add(ttl)
+	// throttle writes: only extend when we’re within 6h of expiry (or expiry is zero/expired)
+	if !sess.TokenExpiry.IsZero() && sess.TokenExpiry.After(now.Add(6*time.Hour)) {
+		return nil
+	}
+	if sess.TokenExpiry.After(target) {
+		return nil
+	}
+
+	sess.TokenExpiry = target
+	sess.UpdatedAt = now
+	return chatStore.UpsertSession(c, sess)
+}
+
 func isSessionNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -542,7 +910,8 @@ func toUnixSeconds(value any) (int64, bool) {
 
 func SetupAuthRoutes(router *mux.Router) {
 	// Existing setup...
-	router.HandleFunc("/login/twitch", loginHandler).Methods("GET")
+	router.HandleFunc("/auth/twitch/start", loginHandler).Methods("GET")
+	router.HandleFunc("/login/twitch", loginHandler).Methods("GET") // legacy alias
 	router.HandleFunc("/callback/twitch", callbackHandler)
 	router.HandleFunc("/logout", logoutHandler).Methods("POST")
 
@@ -552,4 +921,263 @@ func SetupAuthRoutes(router *mux.Router) {
 	// Subrouter for routes that require authentication
 	authRoutes := router.PathPrefix("/auth").Subrouter()
 	authRoutes.Use(SessionMiddleware)
+}
+
+func startServiceTokenMaintainer() {
+	serviceTokenMaintainerOnce.Do(func() {
+		interval := twitchServiceRefreshInterval()
+		log.Printf("auth: twitch service token maintainer started (interval=%s, refresh_before=%s)", interval, twitchServiceRefreshSkew())
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				if err := maintainTwitchServiceToken(context.Background()); err != nil {
+					log.Printf("auth: twitch service token maintenance failed: %v", err)
+				}
+				<-ticker.C
+			}
+		}()
+	})
+}
+
+func maintainTwitchServiceToken(c context.Context) error {
+	statusMissing := false
+	statusSeeded := false
+	statusRefreshed := false
+	statusWroteFiles := false
+	statusReloadSent := false
+	var tickErr error
+	defer func() {
+		log.Printf("auth: twitch service token tick missing=%t seeded=%t refreshed=%t wrote_files=%t reload_sent=%t err=%v", statusMissing, statusSeeded, statusRefreshed, statusWroteFiles, statusReloadSent, tickErr)
+	}()
+
+	if chatStore == nil {
+		tickErr = errors.New("storage not configured")
+		return nil
+	}
+	if c == nil {
+		c = context.Background()
+	}
+
+	sess, err := chatStore.GetSession(c, twitchServiceTokenKey)
+	var token *oauth2.Token
+	if err != nil {
+		if isSessionNotFound(err) {
+			statusMissing = true
+			token, err = seedServiceTokenFromRefreshFile(c)
+			if err != nil {
+				tickErr = err
+				return err
+			}
+			if token == nil {
+				return nil
+			}
+			statusSeeded = true
+		} else {
+			tickErr = err
+			return err
+		}
+	} else {
+		if sess == nil || strings.TrimSpace(sess.DataJSON) == "" {
+			statusMissing = true
+			token, err = seedServiceTokenFromRefreshFile(c)
+			if err != nil {
+				tickErr = err
+				return err
+			}
+			if token == nil {
+				return nil
+			}
+			statusSeeded = true
+		} else {
+			token, err = parseServiceToken(sess.DataJSON)
+			if err != nil {
+				tickErr = fmt.Errorf("parse service token: %w", err)
+				return tickErr
+			}
+		}
+	}
+
+	needsRefresh := shouldRefreshServiceToken(token, twitchServiceRefreshSkew())
+	if needsRefresh {
+		refreshValue := strings.TrimSpace(token.RefreshToken)
+		if refreshValue == "" {
+			tickErr = errors.New("service token missing refresh_token")
+			return tickErr
+		}
+
+		newToken, refreshErr := tokenSourceFromConfig(twitchOAuthConfig, c, &oauth2.Token{RefreshToken: refreshValue}).Token()
+		if refreshErr != nil {
+			tickErr = fmt.Errorf("refresh service token: %w", refreshErr)
+			return tickErr
+		}
+		if strings.TrimSpace(newToken.RefreshToken) == "" {
+			newToken.RefreshToken = refreshValue
+		}
+		if err := upsertServiceTokenRecord(c, newToken); err != nil {
+			tickErr = fmt.Errorf("persist refreshed service token: %w", err)
+			return tickErr
+		}
+		token = newToken
+		statusRefreshed = true
+	}
+
+	if shouldWriteGnastyTokens() {
+		wrote, perr := persistGnastyTokens(token)
+		if perr != nil {
+			tickErr = fmt.Errorf("persist gnasty token files: %w", perr)
+			return tickErr
+		}
+		statusWroteFiles = wrote
+		if wrote {
+			statusReloadSent = true
+			reloadCtx, cancel := context.WithTimeout(c, 3*time.Second)
+			defer cancel()
+			if err := triggerGnastyReloadThrottled(reloadCtx); err != nil {
+				if isDialOrHostError(err) {
+					log.Printf("auth: gnasty reload warning (service token): %v", err)
+				} else {
+					log.Printf("auth: gnasty reload failed (service token): %v", err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func seedServiceTokenFromRefreshFile(c context.Context) (*oauth2.Token, error) {
+	if chatStore == nil {
+		return nil, nil
+	}
+	refreshPath := twitchRefreshTokenPath()
+	data, err := os.ReadFile(refreshPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read refresh token file %s: %w", refreshPath, err)
+	}
+	refresh := strings.TrimSpace(strings.TrimPrefix(string(data), "oauth:"))
+	if refresh == "" {
+		return nil, nil
+	}
+
+	token := &oauth2.Token{
+		RefreshToken: refresh,
+	}
+	if err := upsertServiceTokenRecordWithOptions(c, token, true); err != nil {
+		return nil, fmt.Errorf("seed service token from refresh file: %w", err)
+	}
+	return token, nil
+}
+
+func shouldRefreshServiceToken(token *oauth2.Token, skew time.Duration) bool {
+	if token == nil {
+		return false
+	}
+	if token.Expiry.IsZero() {
+		return true
+	}
+	return !token.Expiry.After(time.Now().UTC().Add(skew))
+}
+
+func twitchServiceRefreshInterval() time.Duration {
+	mins := getEnvIntWithDefault("ELORA_TWITCH_SERVICE_REFRESH_INTERVAL_MINUTES", 5)
+	if mins < 1 {
+		mins = 1
+	}
+	return time.Duration(mins) * time.Minute
+}
+
+func twitchServiceRefreshSkew() time.Duration {
+	mins := getEnvIntWithDefault("ELORA_TWITCH_SERVICE_REFRESH_BEFORE_EXPIRY_MINUTES", 10)
+	if mins < 0 {
+		mins = 0
+	}
+	return time.Duration(mins) * time.Minute
+}
+
+func getEnvIntWithDefault(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("auth: invalid %s=%q, using default %d", key, raw, def)
+		return def
+	}
+	return v
+}
+
+func upsertServiceTokenRecord(c context.Context, token *oauth2.Token) error {
+	return upsertServiceTokenRecordWithOptions(c, token, false)
+}
+
+func upsertServiceTokenRecordWithOptions(c context.Context, token *oauth2.Token, allowZeroExpiry bool) error {
+	if chatStore == nil || token == nil {
+		return nil
+	}
+	if c == nil {
+		c = context.Background()
+	}
+
+	now := time.Now().UTC()
+	expiry := token.Expiry.UTC()
+	expiryUnix := token.Expiry.Unix()
+	if expiry.IsZero() {
+		if allowZeroExpiry {
+			expiry = time.Unix(0, 0).UTC()
+			expiryUnix = 0
+		} else {
+			expiry = now.Add(5 * time.Minute)
+			expiryUnix = 0
+		}
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"access_token":  token.AccessToken,
+		"refresh_token": token.RefreshToken,
+		"expiry":        expiryUnix,
+		"updated_at":    now.Unix(),
+	})
+	if err != nil {
+		return err
+	}
+
+	return chatStore.UpsertSession(c, &storage.Session{
+		Token:       twitchServiceTokenKey,
+		Service:     "service_token",
+		DataJSON:    string(payload),
+		TokenExpiry: expiry,
+		UpdatedAt:   now,
+	})
+}
+
+func parseServiceToken(data string) (*oauth2.Token, error) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return nil, err
+	}
+
+	token := &oauth2.Token{}
+	if v, _ := payload["access_token"].(string); strings.TrimSpace(v) != "" {
+		token.AccessToken = strings.TrimSpace(v)
+	}
+	if v, _ := payload["refresh_token"].(string); strings.TrimSpace(v) != "" {
+		token.RefreshToken = strings.TrimSpace(v)
+	}
+	if unix, ok := toUnixSeconds(payload["expiry"]); ok && unix > 0 {
+		token.Expiry = time.Unix(unix, 0).UTC()
+	}
+	return token, nil
+}
+
+func twitchRefreshTokenPath() string {
+	dataDir := strings.TrimSpace(os.Getenv("ELORA_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+	return filepath.Join(filepath.Clean(dataDir), "twitch_refresh.pass")
 }

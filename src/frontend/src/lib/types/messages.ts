@@ -6,17 +6,19 @@ interface Image {
 }
 
 interface Badge {
-  name: string;
-  title: string;
-  icons: Image[];
-  clickAction: string;
-  clickURL: string;
+  id: string;
+  version?: string;
+  platform?: 'YouTube' | 'Twitch' | 'youtube' | 'twitch' | string;
+  images?: Image[];
+  imageUrl?: string;
+  title?: string;
 }
 
 export interface Emote {
   id: string;
   name: string;
   images: Image[];
+  url?: string;
   locations: unknown; // TODO: determine the correct type for this
 }
 
@@ -35,13 +37,18 @@ export interface Fragment {
 }
 
 export interface Message {
+  id?: string;
+  ts?: number;
   author: string;
   badges: Badge[];
+  displayBadges?: Badge[];
+  badges_raw?: unknown;
   colour: string;
+  usernameColor?: string;
   message: string;
   fragments: Fragment[];
   emotes: Emote[];
-  source: 'YouTube' | 'Twitch';
+  source: 'YouTube' | 'Twitch' | 'Test' | 'youtube' | 'twitch';
 }
 
 export interface Keymods {

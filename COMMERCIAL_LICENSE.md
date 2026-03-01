@@ -1,6 +1,6 @@
 # elora-chat Commercial License Terms
 
-If you wish to use elora-chat for commercial purposes, please contact the author at hwp@arizona.edu to discuss licensing terms.
+If you wish to use elora-chat for commercial purposes, please contact the author at hwplivnlow@gmail.com to discuss licensing terms.
 
 Commercial use includes, but is not limited to:
 - Selling the software

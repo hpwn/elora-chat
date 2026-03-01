@@ -1,0 +1,62 @@
+name: ${COMPOSE_PROJECT_NAME:-elora}
+
+services:
+  elora-chat:
+    image: ${ELORA_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ}
+      LOG_LEVEL: ${LOG_LEVEL}
+      ELORA_DEV_SEED_ENABLED: ${ELORA_DEV_SEED_ENABLED:-}
+      ELORA_GNASTY_ADMIN_BASE: ${ELORA_GNASTY_ADMIN_BASE:-http://gnasty-harvester:8765}
+    volumes:
+      - ./data:/data
+    ports:
+      - "${ELORA_HTTP_PORT:-8080}:${ELORA_HTTP_PORT:-8080}"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${ELORA_HTTP_PORT:-8080}/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - elora
+    restart: unless-stopped
+  # NOTE: gnasty-harvester pulls the prebuilt gnasty-chat image; update harvester code in
+  # the gnasty-chat project and rebuild/retag gnasty-chat:latest (or set GNASTY_IMAGE)
+  # for changes to take effect.
+  gnasty-harvester:
+    image: ${GNASTY_IMAGE}
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ}
+      GNASTY_SINK_SQLITE_PATH: /data/gnasty.db
+    command: ["-http-addr",":8765","-http-access-log=true"]
+    volumes:
+      - ./data:/data
+    depends_on:
+      elora-chat:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/harvester", "-version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - elora
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+
+networks:
+  elora:
+    name: ${ELORA_DOCKER_NETWORK:-elora-network}
+    driver: bridge

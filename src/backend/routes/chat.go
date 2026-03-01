@@ -1,24 +1,32 @@
 package routes
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/authutil"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
+	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
+	"github.com/hpwn/EloraChat/src/backend/internal/ws"
 	"github.com/jdavasligil/emodl"
 )
 
@@ -27,27 +35,52 @@ var ctx = context.Background()
 var subscribersMu sync.Mutex
 var subscribers map[chan []byte]struct{}
 
-type CmdMap struct {
-	data sync.Map
+var (
+	upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return originAllowed(r.Header.Get("Origin"))
+		},
+	}
+
+	allowedOriginsMu sync.RWMutex
+	allowAllOrigins  = true
+	allowedOrigins   = map[string]struct{}{}
+)
+
+type websocketConfig struct {
+	pingInterval  time.Duration
+	pongWait      time.Duration
+	writeDeadline time.Duration
+	maxBytes      int64
 }
 
-func (m *CmdMap) Store(key string, cmd *exec.Cmd) {
-	m.data.Store(key, cmd)
+// WebsocketRuntimeConfig exposes the runtime websocket tuning knobs.
+type WebsocketRuntimeConfig struct {
+	PingInterval  time.Duration
+	PongWait      time.Duration
+	WriteDeadline time.Duration
+	MaxMessage    int64
 }
 
-func (m *CmdMap) Range(f func(key string, cmd *exec.Cmd) bool) {
-	m.data.Range(func(key, value any) bool {
-		return f(key.(string), value.(*exec.Cmd))
-	})
+type uiConfig struct {
+	hideYouTubeAt bool
+	showBadges    bool
 }
 
-var chatFetchCmds CmdMap
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for simplicity; adjust as needed for security
-	},
-}
+var (
+	activeWebsocketConfig = websocketConfig{
+		pingInterval:  25 * time.Second,
+		pongWait:      30 * time.Second,
+		writeDeadline: 5 * time.Second,
+		maxBytes:      131072,
+	}
+	activeUIConfig = uiConfig{
+		hideYouTubeAt: true,
+		showBadges:    true,
+	}
+	overrideWSEnvelope  *bool
+	overrideWSDropEmpty *bool
+)
 
 var tokenizer Tokenizer
 
@@ -71,21 +104,1566 @@ type Emote struct {
 }
 
 type Badge struct {
-	Name        string  `json:"name"`
-	Title       string  `json:"title"`
-	ClickAction string  `json:"clickAction"`
-	ClickURL    string  `json:"clickURL"`
-	Icons       []Image `json:"icons"`
+	ID       string  `json:"id"`
+	Platform string  `json:"platform,omitempty"`
+	Version  string  `json:"version,omitempty"`
+	Images   []Image `json:"images,omitempty"`
+}
+
+func (b *Badge) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*b = Badge{}
+		return nil
+	}
+
+	if trimmed[0] == '"' {
+		var entry string
+		if err := json.Unmarshal(trimmed, &entry); err != nil {
+			return err
+		}
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			*b = Badge{}
+			return nil
+		}
+		badge := Badge{ID: entry}
+		if idx := strings.Index(entry, "/"); idx >= 0 {
+			badge.ID = strings.TrimSpace(entry[:idx])
+			badge.Version = strings.TrimSpace(entry[idx+1:])
+		}
+		*b = badge
+		return nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil {
+		*b = Badge{}
+		return nil
+	}
+
+	get := func(keys ...string) string {
+		for _, key := range keys {
+			if v, ok := obj[key]; ok {
+				switch val := v.(type) {
+				case string:
+					if s := strings.TrimSpace(val); s != "" {
+						return s
+					}
+				case json.Number:
+					if s := strings.TrimSpace(val.String()); s != "" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	parseImages := func(raw any) []Image {
+		arr, ok := raw.([]any)
+		if !ok {
+			return nil
+		}
+		out := make([]Image, 0, len(arr))
+		for _, entry := range arr {
+			if entry == nil {
+				continue
+			}
+			rec, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			url, _ := rec["url"].(string)
+			url = strings.TrimSpace(url)
+			if url == "" {
+				continue
+			}
+
+			width := 0
+			height := 0
+			switch v := rec["width"].(type) {
+			case json.Number:
+				if i, err := v.Int64(); err == nil {
+					width = int(i)
+				}
+			case float64:
+				width = int(v)
+			case int64:
+				width = int(v)
+			case int:
+				width = v
+			}
+			switch v := rec["height"].(type) {
+			case json.Number:
+				if i, err := v.Int64(); err == nil {
+					height = int(i)
+				}
+			case float64:
+				height = int(v)
+			case int64:
+				height = int(v)
+			case int:
+				height = v
+			}
+
+			id := ""
+			if rawID, ok := rec["id"].(string); ok {
+				id = strings.TrimSpace(rawID)
+			}
+
+			out = append(out, Image{URL: url, Width: width, Height: height, ID: id})
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+
+	id := get("id", "badge_id", "name", "slug", "_id")
+	version := get("version", "badge_version")
+	platform := get("platform")
+	images := parseImages(obj["images"])
+	if len(images) == 0 {
+		*b = Badge{ID: id, Platform: platform, Version: version}
+		return nil
+	}
+	*b = Badge{ID: id, Platform: platform, Version: version, Images: images}
+	return nil
 }
 
 type Message struct {
-	Author  string  `json:"author"` // Adjusted to directly receive the author's name as a string
-	Message string  `json:"message"`
-	Tokens  []Token `json:"fragments"`
-	Emotes  []Emote `json:"emotes"`
-	Badges  []Badge `json:"badges"`
-	Source  string  `json:"source"`
-	Colour  string  `json:"colour"`
+	Author        string  `json:"author"` // Adjusted to directly receive the author's name as a string
+	Message       string  `json:"message"`
+	Tokens        []Token `json:"fragments"`
+	Emotes        []Emote `json:"emotes"`
+	Badges        []Badge `json:"badges"`
+	BadgesRaw     any     `json:"badges_raw,omitempty"`
+	Source        string  `json:"source"`
+	SourceChannel string  `json:"source_channel,omitempty"`
+	SourceURL     string  `json:"source_url,omitempty"`
+	Colour        string  `json:"colour"`
+	UsernameColor string  `json:"username_color,omitempty"`
+}
+
+var errDropMessage = errors.New("chat: drop empty message")
+
+func normalizeSource(src string) string {
+	src = strings.TrimSpace(src)
+	switch strings.ToLower(src) {
+	case "twitch":
+		return "Twitch"
+	case "youtube":
+		return "YouTube"
+	default:
+		return src
+	}
+}
+
+func rawJSONLooksLikeChatMessage(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "{") {
+		return false
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return false
+	}
+
+	isJSONString := func(v json.RawMessage) bool {
+		trimmed := bytes.TrimSpace(v)
+		return len(trimmed) > 0 && trimmed[0] == '"'
+	}
+	isJSONArray := func(v json.RawMessage) bool {
+		trimmed := bytes.TrimSpace(v)
+		return len(trimmed) > 0 && trimmed[0] == '['
+	}
+
+	messageRaw := obj["message"]
+	if isJSONString(messageRaw) {
+		return true
+	}
+
+	if isJSONArray(obj["fragments"]) {
+		return true
+	}
+
+	if isJSONString(obj["author"]) && isJSONString(obj["source"]) && isJSONString(messageRaw) {
+		return true
+	}
+
+	return false
+}
+
+func wsDropEmptyEnabled() bool {
+	if overrideWSDropEmpty != nil {
+		return *overrideWSDropEmpty
+	}
+
+	raw := strings.TrimSpace(os.Getenv("ELORA_WS_DROP_EMPTY"))
+	if raw == "" {
+		return true
+	}
+
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func (m *Message) normalize() {
+	if m == nil {
+		return
+	}
+
+	m.Author = strings.TrimSpace(m.Author)
+	m.Message = strings.TrimSpace(m.Message)
+	m.Source = normalizeSource(m.Source)
+
+	if strings.EqualFold(m.Source, "youtube") && len(m.Emotes) > 0 && len(m.Tokens) == 0 {
+		if fragments := buildYouTubeFragments(m.Message, m.Emotes); len(fragments) > 0 {
+			m.Tokens = fragments
+		}
+	}
+
+	if m.Tokens == nil {
+		m.Tokens = []Token{}
+	}
+	if m.Emotes == nil {
+		m.Emotes = []Emote{}
+	}
+	if m.Badges == nil {
+		m.Badges = []Badge{}
+	}
+	if len(m.Badges) > 0 {
+		filtered := m.Badges[:0]
+		for _, badge := range m.Badges {
+			if strings.EqualFold(strings.TrimSpace(badge.Platform), "youtube") &&
+				isYouTubeOwnerBadgeID(badge.ID) &&
+				!badgeHasUsableImage(badge.Images) {
+				continue
+			}
+			filtered = append(filtered, badge)
+		}
+		if len(filtered) == 0 {
+			m.Badges = []Badge{}
+		} else {
+			m.Badges = filtered
+		}
+	}
+	if !activeUIConfig.showBadges {
+		m.Badges = []Badge{}
+		m.BadgesRaw = nil
+	}
+
+	if activeUIConfig.hideYouTubeAt && strings.EqualFold(m.Source, "YouTube") {
+		if strings.HasPrefix(m.Author, "@") {
+			m.Author = strings.TrimPrefix(m.Author, "@")
+			m.Author = strings.TrimSpace(m.Author)
+		}
+	}
+}
+
+func isYouTubeOwnerBadgeID(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "owner", "broadcaster", "channel_owner":
+		return true
+	default:
+		return false
+	}
+}
+
+func badgeHasUsableImage(images []Image) bool {
+	for _, img := range images {
+		if strings.TrimSpace(img.URL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+type emoteSpan struct {
+	start int
+	end   int
+	emote Emote
+}
+
+func decodeEmotesJSON(raw string) []Emote {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []Emote{}
+	}
+
+	var emotes []Emote
+	if err := json.Unmarshal([]byte(raw), &emotes); err == nil {
+		if emotes == nil {
+			return []Emote{}
+		}
+		return emotes
+	}
+
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return []Emote{}
+	}
+
+	out := make([]Emote, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		emote := Emote{
+			ID:        strings.TrimSpace(getString(entry, "id")),
+			Name:      strings.TrimSpace(firstNonEmptyString(entry, "name", "shortcode", "text")),
+			Locations: parseEmoteLocations(entry["locations"]),
+			Images:    parseEmoteImages(entry),
+		}
+		out = append(out, emote)
+	}
+	if len(out) == 0 {
+		return []Emote{}
+	}
+	return out
+}
+
+func getString(record map[string]any, key string) string {
+	if record == nil {
+		return ""
+	}
+	if raw, ok := record[key]; ok {
+		if s, ok := raw.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyString(record map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(getString(record, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseEmoteLocations(raw any) []string {
+	arr, ok := raw.([]any)
+	if !ok {
+		return []string{}
+	}
+	out := make([]string, 0, len(arr))
+	for _, entry := range arr {
+		switch v := entry.(type) {
+		case string:
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		case map[string]any:
+			start, okStart := coerceInt(v["start"])
+			end, okEnd := coerceInt(v["end"])
+			endExclusive := false
+			if !okStart {
+				start, okStart = coerceInt(v["startIndex"])
+				endExclusive = endExclusive || okStart
+			}
+			if !okStart {
+				start, okStart = coerceInt(v["start_index"])
+				endExclusive = endExclusive || okStart
+			}
+			if !okEnd {
+				end, okEnd = coerceInt(v["endIndex"])
+				endExclusive = endExclusive || okEnd
+			}
+			if !okEnd {
+				end, okEnd = coerceInt(v["end_index"])
+				endExclusive = endExclusive || okEnd
+			}
+			if !okStart || !okEnd {
+				continue
+			}
+			if endExclusive && end > start {
+				end--
+			}
+			if end < start {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%d-%d", start, end))
+		}
+	}
+	if len(out) == 0 {
+		return []string{}
+	}
+	return out
+}
+
+func parseEmoteImages(entry map[string]any) []Image {
+	rawImages, ok := entry["images"].([]any)
+	if !ok {
+		rawImages = nil
+	}
+	out := make([]Image, 0, len(rawImages))
+	for _, img := range rawImages {
+		rec, ok := img.(map[string]any)
+		if !ok {
+			continue
+		}
+		url := strings.TrimSpace(firstNonEmptyString(rec, "url", "imageUrl", "image_url", "src"))
+		if url == "" {
+			continue
+		}
+		width, _ := coerceInt(rec["width"])
+		height, _ := coerceInt(rec["height"])
+		id := strings.TrimSpace(getString(rec, "id"))
+		out = append(out, Image{URL: url, Width: width, Height: height, ID: id})
+	}
+
+	if len(out) == 0 {
+		url := strings.TrimSpace(firstNonEmptyString(entry, "url", "imageUrl", "image_url", "src"))
+		if url != "" {
+			width, _ := coerceInt(entry["width"])
+			height, _ := coerceInt(entry["height"])
+			out = append(out, Image{URL: url, Width: width, Height: height})
+		}
+	}
+
+	if len(out) == 0 {
+		return []Image{}
+	}
+	return out
+}
+
+func coerceInt(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), true
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func buildYouTubeFragments(message string, emotes []Emote) []Token {
+	if len(emotes) == 0 {
+		return nil
+	}
+
+	runes := []rune(message)
+	if len(runes) == 0 {
+		return nil
+	}
+
+	spans := make([]emoteSpan, 0, len(emotes))
+	for _, emote := range emotes {
+		for _, loc := range emote.Locations {
+			loc = strings.TrimSpace(loc)
+			if loc == "" {
+				continue
+			}
+			bounds := strings.SplitN(loc, "-", 2)
+			if len(bounds) != 2 {
+				continue
+			}
+			start, err1 := strconv.Atoi(strings.TrimSpace(bounds[0]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(bounds[1]))
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			if start < 0 {
+				start = 0
+			}
+			if end < start {
+				continue
+			}
+			if start >= len(runes) {
+				continue
+			}
+			if end >= len(runes) {
+				end = len(runes) - 1
+			}
+			spans = append(spans, emoteSpan{start: start, end: end, emote: emote})
+		}
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end < spans[j].end
+	})
+
+	tokens := make([]Token, 0, len(spans)*2+1)
+	cursor := 0
+	for _, span := range spans {
+		if span.start > cursor {
+			text := string(runes[cursor:span.start])
+			if text != "" {
+				tokens = append(tokens, Token{
+					Type: TokenTypeText,
+					Text: text,
+					Emote: Emote{
+						Locations: []string{},
+						Images:    []Image{},
+					},
+				})
+			}
+		} else if span.start < cursor {
+			if span.end < cursor {
+				continue
+			}
+			span.start = cursor
+		}
+
+		if span.end < span.start {
+			continue
+		}
+		text := string(runes[span.start : span.end+1])
+		tokens = append(tokens, Token{
+			Type:  TokenTypeEmote,
+			Text:  text,
+			Emote: span.emote,
+		})
+		cursor = span.end + 1
+	}
+
+	if cursor < len(runes) {
+		text := string(runes[cursor:])
+		if text != "" {
+			tokens = append(tokens, Token{
+				Type: TokenTypeText,
+				Text: text,
+				Emote: Emote{
+					Locations: []string{},
+					Images:    []Image{},
+				},
+			})
+		}
+	}
+
+	return tokens
+}
+
+func (m Message) toChatPayload() ws.ChatPayload {
+	m.normalize()
+
+	fragments := make([]any, len(m.Tokens))
+	for i, token := range m.Tokens {
+		fragments[i] = token
+	}
+
+	emotes := make([]any, len(m.Emotes))
+	for i, emote := range m.Emotes {
+		emotes[i] = emote
+	}
+
+	badges := make([]any, len(m.Badges))
+	for i, badge := range m.Badges {
+		badges[i] = badge
+	}
+
+	return ws.ChatPayload{
+		Author:        m.Author,
+		Message:       m.Message,
+		Fragments:     fragments,
+		Emotes:        emotes,
+		Badges:        badges,
+		BadgesRaw:     m.BadgesRaw,
+		Source:        m.Source,
+		SourceChannel: m.SourceChannel,
+		SourceURL:     m.SourceURL,
+		Colour:        m.Colour,
+		UsernameColor: m.UsernameColor,
+	}
+}
+
+var fallbackColourPalette = []string{
+	"#0000FF", // blue
+	"#8A2BE2", // blue_violet
+	"#5F9EA0", // cadet_blue
+	"#D2691E", // chocolate
+	"#FF7F50", // coral
+	"#1E90FF", // dodger_blue
+	"#B22222", // firebrick
+	"#DAA520", // golden_rod
+	"#008000", // green
+	"#FF69B4", // hot_pink
+	"#FF4500", // orange_red
+	"#FF0000", // red
+	"#2E8B57", // sea_green
+	"#00FF7F", // spring_green
+	"#9ACD32", // yellow_green
+}
+
+var hexUsernameColourRe = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
+const (
+	usernameColourDarkBGMinLuminance = 0.10
+	usernameColourBlendTowardWhite   = 0.60
+)
+
+func colorFromName(name string) string {
+	if name == "" {
+		return "#94a3b8"
+	}
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(name)))
+	sum := h.Sum32()
+	idx := int(sum % uint32(len(fallbackColourPalette)))
+	return fallbackColourPalette[idx]
+}
+
+const (
+	youtubeMemberColour    = "#0F9D58"
+	youtubeModeratorColour = "#5E84F1"
+	youtubeOwnerColour     = "#FFD600"
+)
+
+func normalizeHexUsernameColour(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !hexUsernameColourRe.MatchString(raw) {
+		return ""
+	}
+	return strings.ToUpper(raw)
+}
+
+func parseHexRGB(hex string) (uint8, uint8, uint8, bool) {
+	normalized := normalizeHexUsernameColour(hex)
+	if normalized == "" {
+		return 0, 0, 0, false
+	}
+	r, err := strconv.ParseUint(normalized[1:3], 16, 8)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	g, err := strconv.ParseUint(normalized[3:5], 16, 8)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	b, err := strconv.ParseUint(normalized[5:7], 16, 8)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return uint8(r), uint8(g), uint8(b), true
+}
+
+func srgbToLinear(v float64) float64 {
+	if v <= 0.04045 {
+		return v / 12.92
+	}
+	return math.Pow((v+0.055)/1.055, 2.4)
+}
+
+func usernameColourRelativeLuminance(r, g, b uint8) float64 {
+	rl := srgbToLinear(float64(r) / 255.0)
+	gl := srgbToLinear(float64(g) / 255.0)
+	bl := srgbToLinear(float64(b) / 255.0)
+	return 0.2126*rl + 0.7152*gl + 0.0722*bl
+}
+
+func blendChannelTowardWhite(v uint8, amount float64) uint8 {
+	blended := float64(v) + (255.0-float64(v))*amount
+	if blended < 0 {
+		blended = 0
+	}
+	if blended > 255 {
+		blended = 255
+	}
+	return uint8(math.Round(blended))
+}
+
+func sanitizeUsernameColorForDarkBG(hex string) string {
+	normalized := normalizeHexUsernameColour(hex)
+	if normalized == "" {
+		return ""
+	}
+	r, g, b, ok := parseHexRGB(normalized)
+	if !ok {
+		return ""
+	}
+	if usernameColourRelativeLuminance(r, g, b) >= usernameColourDarkBGMinLuminance {
+		return normalized
+	}
+
+	// Keep hue direction while lifting readability on a dark background.
+	for i := 0; i < 4 && usernameColourRelativeLuminance(r, g, b) < usernameColourDarkBGMinLuminance; i++ {
+		r = blendChannelTowardWhite(r, usernameColourBlendTowardWhite)
+		g = blendChannelTowardWhite(g, usernameColourBlendTowardWhite)
+		b = blendChannelTowardWhite(b, usernameColourBlendTowardWhite)
+	}
+	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
+}
+
+func parseRawJSONObject(raw string) map[string]json.RawMessage {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw[0] != '{' {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return nil
+	}
+	return obj
+}
+
+func parseRawJSONObjectValue(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return nil, false
+	}
+	return obj, true
+}
+
+func parseRawJSONStringValue(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return "", false
+	}
+	var out string
+	if err := json.Unmarshal(trimmed, &out); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
+}
+
+func parseRawJSONBoolValue(raw json.RawMessage) (bool, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false, false
+	}
+	switch trimmed[0] {
+	case 't', 'f':
+		var out bool
+		if err := json.Unmarshal(trimmed, &out); err != nil {
+			return false, false
+		}
+		return out, true
+	case '"':
+		var out string
+		if err := json.Unmarshal(trimmed, &out); err != nil {
+			return false, false
+		}
+		switch strings.ToLower(strings.TrimSpace(out)) {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func getRawString(obj map[string]json.RawMessage, key string) string {
+	if obj == nil {
+		return ""
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	s, ok := parseRawJSONStringValue(raw)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+func getRawBool(obj map[string]json.RawMessage, key string) (bool, bool) {
+	if obj == nil {
+		return false, false
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return false, false
+	}
+	return parseRawJSONBoolValue(raw)
+}
+
+func extractTwitchRawUsernameColour(rawJSON string) string {
+	obj := parseRawJSONObject(rawJSON)
+	if obj == nil {
+		return ""
+	}
+	if colour := normalizeHexUsernameColour(getRawString(obj, "color")); colour != "" {
+		return colour
+	}
+	if tagsRaw, ok := obj["tags"]; ok {
+		if tagsObj, ok := parseRawJSONObjectValue(tagsRaw); ok {
+			if colour := normalizeHexUsernameColour(getRawString(tagsObj, "color")); colour != "" {
+				return colour
+			}
+		}
+	}
+	if authorRaw, ok := obj["author"]; ok {
+		if authorObj, ok := parseRawJSONObjectValue(authorRaw); ok {
+			if colour := normalizeHexUsernameColour(getRawString(authorObj, "color")); colour != "" {
+				return colour
+			}
+		}
+	}
+	return ""
+}
+
+func extractAuthorIdentity(rawJSON string) string {
+	obj := parseRawJSONObject(rawJSON)
+	if obj == nil {
+		return ""
+	}
+	candidates := []string{
+		"authorId", "author_id", "authorExternalChannelId", "userId", "user_id", "channelId", "channel_id", "sender_id", "id",
+	}
+	for _, key := range candidates {
+		if value := getRawString(obj, key); value != "" {
+			return strings.ToLower(value)
+		}
+	}
+	for _, nested := range []string{"author", "tags"} {
+		nestedRaw, ok := obj[nested]
+		if !ok {
+			continue
+		}
+		nestedObj, ok := parseRawJSONObjectValue(nestedRaw)
+		if !ok {
+			continue
+		}
+		for _, key := range append(candidates, "user-id") {
+			if value := getRawString(nestedObj, key); value != "" {
+				return strings.ToLower(value)
+			}
+		}
+	}
+	return ""
+}
+
+type youtubeRole int
+
+const (
+	youtubeRoleNone youtubeRole = iota
+	youtubeRoleMember
+	youtubeRoleModerator
+	youtubeRoleOwner
+)
+
+func mergeYouTubeRole(role youtubeRole, next youtubeRole) youtubeRole {
+	if next > role {
+		return next
+	}
+	return role
+}
+
+func detectYouTubeRole(msg Message, rawJSON string) youtubeRole {
+	role := youtubeRoleNone
+
+	for _, badge := range msg.Badges {
+		id := strings.ToLower(strings.TrimSpace(badge.ID))
+		switch id {
+		case "owner", "broadcaster", "channel_owner":
+			role = mergeYouTubeRole(role, youtubeRoleOwner)
+		case "moderator":
+			role = mergeYouTubeRole(role, youtubeRoleModerator)
+		case "member", "sponsor":
+			role = mergeYouTubeRole(role, youtubeRoleMember)
+		}
+	}
+
+	obj := parseRawJSONObject(rawJSON)
+	if obj == nil {
+		return role
+	}
+
+	type roleProbe struct {
+		keys []string
+		role youtubeRole
+	}
+	probes := []roleProbe{
+		{keys: []string{"isChatOwner", "is_chat_owner", "isOwner", "is_owner", "isBroadcaster", "is_broadcaster"}, role: youtubeRoleOwner},
+		{keys: []string{"isChatModerator", "is_chat_moderator", "isModerator", "is_moderator"}, role: youtubeRoleModerator},
+		{keys: []string{"isChatSponsor", "is_chat_sponsor", "isMember", "is_member"}, role: youtubeRoleMember},
+	}
+	applyProbes := func(in map[string]json.RawMessage) {
+		for _, probe := range probes {
+			for _, key := range probe.keys {
+				if value, ok := getRawBool(in, key); ok && value {
+					role = mergeYouTubeRole(role, probe.role)
+				}
+			}
+		}
+	}
+	applyProbes(obj)
+	if authorRaw, ok := obj["author"]; ok {
+		if authorObj, ok := parseRawJSONObjectValue(authorRaw); ok {
+			applyProbes(authorObj)
+		}
+	}
+
+	return role
+}
+
+func computeUsernameColor(msg Message, row storage.Message) string {
+	author := strings.TrimSpace(msg.Author)
+
+	source := normalizeSource(msg.Source)
+	if source == "" {
+		source = normalizeSource(row.Platform)
+	}
+	if strings.EqualFold(source, "youtube") {
+		switch detectYouTubeRole(msg, row.RawJSON) {
+		case youtubeRoleOwner:
+			return sanitizeUsernameColorForDarkBG(youtubeOwnerColour)
+		case youtubeRoleModerator:
+			return sanitizeUsernameColorForDarkBG(youtubeModeratorColour)
+		case youtubeRoleMember:
+			return sanitizeUsernameColorForDarkBG(youtubeMemberColour)
+		}
+	}
+	if author != "" {
+		if colour, ok := userColorMap[author]; ok {
+			if normalized := normalizeHexUsernameColour(colour); normalized != "" {
+				return sanitizeUsernameColorForDarkBG(normalized)
+			}
+		}
+	}
+
+	switch strings.ToLower(source) {
+	case "twitch":
+		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {
+			return sanitizeUsernameColorForDarkBG(colour)
+		}
+		if colour := normalizeHexUsernameColour(msg.Colour); colour != "" {
+			return sanitizeUsernameColorForDarkBG(colour)
+		}
+		if colour := extractTwitchRawUsernameColour(row.RawJSON); colour != "" {
+			return sanitizeUsernameColorForDarkBG(colour)
+		}
+	default:
+		if colour := normalizeHexUsernameColour(msg.UsernameColor); colour != "" {
+			return sanitizeUsernameColorForDarkBG(colour)
+		}
+		if colour := normalizeHexUsernameColour(msg.Colour); colour != "" {
+			return sanitizeUsernameColorForDarkBG(colour)
+		}
+	}
+
+	if identity := extractAuthorIdentity(row.RawJSON); identity != "" {
+		return sanitizeUsernameColorForDarkBG(colorFromName(identity))
+	}
+	if author != "" {
+		return sanitizeUsernameColorForDarkBG(colorFromName(strings.ToLower(author)))
+	}
+	if username := strings.TrimSpace(row.Username); username != "" {
+		return sanitizeUsernameColorForDarkBG(colorFromName(strings.ToLower(username)))
+	}
+	return sanitizeUsernameColorForDarkBG(colorFromName(""))
+}
+
+func normalizeTwitchChannelIdentity(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, ".") && !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		if !strings.HasSuffix(strings.ToLower(parsed.Hostname()), "twitch.tv") {
+			return ""
+		}
+		raw = parsed.Path
+	}
+
+	raw = strings.Trim(raw, "/")
+	raw = strings.TrimPrefix(raw, "@")
+	if raw == "" {
+		return ""
+	}
+	login := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case '/', '?', '#':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(login) == 0 {
+		return ""
+	}
+	out := strings.ToLower(strings.TrimSpace(login[0]))
+	if out == "" {
+		return ""
+	}
+	for _, r := range out {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return out
+}
+
+func normalizeYouTubeVideoIDIdentity(raw string) string {
+	id := strings.TrimSpace(raw)
+	if len(id) != 11 {
+		return ""
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return id
+}
+
+func normalizeYouTubeHandleIdentity(raw string) string {
+	handle := strings.TrimSpace(raw)
+	handle = strings.TrimPrefix(handle, "@")
+	if handle == "" {
+		return ""
+	}
+	for _, r := range handle {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return handle
+}
+
+func canonicalYouTubeWatchIdentity(videoID string) string {
+	return "https://www.youtube.com/watch?v=" + videoID
+}
+
+func canonicalYouTubeLiveIdentity(handle string) string {
+	return "https://www.youtube.com/@" + handle + "/live"
+}
+
+func normalizeYouTubeSourceIdentity(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if id := normalizeYouTubeVideoIDIdentity(raw); id != "" {
+		return canonicalYouTubeWatchIdentity(id)
+	}
+	if handle := normalizeYouTubeHandleIdentity(raw); handle != "" {
+		return canonicalYouTubeLiveIdentity(handle)
+	}
+	candidate := raw
+	if strings.Contains(raw, ".") && !strings.Contains(raw, "://") {
+		candidate = "https://" + raw
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if strings.HasSuffix(host, "youtu.be") {
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) == 0 {
+			return ""
+		}
+		if id := normalizeYouTubeVideoIDIdentity(parts[0]); id != "" {
+			return canonicalYouTubeWatchIdentity(id)
+		}
+		return ""
+	}
+	if !strings.HasSuffix(host, "youtube.com") {
+		return ""
+	}
+
+	path := strings.Trim(parsed.Path, "/")
+	if strings.HasPrefix(path, "@") {
+		parts := strings.Split(path, "/")
+		if len(parts) > 0 {
+			if handle := normalizeYouTubeHandleIdentity(strings.TrimPrefix(parts[0], "@")); handle != "" {
+				return canonicalYouTubeLiveIdentity(handle)
+			}
+		}
+	}
+	if id := normalizeYouTubeVideoIDIdentity(parsed.Query().Get("v")); id != "" {
+		return canonicalYouTubeWatchIdentity(id)
+	}
+	return ""
+}
+
+func normalizeRawKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func extractRawStringByKeys(rawJSON string, keys []string) string {
+	rawJSON = strings.TrimSpace(rawJSON)
+	if rawJSON == "" {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(rawJSON), &decoded); err != nil {
+		return ""
+	}
+
+	lookup := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if normalized := normalizeRawKey(key); normalized != "" {
+			lookup[normalized] = struct{}{}
+		}
+	}
+
+	var walk func(node any, depth int) string
+	walk = func(node any, depth int) string {
+		if depth > 6 || node == nil {
+			return ""
+		}
+		switch current := node.(type) {
+		case map[string]any:
+			directKeys := make([]string, 0, len(current))
+			for key := range current {
+				directKeys = append(directKeys, key)
+			}
+			sort.Strings(directKeys)
+			for _, key := range directKeys {
+				if _, ok := lookup[normalizeRawKey(key)]; !ok {
+					continue
+				}
+				if value, ok := current[key].(string); ok {
+					value = strings.TrimSpace(value)
+					if value != "" {
+						return value
+					}
+				}
+			}
+			for _, key := range directKeys {
+				if found := walk(current[key], depth+1); found != "" {
+					return found
+				}
+			}
+		case []any:
+			for _, entry := range current {
+				if found := walk(entry, depth+1); found != "" {
+					return found
+				}
+			}
+		}
+		return ""
+	}
+
+	return walk(decoded, 0)
+}
+
+func resolveMessageSourceIdentity(msg *Message, row storage.Message) {
+	if msg == nil {
+		return
+	}
+
+	source := strings.ToLower(strings.TrimSpace(msg.Source))
+	if source == "" {
+		source = strings.ToLower(strings.TrimSpace(row.Platform))
+	}
+
+	switch source {
+	case "twitch":
+		channel := normalizeTwitchChannelIdentity(msg.SourceChannel)
+		if channel == "" {
+			channel = normalizeTwitchChannelIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"channel", "channel_name", "channel_login", "broadcaster", "broadcaster_login", "room", "room_name",
+			}))
+		}
+		if channel == "" {
+			channel = normalizeTwitchChannelIdentity(msg.SourceURL)
+		}
+		msg.SourceChannel = channel
+		msg.SourceURL = ""
+	case "youtube":
+		sourceURL := normalizeYouTubeSourceIdentity(msg.SourceURL)
+		if sourceURL == "" {
+			sourceURL = normalizeYouTubeSourceIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"url", "source_url", "sourceurl", "watch_url", "watchurl", "video_url", "videourl",
+			}))
+		}
+		if sourceURL == "" {
+			if videoID := normalizeYouTubeVideoIDIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"video_id", "videoid", "live_id", "stream_id",
+			})); videoID != "" {
+				sourceURL = canonicalYouTubeWatchIdentity(videoID)
+			}
+		}
+		if sourceURL == "" {
+			if handle := normalizeYouTubeHandleIdentity(extractRawStringByKeys(row.RawJSON, []string{
+				"channel_handle", "channelhandle", "handle",
+			})); handle != "" {
+				sourceURL = canonicalYouTubeLiveIdentity(handle)
+			}
+		}
+		msg.SourceURL = sourceURL
+		msg.SourceChannel = ""
+	default:
+		msg.SourceChannel = normalizeTwitchChannelIdentity(msg.SourceChannel)
+		msg.SourceURL = normalizeYouTubeSourceIdentity(msg.SourceURL)
+	}
+
+	applyRuntimeSourceIdentity(msg)
+}
+
+func applyRuntimeSourceIdentity(msg *Message) {
+	if msg == nil {
+		return
+	}
+
+	cfg := currentRuntimeConfig()
+	source := strings.ToLower(strings.TrimSpace(msg.Source))
+
+	switch source {
+	case "twitch":
+		msg.SourceChannel = normalizeTwitchChannelIdentity(msg.SourceChannel)
+		if msg.SourceChannel == "" {
+			msg.SourceChannel = normalizeTwitchChannelIdentity(cfg.TwitchChannel)
+		}
+		msg.SourceURL = ""
+	case "youtube":
+		msg.SourceURL = normalizeYouTubeSourceIdentity(msg.SourceURL)
+		if msg.SourceURL == "" {
+			msg.SourceURL = normalizeYouTubeSourceIdentity(cfg.YouTubeSourceURL)
+		}
+		msg.SourceChannel = ""
+	default:
+		msg.SourceChannel = normalizeTwitchChannelIdentity(msg.SourceChannel)
+		msg.SourceURL = normalizeYouTubeSourceIdentity(msg.SourceURL)
+	}
+}
+
+func parseChatMessageFromRawJSON(raw string) (Message, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !rawJSONLooksLikeChatMessage(raw) {
+		return Message{}, false
+	}
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		return Message{}, false
+	}
+	return msg, true
+}
+
+func parseStoredBadges(raw string) ([]Badge, any) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	decodeBadges := func(in []Badge) []Badge {
+		out := make([]Badge, 0, len(in))
+		for _, badge := range in {
+			badge.ID = strings.TrimSpace(badge.ID)
+			badge.Platform = strings.TrimSpace(badge.Platform)
+			badge.Version = strings.TrimSpace(badge.Version)
+			if len(badge.Images) > 0 {
+				filtered := make([]Image, 0, len(badge.Images))
+				for _, img := range badge.Images {
+					img.URL = strings.TrimSpace(img.URL)
+					if img.URL == "" {
+						continue
+					}
+					filtered = append(filtered, img)
+				}
+				if len(filtered) == 0 {
+					badge.Images = nil
+				} else {
+					badge.Images = filtered
+				}
+			}
+			if badge.ID == "" {
+				continue
+			}
+			out = append(out, badge)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+
+	if strings.HasPrefix(raw, "{") {
+		var container struct {
+			Badges []Badge         `json:"badges"`
+			Raw    json.RawMessage `json:"raw"`
+		}
+		if err := json.Unmarshal([]byte(raw), &container); err == nil {
+			badges := decodeBadges(container.Badges)
+			var rawAny any
+			if len(container.Raw) > 0 {
+				if err := json.Unmarshal(container.Raw, &rawAny); err != nil {
+					rawAny = json.RawMessage(container.Raw)
+				}
+			}
+			if badges != nil {
+				applyStoredBadgeOverrides(badges, rawAny)
+				return badges, rawAny
+			}
+			if rawAny != nil {
+				return nil, rawAny
+			}
+		}
+	}
+
+	var entries []string
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, nil
+	}
+	out := make([]Badge, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		badge := Badge{Platform: "twitch"}
+		if idx := strings.Index(entry, "/"); idx >= 0 {
+			badge.ID = strings.TrimSpace(entry[:idx])
+			badge.Version = strings.TrimSpace(entry[idx+1:])
+		} else {
+			badge.ID = entry
+		}
+		if badge.ID == "" {
+			continue
+		}
+		badge.Version = strings.TrimSpace(badge.Version)
+		out = append(out, badge)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func applyStoredBadgeOverrides(badges []Badge, raw any) {
+	if len(badges) == 0 || raw == nil {
+		return
+	}
+	rawMap, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	twitchRaw, ok := rawMap["twitch"].(map[string]any)
+	if !ok {
+		return
+	}
+	badgesRaw, ok := twitchRaw["badges"].(string)
+	if !ok {
+		return
+	}
+	versions := parseTwitchBadgeVersions(badgesRaw)
+	subscriberVersion := strings.TrimSpace(versions["subscriber"])
+	if subscriberVersion == "" {
+		return
+	}
+	for i := range badges {
+		if strings.EqualFold(badges[i].Platform, "twitch") && strings.EqualFold(badges[i].ID, "subscriber") {
+			badges[i].Version = subscriberVersion
+		}
+	}
+}
+
+func parseTwitchBadgeVersions(raw string) map[string]string {
+	out := make(map[string]string)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		id := entry
+		version := ""
+		if idx := strings.Index(entry, "/"); idx >= 0 {
+			id = strings.TrimSpace(entry[:idx])
+			version = strings.TrimSpace(entry[idx+1:])
+		}
+		if id == "" {
+			continue
+		}
+		out[id] = version
+	}
+	return out
+}
+
+func encodeStoredBadges(badges []Badge) string {
+	if len(badges) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(badges))
+	for _, badge := range badges {
+		id := strings.TrimSpace(badge.ID)
+		if id == "" {
+			continue
+		}
+		version := strings.TrimSpace(badge.Version)
+		if version != "" {
+			parts = append(parts, fmt.Sprintf("%s/%s", id, version))
+		} else {
+			parts = append(parts, id)
+		}
+	}
+	if len(parts) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(parts)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func wsEnvelopeEnabled() bool {
+	if overrideWSEnvelope != nil {
+		return *overrideWSEnvelope
+	}
+
+	raw := strings.TrimSpace(os.Getenv("ELORA_WS_ENVELOPE"))
+	if raw == "" {
+		return true
+	}
+
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func maybeEnvelope(b []byte) []byte {
+	if !wsEnvelopeEnabled() {
+		return b
+	}
+
+	env := struct {
+		Type string `json:"type"`
+		Data string `json:"data"`
+	}{
+		Type: "chat",
+		Data: string(b),
+	}
+
+	out, err := json.Marshal(env)
+	if err != nil {
+		log.Printf("ws: failed to marshal envelope: %v", err)
+		return b
+	}
+
+	return out
+}
+
+func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
+	if msg, ok := parseChatMessageFromRawJSON(m.RawJSON); ok {
+		looksLikeMessage := strings.TrimSpace(msg.Author) != "" ||
+			strings.TrimSpace(msg.Message) != "" ||
+			strings.TrimSpace(msg.Source) != ""
+		if looksLikeMessage {
+			if msg.Author == "" {
+				msg.Author = m.Username
+			}
+			if msg.Message == "" {
+				msg.Message = m.Text
+			}
+			if msg.Source == "" {
+				msg.Source = m.Platform
+			}
+			if len(msg.Emotes) == 0 && strings.TrimSpace(m.EmotesJSON) != "" {
+				msg.Emotes = decodeEmotesJSON(m.EmotesJSON)
+			}
+			if badges, raw := parseStoredBadges(m.BadgesJSON); badges != nil || raw != nil {
+				if msg.Badges == nil || len(msg.Badges) == 0 {
+					msg.Badges = badges
+					msg.BadgesRaw = raw
+				} else if msg.BadgesRaw == nil {
+					msg.BadgesRaw = raw
+				}
+			}
+			msg.UsernameColor = computeUsernameColor(msg, m)
+			msg.Colour = msg.UsernameColor
+			resolveMessageSourceIdentity(&msg, m)
+			msg.normalize()
+			return json.Marshal(msg.toChatPayload())
+		}
+	}
+
+	badges, badgesRaw := parseStoredBadges(m.BadgesJSON)
+	if badges == nil {
+		badges = []Badge{}
+	}
+
+	emotes := decodeEmotesJSON(m.EmotesJSON)
+
+	fallback := Message{
+		Author:    m.Username,
+		Message:   m.Text,
+		Tokens:    []Token{},
+		Emotes:    emotes,
+		Badges:    badges,
+		BadgesRaw: badgesRaw,
+		Source:    m.Platform,
+	}
+	fallback.UsernameColor = computeUsernameColor(fallback, m)
+	fallback.Colour = fallback.UsernameColor
+	resolveMessageSourceIdentity(&fallback, m)
+	fallback.normalize()
+
+	data, err := json.Marshal(fallback.toChatPayload())
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+func sanitizeMessagePayload(payload []byte) ([]byte, error) {
+	var msg Message
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return nil, err
+	}
+	msg.normalize()
+	applyRuntimeSourceIdentity(&msg)
+
+	if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
+		return nil, errDropMessage
+	}
+
+	return json.Marshal(msg.toChatPayload())
 }
 
 func InitRoutes(store storage.Store) {
@@ -94,11 +1672,15 @@ func InitRoutes(store storage.Store) {
 	}
 
 	chatStore = store
+	maybeExportStoredTwitchToken(store)
+	startServiceTokenMaintainer()
 	subscribersMu.Lock()
 	if subscribers == nil {
 		subscribers = make(map[chan []byte]struct{})
 	}
 	subscribersMu.Unlock()
+
+	initRuntimeConfig(store)
 
 	// Initialize tokenizer
 	tokenizer.TextEffectSep = ':'
@@ -140,6 +1722,7 @@ func InitRoutes(store storage.Store) {
 			Images:    []Image{Image(emote.Images[0])},
 		}
 	}
+	log.Printf("emodl: cache size = %d", len(tokenizer.EmoteCache))
 	// DEBUG
 	// log.Println("3P EMOTES SUPPORTED")
 	// for _, e := range tokenizer.EmoteCache {
@@ -147,129 +1730,40 @@ func InitRoutes(store storage.Store) {
 	// }
 }
 
-func StartChatFetch(urls []string) {
-	pythonExecPath := "/usr/local/bin/python3"
-	fetchChatScript := "/app/python/fetch_chat.py"
-
-	for _, url := range urls {
-		go monitorAndRestartChatFetch(url, pythonExecPath, fetchChatScript)
-	}
-}
-
-func monitorAndRestartChatFetch(url, pythonExecPath, fetchChatScript string) {
-	for {
-		cmd := startChatFetch(url, pythonExecPath, fetchChatScript)
-		chatFetchCmds.Store(url, cmd)
-
-		err := cmd.Wait() // Waits for the command to exit
-		if err != nil {
-			log.Printf("chat: Chat fetch for %s stopped: %v", url, err)
-		}
-
-		// Wait for a short duration before restarting to prevent rapid restart loops
-		log.Println("chat: Restarting chat fetch...")
-		time.Sleep(1 * time.Second)
-	}
-}
-
-func startChatFetch(url, pythonExecPath, fetchChatScript string) *exec.Cmd {
-	cmd := exec.Command(pythonExecPath, "-u", fetchChatScript, url)
-	cmd.Stderr = os.Stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatal("chat: Failed to create stdout pipe:", err)
+func maybeExportStoredTwitchToken(store storage.Store) {
+	if store == nil || tokenfile.PathFromEnv() == "" {
+		return
 	}
 
-	if err := cmd.Start(); err != nil {
-		log.Fatal("chat: Failed to start command:", err)
-	}
-
-	log.Println("chat: Fetching chat from URL: ", url)
-
-	go processChatOutput(stdout, url)
-	return cmd
-}
-
-func processChatOutput(stdout io.ReadCloser, url string) {
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		var msg Message
-		var err error
-		rawMessage := scanner.Bytes()
-		if err := json.Unmarshal(rawMessage, &msg); err != nil {
-			log.Printf("chat: Failed to unmarshal message: %v, Raw message: %s\n", err, string(rawMessage))
-			continue
+	export := func(sess *storage.Session) bool {
+		if sess == nil || strings.TrimSpace(sess.DataJSON) == "" {
+			return false
 		}
-		if strings.Contains(url, "twitch.tv") {
-			msg.Source = "Twitch"
-		} else if strings.Contains(url, "youtube.com") {
-			msg.Source = "YouTube"
+		token := strings.TrimSpace(authutil.ExtractTwitchToken([]byte(sess.DataJSON)))
+		if token == "" {
+			return false
 		}
-
-		// Add unknown emotes to the emote cache for tokenization
-		for _, e := range msg.Emotes {
-			tokenizer.EmoteCache[e.Name] = e
-		}
-
-		// Tokenize message
-		msg.Tokens = make([]Token, 0)
-		for token := range tokenizer.Iter(msg.Message) {
-			msg.Tokens = append(msg.Tokens, token)
-		}
-
-		// Process command
-		if len(msg.Tokens) > 0 && msg.Tokens[0].Type == TokenTypeCommand {
-			msg, err = commandParser.Parse(msg, userColorMap)
-			if err != nil {
-				log.Printf("chat: Failed to process command: %v, Message: %#v\n", err, msg)
+		if err := tokenfile.Save(token); err != nil {
+			if !errors.Is(err, tokenfile.ErrEmptyToken) {
+				log.Printf("auth: twitch token export skipped (%v)", err)
 			}
+			return true
 		}
-
-		// Apply user preferences
-		// TODO: Replace map lookup with db query
-		if _, ok := userColorMap[msg.Author]; ok {
-			msg.Colour = userColorMap[msg.Author]
-		}
-
-		// Prevent nil slices
-		if msg.Emotes == nil {
-			msg.Emotes = []Emote{}
-		}
-		if msg.Badges == nil {
-			msg.Badges = []Badge{}
-		}
-
-		// Re-marshal the message with the Source set.
-		modifiedMessage, err := json.Marshal(msg)
-		if err != nil {
-			log.Printf("chat: Failed to marshal message: %v, Message: %#v\n", err, msg)
-			continue
-		}
-
-		if chatStore != nil {
-			emotesJSON, err := json.Marshal(msg.Emotes)
-			if err != nil {
-				log.Printf("storage: Failed to marshal emotes: %v", err)
-				emotesJSON = []byte("[]")
-			}
-			storedMessage := &storage.Message{
-				ID:         uuid.NewString(),
-				Timestamp:  time.Now().UTC(),
-				Username:   msg.Author,
-				Platform:   msg.Source,
-				Text:       msg.Message,
-				EmotesJSON: string(emotesJSON),
-				RawJSON:    string(modifiedMessage),
-			}
-			if err := chatStore.InsertMessage(ctx, storedMessage); err != nil {
-				log.Printf("storage: Failed to insert message: %v", err)
-			}
-		}
-
-		broadcastChatMessage(modifiedMessage)
+		log.Printf("auth: twitch token exported to file")
+		return true
 	}
-	if err := scanner.Err(); err != nil {
-		log.Println("chat: Error reading standard output:", err)
+
+	if sess, err := store.LatestSessionByService(ctx, "twitch"); err != nil {
+		log.Printf("auth: twitch token preload failed: %v", err)
+	} else if export(sess) {
+		return
+	}
+
+	if sess, err := store.LatestSession(ctx); err != nil {
+		log.Printf("auth: twitch token preload fallback failed: %v", err)
+		return
+	} else {
+		_ = export(sess)
 	}
 }
 
@@ -288,11 +1782,121 @@ func broadcastChatMessage(msg []byte) {
 	for _, ch := range targets {
 		payload := make([]byte, len(msg))
 		copy(payload, msg)
+
 		select {
 		case ch <- payload:
-		default:
+		case <-time.After(2 * time.Second):
+			log.Printf("ws: subscriber stalled; dropping connection")
+			removeSubscriber(ch)
 		}
 	}
+}
+
+func enrichTailerMessage(m storage.Message) Message {
+	var msg Message
+	raw := strings.TrimSpace(m.RawJSON)
+	// Keep provider payload opaque unless the payload is already chat-shaped.
+	if rawMsg, ok := parseChatMessageFromRawJSON(raw); ok {
+		msg = rawMsg
+	}
+
+	if msg.Author == "" {
+		msg.Author = m.Username
+	}
+	if msg.Message == "" {
+		msg.Message = m.Text
+	}
+	if msg.Source == "" {
+		msg.Source = m.Platform
+	}
+
+	if msg.Emotes == nil || len(msg.Emotes) == 0 {
+		if strings.TrimSpace(m.EmotesJSON) != "" {
+			msg.Emotes = decodeEmotesJSON(m.EmotesJSON)
+		}
+	}
+	if msg.Emotes == nil {
+		msg.Emotes = []Emote{}
+	}
+
+	if tokenizer.EmoteCache == nil {
+		tokenizer.EmoteCache = make(map[string]Emote)
+	}
+	for _, e := range msg.Emotes {
+		if e.Name != "" {
+			tokenizer.EmoteCache[e.Name] = e
+		}
+	}
+
+	if parsed, raw := parseStoredBadges(m.BadgesJSON); parsed != nil || raw != nil {
+		if msg.Badges == nil || len(msg.Badges) == 0 {
+			msg.Badges = parsed
+			msg.BadgesRaw = raw
+		} else if msg.BadgesRaw == nil {
+			msg.BadgesRaw = raw
+		}
+	}
+	if msg.Badges == nil {
+		msg.Badges = []Badge{}
+	}
+
+	if msg.Tokens == nil {
+		msg.Tokens = make([]Token, 0, 8)
+	}
+
+	if len(msg.Tokens) == 0 && strings.EqualFold(msg.Source, "youtube") && len(msg.Emotes) > 0 {
+		if fragments := buildYouTubeFragments(msg.Message, msg.Emotes); len(fragments) > 0 {
+			msg.Tokens = fragments
+		}
+	}
+
+	if len(msg.Tokens) == 0 {
+		// Fallback: decode Twitch first-party emote spans -> Emote slice, then seed cache.
+		// This runs only if we don't already have emotes on the message.
+		if strings.EqualFold(m.Platform, "twitch") && len(msg.Emotes) == 0 {
+			if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
+				// Seed tokenizer cache by NAME so tokenization emits emote fragments.
+				for _, e := range dec {
+					if strings.TrimSpace(e.Name) != "" {
+						tokenizer.EmoteCache[e.Name] = e
+					}
+				}
+				msg.Emotes = append(msg.Emotes, dec...)
+			}
+		}
+
+		for token := range tokenizer.Iter(msg.Message) {
+			msg.Tokens = append(msg.Tokens, token)
+		}
+	}
+
+	msg.UsernameColor = computeUsernameColor(msg, m)
+	msg.Colour = msg.UsernameColor
+
+	if msg.Source == "" {
+		msg.Source = m.Platform
+	}
+
+	msg.Source = normalizeSource(msg.Source)
+	resolveMessageSourceIdentity(&msg, m)
+	msg.normalize()
+
+	return msg
+}
+
+// BroadcastFromTailer enqueues a stored message onto the WebSocket broadcast loop.
+func BroadcastFromTailer(m storage.Message) {
+	msg := enrichTailerMessage(m)
+	if wsDropEmptyEnabled() && (msg.Source == "" || msg.Message == "") {
+		return
+	}
+	payload, err := json.Marshal(msg.toChatPayload())
+	if err != nil {
+		log.Printf("dbtailer: failed to marshal enriched message: %v", err)
+		return
+	}
+
+	broadcastChatMessage(payload)
 }
 
 func addSubscriber() chan []byte {
@@ -317,6 +1921,15 @@ func removeSubscriber(ch chan []byte) {
 	subscribersMu.Unlock()
 }
 
+func replayEnabled(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // StreamChat initializes a WebSocket connection and streams chat messages
 func StreamChat(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -326,37 +1939,61 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	cfg := activeWebsocketConfig
+	sourceFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
+	shouldReplay := replayEnabled(r.URL.Query().Get("replay"))
+	if cfg.maxBytes > 0 {
+		conn.SetReadLimit(cfg.maxBytes)
+	}
+	if cfg.pongWait > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+	}
+	conn.SetPongHandler(func(string) error {
+		if cfg.pongWait > 0 {
+			return conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+		}
+		return nil
+	})
+	conn.SetPingHandler(func(appData string) error {
+		deadline := time.Now().Add(cfg.writeDeadline)
+		if cfg.writeDeadline <= 0 {
+			deadline = time.Now().Add(5 * time.Second)
+		}
+		if cfg.pongWait > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+		}
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), deadline)
+	})
+
 	// Channel to signal closure of WebSocket connection
 	done := make(chan struct{})
 	messageChan := addSubscriber()
 	defer removeSubscriber(messageChan)
 
 	// Read the last 100 messages from the backing store to send to the client immediately.
-	if chatStore != nil {
+	if shouldReplay && chatStore != nil {
 		history, err := chatStore.GetRecent(ctx, storage.QueryOpts{Limit: 100})
 		if err != nil {
 			log.Printf("storage: Failed to read messages from store: %v\n", err)
 		} else {
 			for i := len(history) - 1; i >= 0; i-- {
-				payload := history[i].RawJSON
-				if payload == "" {
-					fallback := Message{
-						Author:  history[i].Username,
-						Message: history[i].Text,
-						Tokens:  []Token{},
-						Emotes:  []Emote{},
-						Badges:  []Badge{},
-						Source:  history[i].Platform,
-						Colour:  userColorMap[history[i].Username],
-					}
-					raw, marshalErr := json.Marshal(fallback)
-					if marshalErr != nil {
-						log.Printf("chat: Failed to marshal fallback history message: %v\n", marshalErr)
+				payload, marshalErr := messagePayloadFromStorage(history[i])
+				if marshalErr != nil {
+					log.Printf("chat: Failed to marshal history message: %v\n", marshalErr)
+					continue
+				}
+				sanitized, marshalErr := sanitizeMessagePayload(payload)
+				if marshalErr != nil {
+					if errors.Is(marshalErr, errDropMessage) {
 						continue
 					}
-					payload = string(raw)
+					log.Printf("chat: Failed to sanitize history message: %v\n", marshalErr)
+					continue
 				}
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+				if shouldSkipSource(sanitized, sourceFilter) {
+					continue
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, maybeEnvelope(sanitized)); err != nil {
 					log.Println("ws: WebSocket write error:", err)
 					return
 				}
@@ -366,8 +2003,7 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 
 	// Websocket writer
 	go func() {
-		// Keep alive ticker
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(cfg.pingInterval)
 		defer ticker.Stop()
 
 		for {
@@ -376,31 +2012,32 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				var msg Message
-				err := json.Unmarshal(m, &msg)
+				sanitized, err := sanitizeMessagePayload(m)
 				if err != nil {
+					if errors.Is(err, errDropMessage) {
+						continue
+					}
 					log.Println("json: ", err)
+					continue
 				}
-				if msg.Tokens == nil {
-					msg.Tokens = []Token{}
+				if shouldSkipSource(sanitized, sourceFilter) {
+					continue
 				}
-				if msg.Emotes == nil {
-					msg.Emotes = []Emote{}
-				}
-				if msg.Badges == nil {
-					msg.Badges = []Badge{}
-				}
-				m, err = json.Marshal(msg)
-				if err != nil {
-					log.Println("json: ", err)
-				}
-				if err := conn.WriteMessage(websocket.TextMessage, m); err != nil {
+				if err := writeWSMessage(conn, websocket.TextMessage, maybeEnvelope(sanitized), cfg.writeDeadline); err != nil {
 					log.Println("ws: WebSocket write error:", err)
 					return
 				}
 			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.TextMessage, []byte("__keepalive__")); err != nil {
+				if err := writeWSMessage(conn, websocket.TextMessage, []byte("__keepalive__"), cfg.writeDeadline); err != nil {
 					log.Println("ws: Failed to send keep-alive message:", err)
+					return
+				}
+				deadline := time.Now().Add(cfg.writeDeadline)
+				if cfg.writeDeadline <= 0 {
+					deadline = time.Now().Add(5 * time.Second)
+				}
+				if err := conn.WriteControl(websocket.PingMessage, []byte{}, deadline); err != nil {
+					log.Println("ws: Failed to send ping:", err)
 					return
 				}
 			case <-done:
@@ -418,6 +2055,216 @@ func StreamChat(w http.ResponseWriter, r *http.Request) {
 			close(done)
 			break
 		}
+		if cfg.pongWait > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(cfg.pongWait))
+		}
+	}
+}
+
+func writeWSMessage(conn *websocket.Conn, messageType int, payload []byte, deadline time.Duration) error {
+	if deadline > 0 {
+		_ = conn.SetWriteDeadline(time.Now().Add(deadline))
+	} else {
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
+	return conn.WriteMessage(messageType, payload)
+}
+
+func shouldSkipSource(payload []byte, filter string) bool {
+	if filter == "" {
+		return false
+	}
+
+	var msg ws.ChatPayload
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return false
+	}
+
+	source := strings.ToLower(strings.TrimSpace(msg.Source))
+	return source != filter
+}
+
+func originAllowed(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	origin = strings.TrimRight(origin, "/")
+
+	allowedOriginsMu.RLock()
+	defer allowedOriginsMu.RUnlock()
+
+	if allowAllOrigins {
+		return true
+	}
+	_, ok := allowedOrigins[origin]
+	return ok
+}
+
+// SetAllowedOrigins updates the accepted Origin headers for WebSocket connections.
+func SetAllowedOrigins(origins []string) {
+	allowedOriginsMu.Lock()
+	defer allowedOriginsMu.Unlock()
+
+	if len(origins) == 0 {
+		allowAllOrigins = true
+		allowedOrigins = map[string]struct{}{}
+		return
+	}
+
+	allowAllOrigins = false
+	allowedOrigins = make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		trimmed := strings.TrimSpace(origin)
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == "*" {
+			allowAllOrigins = true
+			allowedOrigins = map[string]struct{}{}
+			return
+		}
+		trimmed = strings.TrimRight(trimmed, "/")
+		allowedOrigins[trimmed] = struct{}{}
+	}
+	if len(allowedOrigins) == 0 {
+		allowAllOrigins = true
+	}
+}
+
+func loadWebsocketConfigFromEnv() websocketConfig {
+	cfg := websocketConfig{
+		pingInterval:  durationFromEnv("ELORA_WS_PING_INTERVAL_MS", 25000),
+		pongWait:      durationFromEnv("ELORA_WS_PONG_WAIT_MS", 30000),
+		writeDeadline: durationFromEnv("ELORA_WS_WRITE_DEADLINE_MS", 5000),
+		maxBytes:      int64FromEnv("ELORA_WS_MAX_MESSAGE_BYTES", 131072),
+	}
+	if cfg.pingInterval <= 0 {
+		cfg.pingInterval = 25 * time.Second
+	}
+	if cfg.pongWait <= 0 {
+		cfg.pongWait = 30 * time.Second
+	}
+	if cfg.writeDeadline < 0 {
+		cfg.writeDeadline = 0
+	}
+	if cfg.maxBytes <= 0 {
+		cfg.maxBytes = 131072
+	}
+	return cfg
+}
+
+// WebsocketConfig returns the currently active websocket runtime configuration.
+func WebsocketConfig() WebsocketRuntimeConfig {
+	cfg := activeWebsocketConfig
+	return WebsocketRuntimeConfig{
+		PingInterval:  cfg.pingInterval,
+		PongWait:      cfg.pongWait,
+		WriteDeadline: cfg.writeDeadline,
+		MaxMessage:    cfg.maxBytes,
+	}
+}
+
+// SetWebsocketConfig applies runtime websocket tuning for newly opened connections.
+func SetWebsocketConfig(cfg WebsocketRuntimeConfig) {
+	activeWebsocketConfig = websocketConfig{
+		pingInterval:  cfg.PingInterval,
+		pongWait:      cfg.PongWait,
+		writeDeadline: cfg.WriteDeadline,
+		maxBytes:      cfg.MaxMessage,
+	}
+}
+
+// AllowedOriginsConfig returns whether all origins are permitted along with the normalized allow-list.
+func AllowedOriginsConfig() (allowAll bool, origins []string) {
+	allowedOriginsMu.RLock()
+	defer allowedOriginsMu.RUnlock()
+
+	if allowAllOrigins {
+		return true, nil
+	}
+	if len(allowedOrigins) == 0 {
+		return false, nil
+	}
+
+	origins = make([]string, 0, len(allowedOrigins))
+	for origin := range allowedOrigins {
+		origins = append(origins, origin)
+	}
+	sort.Strings(origins)
+	return false, origins
+}
+
+func loadUIConfigFromEnv() uiConfig {
+	hide := true
+	raw := strings.TrimSpace(os.Getenv("ELORA_UI_YT_PREFIX_AT"))
+	if raw != "" {
+		hide = !isTruthy(raw)
+	}
+
+	showBadges := true
+	if val := strings.TrimSpace(os.Getenv("ELORA_UI_SHOW_BADGES")); val != "" {
+		showBadges = isTruthy(val)
+	}
+
+	return uiConfig{
+		hideYouTubeAt: hide,
+		showBadges:    showBadges,
+	}
+}
+
+// UIConfig returns the active presentation toggles for the frontend.
+func UIConfig() (hideYouTubeAt bool, showBadges bool) {
+	return activeUIConfig.hideYouTubeAt, activeUIConfig.showBadges
+}
+
+// SetUIConfig applies runtime message presentation toggles.
+func SetUIConfig(hideYouTubeAt bool, showBadges bool) {
+	activeUIConfig = uiConfig{
+		hideYouTubeAt: hideYouTubeAt,
+		showBadges:    showBadges,
+	}
+}
+
+// SetWSMessageBehavior applies runtime toggles for envelope/drop behavior.
+func SetWSMessageBehavior(envelope bool, dropEmpty bool) {
+	overrideWSEnvelope = &envelope
+	overrideWSDropEmpty = &dropEmpty
+}
+
+func durationFromEnv(key string, def int) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return time.Duration(def) * time.Millisecond
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %d", key, raw, def)
+		return time.Duration(def) * time.Millisecond
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+func int64FromEnv(key string, def int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		log.Printf("config: invalid %s=%q, using default %d", key, raw, def)
+		return def
+	}
+	return n
+}
+
+func isTruthy(raw string) bool {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	switch raw {
+	case "1", "true", "yes", "on", "show", "enable":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -447,18 +2294,19 @@ func ImageProxy(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// StopChatFetches stops all ongoing chat fetch commands
+// StopChatFetches is retained for backward compatibility with the legacy UI control.
+// The legacy Python harvester pipeline has been removed, so this endpoint now returns
+// a no-op response while gnasty-chat handles harvesting via SQLite.
 func StopChatFetches(w http.ResponseWriter, r *http.Request) {
-	chatFetchCmds.Range(func(key string, cmd *exec.Cmd) bool {
-		if cmd != nil && cmd.Process != nil {
-			err := cmd.Process.Kill()
-			if err != nil {
-				log.Printf("http: Failed to stop chat fetch command: %v", err)
-			}
-		}
-		return true
-	})
-	fmt.Fprintln(w, "Chat fetch commands stopped. Restarting...")
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]string{
+		"status":  "ok",
+		"message": "gnasty-chat is the active harvester; no restart required",
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("http: failed to encode restart response: %v", err)
+		http.Error(w, "restart response unavailable", http.StatusInternalServerError)
+	}
 }
 
 // SetupChatRoutes sets up WebSocket routes
@@ -473,4 +2321,61 @@ func SetupChatRoutes(router *mux.Router) {
 
 	// Add protected chat routes to protectedRoutes
 	protectedRoutes.HandleFunc("/restart-server", StopChatFetches).Methods("POST")
+}
+
+// decodeTwitchSpans converts Twitch first-party span strings (e.g. "425618:12-14")
+// into Emote entries with a 1x image URL. It is ASCII-safe and bounds-checked.
+func decodeTwitchSpans(text string, spansJSON string) []Emote {
+	if strings.TrimSpace(spansJSON) == "" {
+		return nil
+	}
+	var raw []string
+	if err := json.Unmarshal([]byte(spansJSON), &raw); err != nil || len(raw) == 0 {
+		return nil
+	}
+
+	out := make([]Emote, 0, len(raw))
+	// NOTE: we index by bytes; Twitch spans for common ASCII emotes (e.g., "LUL") align with byte boundaries.
+	for _, s := range raw {
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		id := strings.TrimSpace(parts[0])
+		rng := parts[1]
+		bounds := strings.SplitN(rng, "-", 2)
+		if len(bounds) != 2 {
+			continue
+		}
+		start, err1 := strconv.Atoi(bounds[0])
+		end, err2 := strconv.Atoi(bounds[1])
+		if err1 != nil || err2 != nil || start < 0 || end < start {
+			continue
+		}
+		if start >= len(text) {
+			continue
+		}
+		if end >= len(text) {
+			end = len(text) - 1
+		}
+		name := text[start : end+1]
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+
+		// Build a single 1x image (28px nominal) for first-party Twitch emotes.
+		img := Image{
+			ID:     id + "-1x",
+			URL:    "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/1.0",
+			Width:  28,
+			Height: 28,
+		}
+		out = append(out, Emote{
+			ID:        id,
+			Name:      name,
+			Locations: []string{bounds[0] + "-" + bounds[1]},
+			Images:    []Image{img},
+		})
+	}
+	return out
 }

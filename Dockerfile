@@ -1,8 +1,10 @@
 # Start with a base Go image to build your application
-FROM golang:1.24.2-alpine AS builder
+FROM golang:1.24.2 AS builder
 
-# Install git for fetching Go dependencies
-RUN apk add --no-cache git
+# Install git for fetching Go dependencies (avoid apk segfaults)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --no-upgrade git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -19,53 +21,28 @@ COPY src/backend .
 # Build the Go app
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server .
 
-# Build the Svelte frontend
-FROM node:23-alpine AS build-frontend
+# Runtime image with the Go server and built assets
+FROM alpine:3.20
 
 WORKDIR /app
 
-# Install dependencies
-COPY src/frontend/package.json src/frontend/package-lock.json ./
-RUN npm ci
-
-# Copy the source code
-COPY src/frontend/ ./
-
-# Build the Svelte app
-RUN npm run build
-
-
-# Continue with a smaller Python base image for the runtime container
-FROM python:3.9-alpine
-
-WORKDIR /app
+RUN apk add --no-cache curl
 
 # Copy the built Go binary from the builder stage
 COPY --from=builder /app/server /app/
 
 # Copy the frontend files to the production image
-COPY --from=build-frontend /app/build /app/public
+COPY src/frontend/build /app/public
 
-# Copy the Python script and requirements
-COPY python/fetch_chat.py /app/python/
-COPY python/requirements.txt /app/python/
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r /app/python/requirements.txt && \
-    rm -rf /app/python/requirements.txt
-
-# Create a non-root user and set up the .credentials directory
+# Create a non-root user and the shared token mount point
 RUN adduser -D myuser && \
-    mkdir -p /home/myuser/.credentials && \
-    chown -R myuser:myuser /home/myuser/.credentials
+    mkdir -p /shared && \
+    chown -R myuser:myuser /app /shared
 
 USER myuser
 
 # Expose the port the app runs on
 EXPOSE 8080
-
-# Set environment variables for the Go application
-ENV PYTHONPATH=/app/python
 
 # Run the web service on container startup
 CMD ["/app/server"]

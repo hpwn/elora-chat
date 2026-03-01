@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 )
 
@@ -38,6 +39,7 @@ func TestSQLiteGetRecentEphemeral(t *testing.T) {
 			Platform:   "twitch",
 			Text:       fmt.Sprintf("hello world %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"hello world %d"}`, i),
 		}
 		want = append(want, msg)
@@ -73,6 +75,12 @@ func TestSQLiteGetRecentEphemeral(t *testing.T) {
 		if result.EmotesJSON != expected.EmotesJSON {
 			t.Fatalf("result[%d] expected EmotesJSON %s, got %s", i, expected.EmotesJSON, result.EmotesJSON)
 		}
+		if result.BadgesJSON != expected.BadgesJSON {
+			t.Fatalf("result[%d] expected BadgesJSON %s, got %s", i, expected.BadgesJSON, result.BadgesJSON)
+		}
+		if result.BadgesJSON != expected.BadgesJSON {
+			t.Fatalf("result[%d] expected BadgesJSON %s, got %s", i, expected.BadgesJSON, result.BadgesJSON)
+		}
 		if result.RawJSON != expected.RawJSON {
 			t.Fatalf("result[%d] expected RawJSON %s, got %s", i, expected.RawJSON, result.RawJSON)
 		}
@@ -99,11 +107,12 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	msgs := make([]*storage.Message, 0, 5)
 	for i := 0; i < 5; i++ {
 		msg := &storage.Message{
-			ID:        fmt.Sprintf("msg-%d", i),
-			Timestamp: base.Add(time.Duration(i) * time.Second),
-			Username:  "tester",
-			Platform:  "twitch",
-			Text:      fmt.Sprintf("body-%d", i),
+			ID:         fmt.Sprintf("msg-%d", i),
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			Username:   "tester",
+			Platform:   "twitch",
+			Text:       fmt.Sprintf("body-%d", i),
+			BadgesJSON: "[]",
 		}
 		msgs = append(msgs, msg)
 		if err := store.InsertMessage(ctx, msg); err != nil {
@@ -124,6 +133,117 @@ func TestSQLiteGetRecentBeforeTS(t *testing.T) {
 	}
 }
 
+func TestSQLiteDebugRawMessages(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	msgs := []struct {
+		id       string
+		platform string
+		ts       time.Time
+	}{
+		{id: "a", platform: "twitch", ts: base},
+		{id: "b", platform: "youtube", ts: base.Add(500 * time.Millisecond)},
+		{id: "c", platform: "twitch", ts: base.Add(time.Second)},
+	}
+
+	for _, m := range msgs {
+		msg := &storage.Message{ID: m.id, Platform: m.platform, Username: "u", Text: m.id, Timestamp: m.ts}
+		if err := store.InsertMessage(ctx, msg); err != nil {
+			t.Fatalf("InsertMessage %s returned error: %v", m.id, err)
+		}
+	}
+
+	rows, err := store.DebugRawMessages(ctx, DebugRawQueryOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("DebugRawMessages returned error: %v", err)
+	}
+	if len(rows) != len(msgs) {
+		t.Fatalf("expected %d rows, got %d", len(msgs), len(rows))
+	}
+	if rows[0].RowID <= rows[1].RowID {
+		t.Fatalf("expected descending rowid order, got %d then %d", rows[0].RowID, rows[1].RowID)
+	}
+
+	platformRows, err := store.DebugRawMessages(ctx, DebugRawQueryOpts{Platform: "youtube", Limit: 5})
+	if err != nil {
+		t.Fatalf("DebugRawMessages platform filter error: %v", err)
+	}
+	if len(platformRows) != 1 || platformRows[0].Platform != "youtube" {
+		t.Fatalf("expected single youtube row, got %#v", platformRows)
+	}
+
+	after := msgs[0].ts.UnixMilli()
+	before := msgs[2].ts.UnixMilli()
+	between, err := store.DebugRawMessages(ctx, DebugRawQueryOpts{AfterTS: &after, BeforeTS: &before, Limit: 5})
+	if err != nil {
+		t.Fatalf("DebugRawMessages between filter error: %v", err)
+	}
+	if len(between) != 1 || between[0].Platform != "youtube" {
+		t.Fatalf("expected filtered middle row, got %#v", between)
+	}
+}
+
+func TestSQLiteTailNextIncludesBadges(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	msg := &storage.Message{
+		ID:         "tail-1",
+		Timestamp:  time.Now().UTC().Truncate(time.Millisecond),
+		Username:   "badge-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"moderator","version":"1"}],"raw":{"twitch":{"badges":"moderator/1"}}}`,
+		RawJSON:    `{"message":"hello","badges":[]}`,
+	}
+
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+
+	got, pos, err := store.TailNext(ctx, storage.TailPosition{}, 10)
+	if err != nil {
+		t.Fatalf("TailNext returned error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(got))
+	}
+
+	if got[0].BadgesJSON != msg.BadgesJSON {
+		t.Fatalf("expected BadgesJSON %q, got %q", msg.BadgesJSON, got[0].BadgesJSON)
+	}
+
+	if got[0].RawJSON != msg.RawJSON {
+		t.Fatalf("expected RawJSON %q, got %q", msg.RawJSON, got[0].RawJSON)
+	}
+
+	if pos.TS == 0 || pos.RowID == 0 {
+		t.Fatalf("expected tail position to advance, got ts=%d rowid=%d", pos.TS, pos.RowID)
+	}
+}
+
 func TestSQLiteGetRecentStableOrdering(t *testing.T) {
 	store := New(Config{})
 	ctx := context.Background()
@@ -140,7 +260,7 @@ func TestSQLiteGetRecentStableOrdering(t *testing.T) {
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 	ids := []string{"msg-a", "msg-b", "msg-c"}
 	for _, id := range ids {
-		msg := &storage.Message{ID: id, Timestamp: ts, Username: "tester", Platform: "twitch", Text: id}
+		msg := &storage.Message{ID: id, Timestamp: ts, Username: "tester", Platform: "twitch", Text: id, BadgesJSON: "[]"}
 		if err := store.InsertMessage(ctx, msg); err != nil {
 			t.Fatalf("InsertMessage returned error: %v", err)
 		}
@@ -155,6 +275,64 @@ func TestSQLiteGetRecentStableOrdering(t *testing.T) {
 		if got[i].ID != want {
 			t.Fatalf("expected ID %q at index %d, got %q", want, i, got[i].ID)
 		}
+	}
+}
+
+func TestSQLiteTailNextStableOrderingWithSharedTimestamps(t *testing.T) {
+	store := New(Config{})
+	ctx := context.Background()
+
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	fixtures := []storage.Message{
+		{ID: "yt-1", Timestamp: ts, Username: "yt-1", Platform: "youtube", Text: "hello a"},
+		{ID: "tw-1", Timestamp: ts, Username: "tw-1", Platform: "twitch", Text: "hello b"},
+		{ID: "yt-2", Timestamp: ts, Username: "yt-2", Platform: "youtube", Text: "hello c"},
+		{ID: "tw-2", Timestamp: ts, Username: "tw-2", Platform: "twitch", Text: "hello d"},
+	}
+
+	for i := range fixtures {
+		if err := store.InsertMessage(ctx, &fixtures[i]); err != nil {
+			t.Fatalf("InsertMessage(%q) returned error: %v", fixtures[i].ID, err)
+		}
+	}
+
+	pos := storage.TailPosition{}
+	seen := make([]string, 0, len(fixtures))
+
+	for {
+		batch, nextPos, err := store.TailNext(ctx, pos, 2)
+		if err != nil {
+			t.Fatalf("TailNext returned error: %v", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, m := range batch {
+			seen = append(seen, m.ID)
+		}
+		pos = nextPos
+	}
+
+	if len(seen) != len(fixtures) {
+		t.Fatalf("expected %d messages, got %d: %v", len(fixtures), len(seen), seen)
+	}
+
+	expectedOrder := []string{"yt-1", "tw-1", "yt-2", "tw-2"}
+	if diff := cmp.Diff(expectedOrder, seen); diff != "" {
+		t.Fatalf("unexpected ordering (-want +got):\n%s", diff)
+	}
+
+	if pos.TS == 0 || pos.RowID == 0 {
+		t.Fatalf("expected tail position to advance, got ts=%d rowid=%d", pos.TS, pos.RowID)
 	}
 }
 
@@ -200,6 +378,7 @@ func TestSQLitePurge(t *testing.T) {
 			Platform:   "twitch",
 			Text:       fmt.Sprintf("message %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"message %d"}`, i),
 		}
 		if err := store.InsertMessage(ctx, msg); err != nil {
@@ -244,6 +423,7 @@ func TestSQLitePurgeBefore(t *testing.T) {
 			Platform:   "twitch",
 			Text:       fmt.Sprintf("message %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"message %d"}`, i),
 		}
 		msgs = append(msgs, msg)
@@ -295,6 +475,7 @@ func TestSQLiteGetRecentPersistent(t *testing.T) {
 			Platform:   "youtube",
 			Text:       fmt.Sprintf("persistent message %d", i),
 			EmotesJSON: "[]",
+			BadgesJSON: "[]",
 			RawJSON:    fmt.Sprintf(`{"message":"persistent message %d"}`, i),
 		}
 		want = append(want, msg)
@@ -541,6 +722,121 @@ func TestSessionsPersistent(t *testing.T) {
 	}
 }
 
+func TestLatestSessionByService(t *testing.T) {
+	ctx := context.Background()
+	store := New(Config{Mode: "ephemeral"})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	now := time.Now().UTC().Truncate(time.Second)
+	older := &storage.Session{
+		Token:       "tok-old",
+		Service:     "twitch",
+		DataJSON:    `{"twitch_token":"old"}`,
+		TokenExpiry: now.Add(10 * time.Minute),
+		UpdatedAt:   now.Add(-time.Hour),
+	}
+	newer := &storage.Session{
+		Token:       "tok-new",
+		Service:     "twitch",
+		DataJSON:    `{"twitch_token":"new"}`,
+		TokenExpiry: now.Add(2 * time.Hour),
+		UpdatedAt:   now,
+	}
+
+	if err := store.UpsertSession(ctx, older); err != nil {
+		t.Fatalf("Upsert older returned error: %v", err)
+	}
+	if err := store.UpsertSession(ctx, newer); err != nil {
+		t.Fatalf("Upsert newer returned error: %v", err)
+	}
+
+	got, err := store.LatestSessionByService(ctx, "twitch")
+	if err != nil {
+		t.Fatalf("LatestSessionByService returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected session, got nil")
+	}
+	if got.Token != newer.Token {
+		t.Fatalf("expected token %q, got %q", newer.Token, got.Token)
+	}
+
+	none, err := store.LatestSessionByService(ctx, "youtube")
+	if err != nil {
+		t.Fatalf("LatestSessionByService youtube error: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("expected nil for missing service, got %#v", none)
+	}
+
+	if _, err := store.LatestSessionByService(ctx, " "); err == nil {
+		t.Fatalf("expected error for empty service")
+	}
+}
+
+func TestLatestSession(t *testing.T) {
+	ctx := context.Background()
+	store := New(Config{Mode: "ephemeral"})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	// Empty store returns nil, nil
+	none, err := store.LatestSession(ctx)
+	if err != nil {
+		t.Fatalf("LatestSession on empty store returned error: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("expected nil session, got %#v", none)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	older := &storage.Session{
+		Token:       "tok-old",
+		Service:     "youtube",
+		DataJSON:    `{"providers":{"twitch":{"token":"old"}}}`,
+		TokenExpiry: now.Add(time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}
+	newer := &storage.Session{
+		Token:       "tok-new",
+		Service:     "other",
+		DataJSON:    `{"twitch_token":"new"}`,
+		TokenExpiry: now.Add(2 * time.Hour),
+		UpdatedAt:   now,
+	}
+
+	if err := store.UpsertSession(ctx, older); err != nil {
+		t.Fatalf("Upsert older returned error: %v", err)
+	}
+	if err := store.UpsertSession(ctx, newer); err != nil {
+		t.Fatalf("Upsert newer returned error: %v", err)
+	}
+
+	got, err := store.LatestSession(ctx)
+	if err != nil {
+		t.Fatalf("LatestSession returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected session, got nil")
+	}
+	if got.Token != newer.Token {
+		t.Fatalf("expected token %q, got %q", newer.Token, got.Token)
+	}
+}
+
 func TestSQLiteMigrationsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
@@ -574,10 +870,325 @@ func TestSQLiteMigrationsIdempotent(t *testing.T) {
 	}
 
 	var applied int
-	if err := second.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
-		t.Fatalf("failed to count schema_migrations: %v", err)
+	countApplied := func(query string) error {
+		return second.db.QueryRowContext(ctx, query).Scan(&applied)
+	}
+	if err := countApplied(`SELECT COUNT(*) FROM schema_migrations`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			if err := countApplied(`SELECT COUNT(*) FROM migrations`); err != nil {
+				t.Fatalf("failed to count migrations: %v", err)
+			}
+		} else {
+			t.Fatalf("failed to count schema_migrations: %v", err)
+		}
 	}
 	if applied == 0 {
 		t.Fatalf("expected schema_migrations to record applied migrations")
+	}
+}
+
+func TestSQLiteConfigRecordRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := New(Config{Mode: "ephemeral"})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	missing, err := store.GetConfig(ctx, "runtime_config")
+	if err != nil {
+		t.Fatalf("GetConfig returned error for missing key: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("expected nil for missing config key, got %#v", missing)
+	}
+
+	input := &storage.ConfigRecord{
+		Key:       "runtime_config",
+		Version:   1,
+		ValueJSON: `{"foo":"bar"}`,
+	}
+	if err := store.UpsertConfig(ctx, input); err != nil {
+		t.Fatalf("UpsertConfig returned error: %v", err)
+	}
+
+	got, err := store.GetConfig(ctx, "runtime_config")
+	if err != nil {
+		t.Fatalf("GetConfig returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected persisted config, got nil")
+	}
+	if got.Key != input.Key || got.Version != input.Version || got.ValueJSON != input.ValueJSON {
+		t.Fatalf("unexpected config row: %#v", got)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatalf("expected UpdatedAt to be set")
+	}
+}
+
+func TestSQLiteInsertMessageGnastySchema(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "gnasty.db")
+
+	bootstrapDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open bootstrap db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = bootstrapDB.Close()
+	})
+
+	schema := `CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  platform_msg_id TEXT,
+  ts INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  text TEXT NOT NULL,
+  emotes_json TEXT NOT NULL DEFAULT '[]',
+  raw_json TEXT NOT NULL DEFAULT '',
+  badges_json TEXT NOT NULL DEFAULT '[]',
+  colour TEXT NOT NULL DEFAULT ''
+);`
+	if _, err := bootstrapDB.Exec(schema); err != nil {
+		t.Fatalf("create gnasty schema: %v", err)
+	}
+	if _, err := bootstrapDB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS messages_uq_platform_msg ON messages(platform, platform_msg_id);`); err != nil {
+		t.Fatalf("create gnasty unique index: %v", err)
+	}
+	_ = bootstrapDB.Close()
+
+	store := New(Config{Mode: "persistent", Path: dbPath})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	msg := &storage.Message{
+		ID:         "seed-msg-1",
+		Timestamp:  time.Now().UTC().Truncate(time.Millisecond),
+		Username:   "seed-user",
+		Platform:   "Twitch",
+		Text:       "hello from seed",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"author":"seed-user","message":"hello from seed"}`,
+	}
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+
+	checkDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open check db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = checkDB.Close()
+	})
+
+	var (
+		gotPlatform      string
+		gotPlatformMsgID string
+		gotText          string
+	)
+	if err := checkDB.QueryRowContext(ctx, `SELECT platform, platform_msg_id, text FROM messages LIMIT 1`).Scan(&gotPlatform, &gotPlatformMsgID, &gotText); err != nil {
+		t.Fatalf("query inserted row: %v", err)
+	}
+	if gotPlatform != msg.Platform {
+		t.Fatalf("expected platform %q, got %q", msg.Platform, gotPlatform)
+	}
+	if gotPlatformMsgID != msg.ID {
+		t.Fatalf("expected platform_msg_id %q, got %q", msg.ID, gotPlatformMsgID)
+	}
+	if gotText != msg.Text {
+		t.Fatalf("expected text %q, got %q", msg.Text, gotText)
+	}
+}
+
+func TestSQLiteBuildDSNIncludesRequiredPragmas(t *testing.T) {
+	store := New(Config{
+		Mode:            "persistent",
+		Path:            "/tmp/test.db",
+		BusyTimeoutMS:   1234,
+		JournalMode:     "wal",
+		PragmasExtraCSV: "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY",
+	})
+
+	dsn := store.buildDSN("/tmp/test.db")
+	required := []string{
+		"_pragma=busy_timeout(1234)",
+		"_pragma=foreign_keys(ON)",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=mmap_size(268435456)",
+		"_pragma=cache_size(-100000)",
+		"_pragma=temp_store(MEMORY)",
+	}
+	for _, part := range required {
+		if !strings.Contains(dsn, part) {
+			t.Fatalf("expected DSN to contain %q, got %q", part, dsn)
+		}
+	}
+}
+
+func TestSQLiteInsertMessageRetriesOnBusy(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "busy-retry.db")
+
+	store := New(Config{Mode: "persistent", Path: dbPath, BusyTimeoutMS: 2500})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10")
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = lockDB.Close()
+	})
+
+	if _, err := lockDB.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = lockDB.ExecContext(context.Background(), "ROLLBACK")
+	})
+
+	go func() {
+		time.Sleep(1800 * time.Millisecond)
+		_, _ = lockDB.ExecContext(context.Background(), "COMMIT")
+	}()
+
+	msg := &storage.Message{
+		ID:         "busy-ok-1",
+		Timestamp:  time.Now().UTC(),
+		Username:   "busy-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"message":"hello"}`,
+	}
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+}
+
+func TestSQLiteInsertMessageRetriesOnBusyWithPooledStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "busy-retry-pooled.db")
+
+	store := New(Config{Mode: "persistent", Path: dbPath, BusyTimeoutMS: 2500, MaxConns: 16})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10")
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = lockDB.Close()
+	})
+
+	if _, err := lockDB.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = lockDB.ExecContext(context.Background(), "ROLLBACK")
+	})
+
+	go func() {
+		time.Sleep(1800 * time.Millisecond)
+		_, _ = lockDB.ExecContext(context.Background(), "COMMIT")
+	}()
+
+	msg := &storage.Message{
+		ID:         "busy-ok-pooled-1",
+		Timestamp:  time.Now().UTC(),
+		Username:   "busy-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"message":"hello"}`,
+	}
+	if err := store.InsertMessage(ctx, msg); err != nil {
+		t.Fatalf("InsertMessage returned error: %v", err)
+	}
+}
+
+func TestSQLiteInsertMessageReturnsBusyAfterRetriesExhausted(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "busy-fail.db")
+
+	store := New(Config{Mode: "persistent", Path: dbPath, BusyTimeoutMS: 400})
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(ctx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10")
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		_ = lockDB.Close()
+	})
+
+	if _, err := lockDB.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = lockDB.ExecContext(context.Background(), "ROLLBACK")
+	})
+
+	msg := &storage.Message{
+		ID:         "busy-fail-1",
+		Timestamp:  time.Now().UTC(),
+		Username:   "busy-user",
+		Platform:   "twitch",
+		Text:       "hello",
+		EmotesJSON: "[]",
+		BadgesJSON: "[]",
+		RawJSON:    `{"message":"hello"}`,
+	}
+
+	err = store.InsertMessage(ctx, msg)
+	if err == nil {
+		t.Fatalf("expected busy error, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "busy") && !strings.Contains(strings.ToLower(err.Error()), "locked") {
+		t.Fatalf("expected SQLITE_BUSY/locked error, got: %v", err)
 	}
 }

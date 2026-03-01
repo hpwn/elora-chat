@@ -1,12 +1,12 @@
 # elora-chat 🐐
 
-What if we were fauns? Haha. Just curious man, you don't have to get mad. Just look at that- _gets put in a chokehold_
-
 ![Elora](https://static.wikia.nocookie.net/spyro/images/a/a6/Elora_PS1.jpg/revision/latest?cb=20180824195930)
 
 ## Description 📝
 
 elora-chat is a versatile chat application designed to unify the streaming experience across multiple platforms. It aims to simplify the chat and alert management for streamers like [Dayoman](https://www.twitch.tv/dayoman) who juggle various services and bots during their streams.
+
+Automation contributors should review [AGENTS.md](AGENTS.md) for pull request and branching conventions used across this workspace.
 
 ## Why? 🤔
 
@@ -26,17 +26,175 @@ Inspired by pioneers like DougDoug, elora-chat aspires to revolutionize chat int
 
 ## Quick Start ➡️
 
-- Clone the repository: `git clone https://github.com/hpwn/EloraChat.git`
+```bash
+cp .env.example .env
+make bootstrap
+make up
+```
 
-- Navigate to the project directory: `cd EloraChat`
+Within a few seconds the API and WebSocket endpoints will be available at `http://localhost:8080` and `ws://localhost:8080/ws/chat` by default. Non-secret runtime settings are now managed through `GET/PUT /api/config` and persisted in SQLite (`config_kv`) so UI changes survive restarts. Use `make health` (or `make readyz` for backward compatibility) to confirm SQLite is writable. The database file and token handoff files live inside the shared Docker volume (`elora_data`) mounted at `/data` in both containers, and the harvester now waits for the API to report ready before starting. Once the services are healthy the tailer immediately streams gnasty's SQLite inserts to WebSocket clients.
 
-- Ensure [Docker](https://docs.docker.com/get-started/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/linux/) are installed and configured.
+> ⚠️ `gnasty-harvester` always pulls the published `gnasty-chat` image specified by `GNASTY_IMAGE` (defaults to `gnasty-chat:latest`). Verify the resolved tag with `docker compose config` before proposing changes and see [docs/dev/harvester.md](docs/dev/harvester.md) for details on where to contribute harvester edits.
 
-- Create environment variables: `echo "TWITCH_CLIENT_ID=\nTWITCH_CLIENT_SECRET=\nTWITCH_REDIRECT_URL=\nYOUTUBE_API_KEY=\nPORT=8080\nDEPLOYED_URL=https://localhost:8080/\nELORA_DB_MODE=ephemeral\nELORA_DB_PATH=\nELORA_DB_MAX_CONNS=16\nELORA_DB_BUSY_TIMEOUT_MS=5000\nELORA_DB_PRAGMAS_EXTRA=mmap_size=268435456,cache_size=-100000,temp_store=MEMORY" > .env`
+### Host user mapping (bind-mounted data)
 
-- Start the server: `docker compose up`
+Both containers now run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so bind-mounted `./data` permissions match the host user. This avoids SQLite errors such as `unable to open database file` when the host directory is owned by your real UID/GID instead of the image's default user. If your workstation account is not `1000:1000`, set `DOCKER_UID` and `DOCKER_GID` in your local `.env` before running `./scripts/run-local.sh`, `make up`, or `docker compose up -d --build`. The `./data/` directory is both gitignored and dockerignored, making it a safe location for `elora.db`, `gnasty.db`, and token handoff files without loosening permissions.
 
-- Connect with your broswer to [http://localhost:8080/](http://localhost:8080/)!
+### Local commands
+
+| Command | Description |
+| --- | --- |
+| `make bootstrap` | Build the local `elora-chat` image and pull the harvester image declared in `.env`. |
+| `make up` | Launch the API (`elora-chat`) and harvester (`gnasty-harvester`) in the background. |
+| `make logs` | Tail logs for both services (add `SERVICES=elora-chat` to focus on one). |
+| `make health` | Hit `/readyz` and print `ready` once the database is writable. |
+| `make configz` | Fetch `/configz` and pretty-print the redacted runtime configuration. |
+| `make ws` | Connect to the WebSocket feed (containerized websocat + Python formatter). |
+| `make ws-twitch` | Same as above but filter for Twitch messages. |
+| `make ws-youtube` | Same as above but filter for YouTube messages. |
+| `make seed:marker` | Inject a single high-visibility marker message into the feed. |
+| `make seed:burst` | Inject a short burst of mixed Twitch/YouTube sample messages. |
+| `make down` | Stop the stack while preserving the shared volume. |
+
+### Unified dev CLI (elora + gnasty)
+
+Use `scripts/devctl.sh` for one-command workflows across this repo and a local `../gnasty-chat` clone:
+
+```bash
+# show help
+./scripts/devctl.sh help
+
+# build both apps (use local ../gnasty-chat source)
+./scripts/devctl.sh build --dev --app all
+
+# start stack with runtime channel overrides and tail logs
+./scripts/devctl.sh start --dev \
+  --twitch-channel rifftrax \
+  --youtube-url "https://youtube.com/@yourchannel/live" \
+  --twitch-nick hp_az \
+  --follow
+
+# rebuild + restart after code changes
+./scripts/devctl.sh restart --dev --seed-enabled --follow
+
+# watch websocket traffic (all|twitch|youtube)
+./scripts/devctl.sh ws --platform all
+
+# run full test suites for elora + gnasty
+./scripts/devctl.sh test --app all
+```
+
+Notes:
+
+- `--dev` enables `docker-compose.dev.yml`, so `gnasty-harvester` is built from `../gnasty-chat`.
+- Without `--dev`, gnasty builds from `../gnasty-chat` directly via `docker build` (tag resolved from `GNASTY_IMAGE` or defaults to `gnasty-chat:latest`).
+- Channel overrides (`--twitch-channel`, `--youtube-url`, `--twitch-nick`) apply to the current command only and do not edit `.env`.
+- Dev seeding endpoints are disabled by default; use `--seed-enabled` (or `ELORA_DEV_SEED_ENABLED=true`) when you need `POST /api/dev/seed/*`.
+- `--seed-enabled` relies on compose env passthrough into `elora-chat` and only applies to that invocation.
+- In non-production mode, `POST /api/dev/seed/*` is intentionally callable without a logged-in session when `--seed-enabled` is set.
+- Seed insertion supports shared `gnasty.db` schema in local mode, so `/api/dev/seed/*` works in the default shared-volume topology.
+- Seeding now retries transient SQLite `SQLITE_BUSY` lock contention on shared `gnasty.db` during startup churn.
+- SQLite lock handling applies required `busy_timeout`/`foreign_keys`/`journal_mode` pragmas via DSN for every pooled connection.
+- During startup contention, seed requests may wait briefly instead of failing fast while SQLite write locks clear.
+- For troubleshooting seed failures, prefer `curl -i` (instead of `-fsS`) to keep response status/body visible.
+- `devctl ws` runs websocat + filter directly and does not rely on `make ws*`.
+
+All of the commands read configuration from `.env`, so update that file (or export overrides) before running them.
+
+### Which mode am I in?
+
+Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field confirms gnasty-chat is powering the shared SQLite handoff. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
+
+## gnasty + SQLite (default topology)
+
+The Docker compose stack launches [gnasty](https://github.com/hpwn/gnasty) alongside the API and both containers mount the same volume at `${ELORA_DATA_DIR:-/data}`. The backend tails gnasty's SQLite writes and republishes them over WebSocket without spawning any in-process harvesters.
+
+Key environment variables to review after copying `.env.example`:
+
+- `ELORA_DB_PATH` / `GNASTY_SINK_SQLITE_PATH` – point both services at the same SQLite file inside the shared volume.
+- `TWITCH_CHANNEL` / `YOUTUBE_URL` / `TWITCH_NICK` - bootstrap defaults only; once `/api/config` is written, Elora persisted config is runtime authority.
+- `TWITCH_OAUTH_CLIENT_ID`, `TWITCH_OAUTH_CLIENT_SECRET`, `TWITCH_OAUTH_REDIRECT_URL` – required for the `/auth/twitch` flow that exports gnasty tokens.
+- `ELORA_TWITCH_WRITE_GNASTY_TOKENS` – leave enabled to keep gnasty's `${ELORA_DATA_DIR}/twitch_irc.pass` and `twitch_refresh.pass` up to date.
+- `ELORA_GNASTY_ADMIN_BASE` - gnasty admin API base used by startup + `PUT /api/config` bulk sync through `POST /admin/config` (defaults to `http://gnasty-harvester:8765`).
+- `ELORA_GNASTY_RELOAD_URL` - optional token-reload endpoint override for Twitch OAuth/service-token refresh (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+- `ELORA_UI_*`, `ELORA_TAILER_*`, `ELORA_WS_*`, `GNASTY_*` non-secret runtime knobs, `VITE_PUBLIC_*` - bootstrap defaults only; once `/api/config` is written these env values are no longer the source of truth.
+
+After the stack is up, run `make configz` to confirm the shared volume paths and ingest driver. gnasty logs a reload message whenever fresh Twitch tokens land in the shared volume.
+
+Legacy chatdownloader support has been removed. gnasty-chat is the only supported harvester and all ingest flows run through the shared SQLite volume.
+
+## Twitch integration (gnasty-chat token handoff)
+
+When `ELORA_TWITCH_TOKEN_FILE` is set, the backend writes the current Twitch IRC token to that file (atomically, mode `0600`).
+Run gnasty with `-twitch-token-file` pointing at the same path (use a shared volume).
+
+By default the Twitch OAuth callback also writes gnasty-compatible handoff files
+`${ELORA_DATA_DIR:-/data}/twitch_irc.pass` and `${ELORA_DATA_DIR:-/data}/twitch_refresh.pass` and pings
+`http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload` so gnasty reloads immediately. Set
+`ELORA_TWITCH_WRITE_GNASTY_TOKENS=false` (or `0`, `no`, `off`) to disable this automatic export when you
+prefer to manage the files manually, or override the webhook target with `ELORA_GNASTY_RELOAD_URL`.
+Runtime source and gnasty non-secret advanced settings are synced by Elora through
+`ELORA_GNASTY_ADMIN_BASE` using gnasty `POST /admin/config` and follow `/api/config` values.
+
+**Environment**
+
+```bash
+ELORA_TWITCH_TOKEN_FILE=/shared/twitch_token   # empty disables export
+ELORA_TWITCH_TOKEN_DIR=/shared                 # optional; defaults to the file's parent
+```
+
+**Local smoke test**
+
+1. Create a shared Docker volume:
+
+   ```bash
+   docker volume create chat_shared
+   ```
+
+2. Start elora-chat with the shared mount:
+
+   ```bash
+   docker run --name elora-chat-instance -d \
+     -p 8080:8080 \
+     -e ELORA_DB_MODE=persistent \
+     -e ELORA_DB_PATH=/data/gnasty.db \
+     -e ELORA_DB_TAIL_ENABLED=true \
+     -e ELORA_TWITCH_TOKEN_FILE=/shared/twitch_token \
+     -v elora_sqlite_data:/data \
+     -v chat_shared:/shared \
+     elora-chat:latest
+   ```
+
+3. Launch gnasty-chat with the same volume:
+
+   ```bash
+   docker run --name gnasty-harvester -d \
+     --user 1000:1000 \
+     -p 9876:8765 \
+     -v elora_sqlite_data:/data \
+     -v chat_shared:/shared \
+     gnasty-chat:latest \
+     -sqlite /data/gnasty.db \
+     -twitch-channel <channel> -twitch-nick <nick> \
+     -twitch-token-file /shared/twitch_token \
+     -http-addr :8765 -http-access-log=true
+   ```
+
+4. Sign into Twitch via the Elora UI. After OAuth, `/shared/twitch_token` is written and gnasty will log a reload:
+
+   ```
+   twitch: token reload detected; reconnecting
+   ```
+
+### Twitch OAuth configuration
+
+Set the following variables for the built-in Twitch login flow (they also seed gnasty's shared token files):
+
+- `TWITCH_OAUTH_CLIENT_ID`
+- `TWITCH_OAUTH_CLIENT_SECRET`
+- `TWITCH_OAUTH_REDIRECT_URL`
+
+The UI directs users to `/auth/twitch/start`, and the backend exposes `/auth/twitch/start` with `/login/twitch` retained as a legacy alias.
 
 ## SQLite storage (default) 🗄️
 
@@ -47,7 +205,44 @@ The backend now persists chat history to SQLite by default. Ephemeral mode keeps
 
 SQLite is the only storage backend. All chat history and authentication sessions use the same database.
 
-Write-ahead logging, foreign keys, and sensible busy timeouts are enabled automatically via connection pragmas during startup.
+Write-ahead logging, foreign keys, and sensible busy timeouts are enforced via SQLite DSN pragmas so every pooled connection gets the same settings.
+
+### Live from SQLite (DB tailer)
+If another process such as **gnasty-chat** writes directly to the same SQLite file, Elora can broadcast those rows live without
+running the Python fetcher. Enable the tailer alongside your persistent database configuration:
+
+```
+ELORA_DB_MODE=persistent
+ELORA_DB_PATH=/data/gnasty.db
+ELORA_DB_TAIL_ENABLED=true
+ELORA_DB_TAIL_INTERVAL_MS=200  # aka ELORA_DB_TAIL_POLL_MS
+ELORA_DB_TAIL_BATCH=500
+```
+
+`ELORA_DB_TAIL_INTERVAL_MS` controls how frequently the poller checks for new rows (lower = more responsive, higher = less DB
+churn) and `ELORA_DB_TAIL_BATCH` caps how many messages are streamed per poll.
+
+The WebSocket payload shape can be wrapped for debugging or compatibility by exporting `ELORA_WS_ENVELOPE=true`, which sends
+frames like `{ "type": "chat", "data": "<chat-json>" }`. The default remains plain chat JSON strings so existing clients keep
+working.
+
+Run gnasty so it ingests into `/data/gnasty.db` (for example via a shared Docker volume) and start Elora with the same volume
+mounted to enable real-time updates.
+
+### DB tailer + WebSocket payloads
+The server can optionally wrap WS frames in an envelope:
+`{ "type":"chat", "data": "<raw JSON object | JSON array | NDJSON>" }`.
+Keepalive frames are `__keepalive__` and are ignored by the client.
+
+The client now tolerates all of the above formats and fills in any missing arrays/fields so the UI never crashes on sparse payloads.
+When rows stream out of the DB tailer they are retokenized (fragments/emotes) and tinted with the same deterministic colour palette as the live Python ingest path, so both sources look identical in the UI. Badge data still depends on the upstream payload; if the harvester or row omits it, the client will display an empty list.
+
+**Local testing (no OAuth):**
+- OAuth buttons will 500 if the related envs aren’t set; this is expected.
+- DB tailer + gnasty harvester is sufficient to see live messages.
+
+> Heads-up: Twitch / YouTube login flows require valid OAuth secrets. If you leave those blank the auth endpoints will return
+500s — that's expected while running locally without real credentials.
 
 ### HTTP: recent messages
 
@@ -141,3 +336,7 @@ See [LICENSE](./LICENSE) and [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) fo
 - Use `src/frontend/src/app.css` only for reset + `:root` tokens (fonts/colors/shared sizes).
 - All layout/visual rules must live in component `.svelte` files (scoped).
 - Import remains via `+layout.svelte` global style import.
+
+### Ingestion driver
+
+`ingest.driver` reported by `/configz` is always `gnasty`. The gnasty-chat container is responsible for scraping Twitch/YouTube chats, writing them into the shared SQLite database, and letting the Elora tailer handle fan-out to connected clients.

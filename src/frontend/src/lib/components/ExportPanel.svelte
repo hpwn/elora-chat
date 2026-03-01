@@ -83,12 +83,7 @@
 
   <div class="row">
     <label class="label" for="format">Format</label>
-    <select
-      id="format"
-      class="field"
-      bind:value={format}
-      on:change={refreshDerived}
-    >
+    <select id="format" class="field" bind:value={format} on:change={refreshDerived}>
       <option value="ndjson">NDJSON (default)</option>
       <option value="csv">CSV</option>
     </select>

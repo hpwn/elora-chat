@@ -1,1 +1,0 @@
-chat_downloader==0.2.8

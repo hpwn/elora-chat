@@ -4,38 +4,65 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 
+	"github.com/hpwn/EloraChat/src/backend/internal/configreporter"
+	httpapi "github.com/hpwn/EloraChat/src/backend/internal/http"
+	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
-	"github.com/hpwn/EloraChat/src/backend/routes" // Ensure this is the correct path to your routes package
+	"github.com/hpwn/EloraChat/src/backend/internal/tailer"
+	"github.com/hpwn/EloraChat/src/backend/routes"
 )
 
 // Config holds the structure for the configuration JSON
 type Config struct {
-	DeployedUrl string `json:"deployedUrl"`
+	DeployedUrl   string `json:"deployedUrl"`
+	APIBase       string `json:"apiBase"`
+	WebsocketURL  string `json:"wsUrl"`
+	HideYouTubeAt bool   `json:"hideYouTubeAt"`
+	ShowBadges    bool   `json:"showBadges"`
 }
+
+var (
+	exportedAPIBase   string
+	exportedWebsocket string
+	exportedDeployed  string
+)
 
 // serveConfig sends the application configuration as JSON
 func serveConfig(w http.ResponseWriter, r *http.Request) {
+	hideYT, showBadges := routes.UIConfig()
+
 	config := Config{
-		DeployedUrl: os.Getenv("DEPLOYED_URL"), // Make sure DEPLOYED_URL is set in your environment
+		DeployedUrl:   exportedDeployed,
+		APIBase:       exportedAPIBase,
+		WebsocketURL:  exportedWebsocket,
+		HideYouTubeAt: hideYT,
+		ShowBadges:    showBadges,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
 }
 
 func main() {
-	port := strings.TrimSpace(os.Getenv("PORT"))
-	if port == "" {
-		port = "8080" // Default to port 8080 if not specified
+	httpAddr := getEnvOrDefault("ELORA_HTTP_ADDR", "0.0.0.0")
+	httpPort := strings.TrimSpace(os.Getenv("ELORA_HTTP_PORT"))
+	if httpPort == "" {
+		httpPort = strings.TrimSpace(os.Getenv("PORT"))
+	}
+	if httpPort == "" {
+		httpPort = "8080"
 	}
 
 	baseCtx := context.Background()
@@ -44,8 +71,9 @@ func main() {
 		Mode:            getEnvOrDefault("ELORA_DB_MODE", "ephemeral"),
 		Path:            strings.TrimSpace(os.Getenv("ELORA_DB_PATH")),
 		MaxConns:        getEnvAsInt("ELORA_DB_MAX_CONNS", 16),
-		BusyTimeoutMS:   getEnvAsInt("ELORA_DB_BUSY_TIMEOUT_MS", 5000),
+		BusyTimeoutMS:   getEnvAsIntFallback([]string{"ELORA_SQLITE_BUSY_TIMEOUT_MS", "ELORA_DB_BUSY_TIMEOUT_MS"}, 5000),
 		PragmasExtraCSV: getEnvOrDefault("ELORA_DB_PRAGMAS_EXTRA", "mmap_size=268435456,cache_size=-100000,temp_store=MEMORY"),
+		JournalMode:     sanitizeJournalMode(getEnvOrDefault("ELORA_SQLITE_JOURNAL_MODE", "wal")),
 	}
 
 	store := sqlite.New(sqliteCfg)
@@ -62,6 +90,10 @@ func main() {
 	log.Printf("storage: using sqlite store (mode=%s)", sqliteCfg.Mode)
 
 	routes.InitRoutes(store)
+	runtimeCfg := routes.EffectiveRuntimeConfig()
+	exportedAPIBase = runtimeCfg.APIBaseURL
+	exportedWebsocket = runtimeCfg.WSURL
+	exportedDeployed = getEnvOrDefault("DEPLOYED_URL", runtimeCfg.APIBaseURL)
 
 	r := mux.NewRouter()
 
@@ -73,38 +105,130 @@ func main() {
 	routes.SetupAuthRoutes(r)
 	routes.SetupSendRoutes(r)
 	routes.SetupMessageRoutes(r)
+	routes.SetupAlertRoutes(r)
+	routes.SetupDevRoutes(r)
+	routes.SetupDebugRoutes(r)
+	routes.SetupSourceRoutes(r)
+	routes.SetupConfigRoutes(r)
+
+	rootMux := http.NewServeMux()
+	httpapi.RegisterHealth(rootMux, store)
+	rootMux.Handle("/", r)
+
+	allowedOrigins := append([]string(nil), runtimeCfg.AllowedOrigins...)
+	routes.SetAllowedOrigins(allowedOrigins)
+	corsHandler := handlers.CORS(
+		handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodOptions}),
+		handlers.AllowedHeaders([]string{"Authorization", "Content-Type"}),
+		handlers.ExposedHeaders([]string{"Link"}),
+		handlers.AllowCredentials(),
+	)
+	if len(allowedOrigins) > 0 {
+		corsHandler = handlers.CORS(
+			handlers.AllowedMethods([]string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodOptions}),
+			handlers.AllowedHeaders([]string{"Authorization", "Content-Type"}),
+			handlers.ExposedHeaders([]string{"Link"}),
+			handlers.AllowCredentials(),
+			handlers.AllowedOrigins(allowedOrigins),
+		)
+	}
+
+	handler := corsHandler(rootMux)
+
+	tailerCfg := tailer.Config{
+		Enabled:        runtimeCfg.Tailer.Enabled,
+		Interval:       time.Duration(runtimeCfg.Tailer.PollIntervalMS) * time.Millisecond,
+		Batch:          runtimeCfg.Tailer.MaxBatch,
+		MaxLag:         time.Duration(runtimeCfg.Tailer.MaxLagMS) * time.Millisecond,
+		PersistOffsets: runtimeCfg.Tailer.PersistOffsets,
+		OffsetPath:     runtimeCfg.Tailer.OffsetPath,
+	}
+	if tailerCfg.PersistOffsets {
+		if tailerCfg.OffsetPath == "" {
+			if sqliteCfg.Path != "" {
+				tailerCfg.OffsetPath = filepath.Clean(sqliteCfg.Path + ".offset.json")
+			} else {
+				tailerCfg.PersistOffsets = false
+			}
+		} else {
+			tailerCfg.OffsetPath = filepath.Clean(tailerCfg.OffsetPath)
+		}
+	}
+
+	ingestEnv := ingest.FromEnv()
+	ingestEnv.GnastyBin = runtimeCfg.Ingest.GnastyBin
+	ingestEnv.GnastyArgs = runtimeCfg.Ingest.GnastyArgs
+	ingestEnv.BackoffBaseMS = runtimeCfg.Ingest.BackoffBaseMS
+	ingestEnv.BackoffMaxMS = runtimeCfg.Ingest.BackoffMaxMS
+	twitchClientID := strings.TrimSpace(os.Getenv("TWITCH_OAUTH_CLIENT_ID"))
+	twitchRedirectURL := strings.TrimSpace(os.Getenv("TWITCH_OAUTH_REDIRECT_URL"))
+	twitchWriteGnastyTokens := twitchGnastyWritesEnabled()
+	twitchAccessPath := ""
+	twitchRefreshPath := ""
+	if twitchWriteGnastyTokens {
+		dataDir := strings.TrimSpace(os.Getenv("ELORA_DATA_DIR"))
+		if dataDir == "" {
+			dataDir = "/data"
+		}
+		dataDir = filepath.Clean(dataDir)
+		twitchAccessPath = filepath.Join(dataDir, "twitch_irc.pass")
+		twitchRefreshPath = filepath.Join(dataDir, "twitch_refresh.pass")
+	}
+	allowAnyOrigins, normalizedOrigins := routes.AllowedOriginsConfig()
+	wsRuntime := routes.WebsocketConfig()
+	reporter := configreporter.NewReporter(
+		sqliteCfg,
+		tailerCfg,
+		ingestEnv,
+		configreporter.Origins{AllowAny: allowAnyOrigins, Values: normalizedOrigins},
+		configreporter.WebsocketLimits{
+			PingInterval:  wsRuntime.PingInterval,
+			PongWait:      wsRuntime.PongWait,
+			WriteDeadline: wsRuntime.WriteDeadline,
+			MaxMessage:    wsRuntime.MaxMessage,
+		},
+		configreporter.AuthConfig{Twitch: configreporter.TwitchAuthConfig{
+			ClientID:          twitchClientID,
+			RedirectURL:       twitchRedirectURL,
+			WriteGnastyTokens: twitchWriteGnastyTokens,
+			AccessTokenPath:   twitchAccessPath,
+			RefreshTokenPath:  twitchRefreshPath,
+		}},
+	)
+
+	httpapi.RegisterConfigz(rootMux, func() configreporter.Snapshot {
+		return reporter.Snapshot()
+	})
+
+	if summaryJSON, err := reporter.SummaryJSON(); err == nil {
+		log.Printf("config_summary=%s", summaryJSON)
+	} else {
+		log.Printf("config_summary: %+v", reporter.Summary())
+	}
+
+	dbTailer := tailer.New(tailerCfg, store)
+	if err := dbTailer.Start(baseCtx); err != nil {
+		log.Printf("dbtailer: error: %v", err)
+	}
+	defer dbTailer.Stop()
 
 	// Serve static files from the "public" directory
 	fs := http.FileServer(http.Dir("public"))
 	r.PathPrefix("/").Handler(http.StripPrefix("/", fs))
 
-	// Start fetching chat messages from env (comma-separated)
-	rawChat := os.Getenv("CHAT_URLS")
-	chatURLs := []string{}
-	if rawChat != "" {
-		for _, u := range strings.Split(rawChat, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				chatURLs = append(chatURLs, u)
-			}
-		}
-	}
-	log.Printf("Starting chat fetch for %d URLs: %v", len(chatURLs), chatURLs)
-	if len(chatURLs) > 0 {
-		routes.StartChatFetch(chatURLs)
-	} else {
-		log.Printf("No CHAT_URLS provided; skipping chat fetch")
-	}
+	log.Printf("ingest: selected driver=%q (harvested via gnasty-chat)", ingestEnv.Driver)
 
 	// Create server
+	listenAddr := net.JoinHostPort(httpAddr, httpPort)
+
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: r,
+		Addr:    listenAddr,
+		Handler: handler,
 	}
 
 	// Start the server in a goroutine
 	go func() {
-		log.Printf("Starting server on :%s\n", port)
+		log.Printf("Starting server on %s", listenAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server start error: %v", err)
 		}
@@ -142,4 +266,72 @@ func getEnvAsInt(key string, def int) int {
 		return def
 	}
 	return parsed
+}
+
+func getEnvAsIntFallback(keys []string, def int) int {
+	for _, key := range keys {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			log.Printf("config: invalid %s=%q, ignoring", key, value)
+			continue
+		}
+		return parsed
+	}
+	return def
+}
+
+func getEnvFirst(keys []string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func sanitizeJournalMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return "WAL"
+	}
+	upper := strings.ToUpper(mode)
+	for _, r := range upper {
+		if r < 'A' || r > 'Z' {
+			return "WAL"
+		}
+	}
+	return upper
+}
+
+func twitchGnastyWritesEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("ELORA_TWITCH_WRITE_GNASTY_TOKENS"))
+	if v == "" {
+		return true
+	}
+	v = strings.ToLower(v)
+	switch v {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
