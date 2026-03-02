@@ -49,11 +49,12 @@ func NewReporter(db sqlite.Config, tailerCfg tailer.Config, ingestEnv ingest.Env
 
 // Snapshot represents the redacted configuration payload returned by /configz.
 type Snapshot struct {
-	DB        DBSnapshot        `json:"db"`
-	Tailer    TailerSnapshot    `json:"tailer"`
-	Ingest    IngestSnapshot    `json:"ingest"`
-	Websocket WebsocketSnapshot `json:"websocket"`
-	Auth      AuthSnapshot      `json:"auth"`
+	DB         DBSnapshot         `json:"db"`
+	Tailer     TailerSnapshot     `json:"tailer"`
+	Ingest     IngestSnapshot     `json:"ingest"`
+	GnastySync GnastySyncSnapshot `json:"gnasty_sync"`
+	Websocket  WebsocketSnapshot  `json:"websocket"`
+	Auth       AuthSnapshot       `json:"auth"`
 }
 
 // DBSnapshot contains the SQLite-related configuration shared with operators.
@@ -79,6 +80,14 @@ type TailerSnapshot struct {
 // IngestSnapshot surfaces the selected ingest driver without revealing secrets.
 type IngestSnapshot struct {
 	Driver string `json:"driver"`
+}
+
+// GnastySyncSnapshot reports best-effort gnasty admin sync health.
+type GnastySyncSnapshot struct {
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	TargetBase    string     `json:"target_base"`
 }
 
 // WebsocketSnapshot reports websocket/CORS tuning knobs.
@@ -186,6 +195,9 @@ func (r Reporter) Snapshot() Snapshot {
 			OffsetPath:     offsetPath,
 		},
 		Ingest: IngestSnapshot{Driver: r.ingest.Driver},
+		GnastySync: GnastySyncSnapshot{
+			TargetBase: "",
+		},
 		Websocket: WebsocketSnapshot{
 			AllowAny:        r.origins.AllowAny,
 			AllowedOrigins:  append([]string(nil), r.origins.Values...),

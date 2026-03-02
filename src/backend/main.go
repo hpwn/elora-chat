@@ -20,6 +20,7 @@ import (
 	"github.com/hpwn/EloraChat/src/backend/internal/configreporter"
 	httpapi "github.com/hpwn/EloraChat/src/backend/internal/http"
 	"github.com/hpwn/EloraChat/src/backend/internal/ingest"
+	"github.com/hpwn/EloraChat/src/backend/internal/runtimeconfig"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage/sqlite"
 	"github.com/hpwn/EloraChat/src/backend/internal/tailer"
 	"github.com/hpwn/EloraChat/src/backend/routes"
@@ -91,6 +92,11 @@ func main() {
 
 	routes.InitRoutes(store)
 	runtimeCfg := routes.EffectiveRuntimeConfig()
+	go func() {
+		// Retry startup gnasty sync after services settle to reduce cold-start race failures.
+		time.Sleep(5 * time.Second)
+		routes.TriggerGnastyConfigResync("startup-delayed")
+	}()
 	exportedAPIBase = runtimeCfg.APIBaseURL
 	exportedWebsocket = runtimeCfg.WSURL
 	exportedDeployed = getEnvOrDefault("DEPLOYED_URL", runtimeCfg.APIBaseURL)
@@ -135,25 +141,17 @@ func main() {
 
 	handler := corsHandler(rootMux)
 
-	tailerCfg := tailer.Config{
-		Enabled:        runtimeCfg.Tailer.Enabled,
-		Interval:       time.Duration(runtimeCfg.Tailer.PollIntervalMS) * time.Millisecond,
-		Batch:          runtimeCfg.Tailer.MaxBatch,
-		MaxLag:         time.Duration(runtimeCfg.Tailer.MaxLagMS) * time.Millisecond,
-		PersistOffsets: runtimeCfg.Tailer.PersistOffsets,
-		OffsetPath:     runtimeCfg.Tailer.OffsetPath,
+	tailerCfg := buildTailerConfig(runtimeCfg.Tailer, sqliteCfg.Path)
+	tailerMgr := tailer.NewManager(baseCtx, store)
+	if err := tailerMgr.StartInitial(tailerCfg); err != nil {
+		log.Printf("dbtailer: error: %v", err)
 	}
-	if tailerCfg.PersistOffsets {
-		if tailerCfg.OffsetPath == "" {
-			if sqliteCfg.Path != "" {
-				tailerCfg.OffsetPath = filepath.Clean(sqliteCfg.Path + ".offset.json")
-			} else {
-				tailerCfg.PersistOffsets = false
-			}
-		} else {
-			tailerCfg.OffsetPath = filepath.Clean(tailerCfg.OffsetPath)
-		}
-	}
+	defer tailerMgr.Stop()
+
+	routes.RegisterTailerConfigApplier(func(cfg runtimeconfig.TailerConfig) error {
+		return tailerMgr.Apply(buildTailerConfig(cfg, sqliteCfg.Path))
+	})
+	defer routes.RegisterTailerConfigApplier(nil)
 
 	ingestEnv := ingest.FromEnv()
 	ingestEnv.GnastyBin = runtimeCfg.Ingest.GnastyBin
@@ -197,7 +195,24 @@ func main() {
 	)
 
 	httpapi.RegisterConfigz(rootMux, func() configreporter.Snapshot {
-		return reporter.Snapshot()
+		snapshot := reporter.Snapshot()
+		liveTailer := tailerMgr.SnapshotConfig()
+		snapshot.Tailer = configreporter.TailerSnapshot{
+			Enabled:        liveTailer.Enabled,
+			IntervalMS:     int(liveTailer.Interval / time.Millisecond),
+			Batch:          liveTailer.Batch,
+			MaxLagMS:       int(liveTailer.MaxLag / time.Millisecond),
+			PersistOffsets: liveTailer.PersistOffsets,
+			OffsetPath:     liveTailer.OffsetPath,
+		}
+		gnastySync := routes.GnastySyncStatusSnapshot()
+		snapshot.GnastySync = configreporter.GnastySyncSnapshot{
+			LastAttemptAt: gnastySync.LastAttemptAt,
+			LastSuccessAt: gnastySync.LastSuccessAt,
+			LastError:     gnastySync.LastError,
+			TargetBase:    gnastySync.TargetBase,
+		}
+		return snapshot
 	})
 
 	if summaryJSON, err := reporter.SummaryJSON(); err == nil {
@@ -205,12 +220,6 @@ func main() {
 	} else {
 		log.Printf("config_summary: %+v", reporter.Summary())
 	}
-
-	dbTailer := tailer.New(tailerCfg, store)
-	if err := dbTailer.Start(baseCtx); err != nil {
-		log.Printf("dbtailer: error: %v", err)
-	}
-	defer dbTailer.Stop()
 
 	// Serve static files from the "public" directory
 	fs := http.FileServer(http.Dir("public"))
@@ -306,6 +315,29 @@ func parseCSV(raw string) []string {
 		}
 	}
 	return out
+}
+
+func buildTailerConfig(src runtimeconfig.TailerConfig, sqlitePath string) tailer.Config {
+	cfg := tailer.Config{
+		Enabled:        src.Enabled,
+		Interval:       time.Duration(src.PollIntervalMS) * time.Millisecond,
+		Batch:          src.MaxBatch,
+		MaxLag:         time.Duration(src.MaxLagMS) * time.Millisecond,
+		PersistOffsets: src.PersistOffsets,
+		OffsetPath:     src.OffsetPath,
+	}
+	if cfg.PersistOffsets {
+		if cfg.OffsetPath == "" {
+			if strings.TrimSpace(sqlitePath) != "" {
+				cfg.OffsetPath = filepath.Clean(sqlitePath + ".offset.json")
+			} else {
+				cfg.PersistOffsets = false
+			}
+		} else {
+			cfg.OffsetPath = filepath.Clean(cfg.OffsetPath)
+		}
+	}
+	return cfg
 }
 
 func sanitizeJournalMode(mode string) string {

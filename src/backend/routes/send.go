@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,6 +22,14 @@ import (
 	// "google.golang.org/api/option"
 	// "google.golang.org/api/youtube/v3"
 )
+
+var (
+	twitchIRCDial            = net.Dial
+	getUsernameFromSessionFn = getUsernameFromSession
+	getTwitchOAuthTokenFn    = getTwitchOAuthToken
+)
+
+var errSendUnauthorized = errors.New("send unauthorized")
 
 // // Global variables
 // var (
@@ -298,9 +307,21 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	channel := normalizeTwitchChannelIdentity(currentRuntimeConfig().TwitchChannel)
+	if channel == "" {
+		http.Error(w, "Twitch channel is not configured", http.StatusBadRequest)
+		return
+	}
+
 	// Send message to Twitch
-	if err := sendMessageToTwitch(sessionToken, "Dayoman", requestBody.Message); err != nil {
+	if err := sendMessageToTwitch(sessionToken, channel, requestBody.Message); err != nil {
 		log.Printf("Error sending message to Twitch: %v", err)
+		if errors.Is(err, errSendUnauthorized) {
+			http.Error(w, "Unauthorized: Twitch token unavailable", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, "Failed to send message to Twitch", http.StatusBadGateway)
+		return
 	}
 
 	// Attempt to send message to YouTube
@@ -330,7 +351,7 @@ func sendMessageHandler(w http.ResponseWriter, r *http.Request) {
 	// }
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Message sent successfully to Twitch and YouTube"))
+	w.Write([]byte("Message sent successfully to Twitch"))
 }
 
 // Helper function to retrieve the username from session data
@@ -378,20 +399,34 @@ func getTwitchOAuthToken(sessionToken string) (string, error) {
 // sendMessageToTwitch sends a message to the Twitch chat channel associated with the provided sessionToken.
 func sendMessageToTwitch(sessionToken string, channel string, message string) error {
 	// Retrieve the OAuth token for Twitch using the session token
-	oauthToken, err := getTwitchOAuthToken(sessionToken)
+	oauthToken, err := getTwitchOAuthTokenFn(sessionToken)
 	if err != nil {
 		if isSessionNotFound(err) {
-			return fmt.Errorf("unauthorized: %w", err)
+			return fmt.Errorf("%w: %v", errSendUnauthorized, err)
 		}
-		return fmt.Errorf("error retrieving Twitch OAuth token: %v", err)
+		return fmt.Errorf("%w: %v", errSendUnauthorized, err)
+	}
+	if strings.TrimSpace(oauthToken) == "" {
+		return fmt.Errorf("%w: twitch OAuth token missing", errSendUnauthorized)
+	}
+
+	nickname, err := getUsernameFromSessionFn(sessionToken)
+	if err != nil {
+		if isSessionNotFound(err) {
+			return fmt.Errorf("%w: %v", errSendUnauthorized, err)
+		}
+		return fmt.Errorf("%w: %v", errSendUnauthorized, err)
+	}
+	nickname = strings.ToLower(strings.TrimSpace(nickname))
+	if nickname == "" {
+		return fmt.Errorf("%w: twitch nickname missing", errSendUnauthorized)
 	}
 
 	// Twitch IRC server details
 	server := "irc.chat.twitch.tv:6667"
-	nickname := "Dayoman" // The streamer's Twitch username
 
 	// Connect to Twitch IRC server
-	conn, err := net.Dial("tcp", server)
+	conn, err := twitchIRCDial("tcp", server)
 	if err != nil {
 		return fmt.Errorf("error connecting to Twitch IRC: %v", err)
 	}

@@ -56,6 +56,20 @@ Both containers now run as `${DOCKER_UID:-1000}:${DOCKER_GID:-1000}` so bind-mou
 | `make seed:burst` | Inject a short burst of mixed Twitch/YouTube sample messages. |
 | `make down` | Stop the stack while preserving the shared volume. |
 
+### Send route test gate
+
+Use the canonical container harness before pushing changes that touch Twitch send flow:
+
+```bash
+./scripts/test-send-route.sh
+```
+
+Override the Go image if needed:
+
+```bash
+GO_IMAGE=golang:1.24.3 ./scripts/test-send-route.sh
+```
+
 ### Unified dev CLI (elora + gnasty)
 
 Use `scripts/devctl.sh` for one-command workflows across this repo and a local `../gnasty-chat` clone:
@@ -105,6 +119,13 @@ All of the commands read configuration from `.env`, so update that file (or expo
 
 Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field confirms gnasty-chat is powering the shared SQLite handoff. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
 
+### Backup/Prod Split Server (Ubuntu + Caddy)
+
+For a split-domain deployment on one host (`dayo.hayden.it.com` prod and `elora.hayden.it.com` test) with isolated compose projects and shared Caddy edge routing, see [docs/backup-server.md](docs/backup-server.md).
+Tailer runtime config changes from `PUT /api/config` are hot-applied and reflected in `/configz` without restarting the stack.
+`/configz.gnasty_sync` now reports best-effort gnasty `/admin/config` sync health (`last_attempt_at`, `last_success_at`, `last_error`, `target_base`).
+For live-only startup diagnostics when WS appears silent after refresh, run `bash deploy/triage-ws-live-only.sh`.
+
 ## gnasty + SQLite (default topology)
 
 The Docker compose stack launches [gnasty](https://github.com/hpwn/gnasty) alongside the API and both containers mount the same volume at `${ELORA_DATA_DIR:-/data}`. The backend tails gnasty's SQLite writes and republishes them over WebSocket without spawning any in-process harvesters.
@@ -117,6 +138,7 @@ Key environment variables to review after copying `.env.example`:
 - `ELORA_TWITCH_WRITE_GNASTY_TOKENS` – leave enabled to keep gnasty's `${ELORA_DATA_DIR}/twitch_irc.pass` and `twitch_refresh.pass` up to date.
 - `ELORA_GNASTY_ADMIN_BASE` - gnasty admin API base used by startup + `PUT /api/config` bulk sync through `POST /admin/config` (defaults to `http://gnasty-harvester:8765`).
 - `ELORA_GNASTY_RELOAD_URL` - optional token-reload endpoint override for Twitch OAuth/service-token refresh (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+- `GNASTY_TWITCH_TOKEN_FILE` - should point at `${ELORA_DATA_DIR}/twitch_irc.pass` so gnasty can consume OAuth-maintained Twitch tokens.
 - `ELORA_UI_*`, `ELORA_TAILER_*`, `ELORA_WS_*`, `GNASTY_*` non-secret runtime knobs, `VITE_PUBLIC_*` - bootstrap defaults only; once `/api/config` is written these env values are no longer the source of truth.
 
 After the stack is up, run `make configz` to confirm the shared volume paths and ingest driver. gnasty logs a reload message whenever fresh Twitch tokens land in the shared volume.

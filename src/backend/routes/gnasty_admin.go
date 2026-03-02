@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/runtimeconfig"
@@ -17,7 +18,9 @@ import (
 
 const (
 	defaultGnastyAdminBase = "http://gnasty-harvester:8765"
-	gnastyAdminTimeout     = 750 * time.Millisecond
+	gnastyAdminTimeout     = 2 * time.Second
+	gnastyAdminMaxAttempts = 3
+	gnastyAdminRetryDelay  = 300 * time.Millisecond
 )
 
 type gnastyConfigPatch struct {
@@ -52,6 +55,24 @@ type gnastyYouTubePatch struct {
 	Debug           *bool   `json:"debug,omitempty"`
 }
 
+type gnastySyncStatus struct {
+	mu          sync.RWMutex
+	lastAttempt time.Time
+	lastSuccess time.Time
+	lastError   string
+	targetBase  string
+}
+
+var gnastySyncState gnastySyncStatus
+
+// GnastySyncSnapshot is the redacted gnasty admin sync status exposed via /configz.
+type GnastySyncSnapshot struct {
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	TargetBase    string     `json:"target_base"`
+}
+
 func syncGnastyConfigBestEffort(cfg runtimeconfig.Config, reason string) {
 	patch := gnastyPatchFromRuntimeConfig(cfg)
 
@@ -59,10 +80,14 @@ func syncGnastyConfigBestEffort(cfg runtimeconfig.Config, reason string) {
 	if base == "" {
 		return
 	}
+	gnastySyncState.setAttempt(base)
 
 	if err := postGnastyAdminJSON(base, "/admin/config", patch); err != nil {
+		gnastySyncState.setError(err.Error())
 		log.Printf("config: gnasty bulk sync warning (%s): %v", reason, err)
+		return
 	}
+	gnastySyncState.setSuccess()
 }
 
 func gnastyAdminBaseURL() string {
@@ -88,6 +113,23 @@ func postGnastyAdminJSON(base, path string, payload any) error {
 		client = &http.Client{Timeout: 2 * time.Second}
 	}
 
+	var lastErr error
+	for attempt := 1; attempt <= gnastyAdminMaxAttempts; attempt++ {
+		lastErr = postGnastyAdminJSONOnce(client, base, path, body)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < gnastyAdminMaxAttempts {
+			time.Sleep(gnastyAdminRetryDelay)
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("%s request failed after %d attempts: %w", path, gnastyAdminMaxAttempts, lastErr)
+	}
+	return nil
+}
+
+func postGnastyAdminJSONOnce(client *http.Client, base, path string, body []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), gnastyAdminTimeout)
 	defer cancel()
 
@@ -112,6 +154,60 @@ func postGnastyAdminJSON(base, path string, payload any) error {
 		return fmt.Errorf("%s returned %s body=%q", path, resp.Status, bodyText)
 	}
 	return nil
+}
+
+func (s *gnastySyncStatus) setAttempt(target string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	s.lastAttempt = now
+	s.targetBase = target
+}
+
+func (s *gnastySyncStatus) setSuccess() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	s.lastSuccess = now
+	s.lastError = ""
+}
+
+func (s *gnastySyncStatus) setError(raw string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastError = truncateSyncError(raw)
+}
+
+func truncateSyncError(raw string) string {
+	const max = 512
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if len(raw) <= max {
+		return raw
+	}
+	return raw[:max] + "...(truncated)"
+}
+
+// GnastySyncStatusSnapshot returns the current gnasty sync telemetry.
+func GnastySyncStatusSnapshot() GnastySyncSnapshot {
+	gnastySyncState.mu.RLock()
+	defer gnastySyncState.mu.RUnlock()
+
+	out := GnastySyncSnapshot{
+		LastError:  gnastySyncState.lastError,
+		TargetBase: gnastySyncState.targetBase,
+	}
+	if !gnastySyncState.lastAttempt.IsZero() {
+		ts := gnastySyncState.lastAttempt
+		out.LastAttemptAt = &ts
+	}
+	if !gnastySyncState.lastSuccess.IsZero() {
+		ts := gnastySyncState.lastSuccess
+		out.LastSuccessAt = &ts
+	}
+	return out
 }
 
 func gnastyPatchFromRuntimeConfig(cfg runtimeconfig.Config) gnastyConfigPatch {

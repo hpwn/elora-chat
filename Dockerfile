@@ -1,5 +1,5 @@
 # Start with a base Go image to build your application
-FROM golang:1.24.2 AS builder
+FROM golang:1.24.3 AS builder
 
 # Install git for fetching Go dependencies (avoid apk segfaults)
 RUN apt-get update \

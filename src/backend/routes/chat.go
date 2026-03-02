@@ -82,6 +82,40 @@ var (
 	overrideWSDropEmpty *bool
 )
 
+var (
+	twitchHelixBaseURL    = "https://api.twitch.tv/helix"
+	twitchOAuthTokenURL   = "https://id.twitch.tv/oauth2/token"
+	twitchBadgeHTTPClient = &http.Client{
+		Timeout: 3 * time.Second,
+	}
+	twitchBadgeCacheState = struct {
+		mu       sync.RWMutex
+		global   twitchBadgeCacheEntry
+		channels map[string]twitchBadgeCacheEntry
+	}{
+		channels: map[string]twitchBadgeCacheEntry{},
+	}
+	twitchBadgeTokenState = struct {
+		mu        sync.Mutex
+		token     string
+		expiresAt time.Time
+	}{}
+	twitchBadgeWarnState = struct {
+		mu   sync.Mutex
+		seen map[string]struct{}
+	}{
+		seen: map[string]struct{}{},
+	}
+	twitchBroadcasterIDCacheState = struct {
+		mu      sync.RWMutex
+		byLogin map[string]twitchBroadcasterIDCacheEntry
+	}{
+		byLogin: map[string]twitchBroadcasterIDCacheEntry{},
+	}
+)
+
+const twitchBadgeCacheTTL = 30 * time.Minute
+
 var tokenizer Tokenizer
 
 var commandParser CommandParser
@@ -108,6 +142,38 @@ type Badge struct {
 	Platform string  `json:"platform,omitempty"`
 	Version  string  `json:"version,omitempty"`
 	Images   []Image `json:"images,omitempty"`
+}
+
+type twitchHelixBadgeResponse struct {
+	Data []twitchHelixBadgeSet `json:"data"`
+}
+
+type twitchHelixBadgeSet struct {
+	SetID    string                    `json:"set_id"`
+	Versions []twitchHelixBadgeVersion `json:"versions"`
+}
+
+type twitchHelixBadgeVersion struct {
+	ID         string `json:"id"`
+	ImageURL1x string `json:"image_url_1x"`
+	ImageURL2x string `json:"image_url_2x"`
+	ImageURL4x string `json:"image_url_4x"`
+}
+
+type twitchAppAccessTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
+	TokenType   string `json:"token_type"`
+}
+
+type twitchBadgeCacheEntry struct {
+	expiresAt time.Time
+	badges    map[string]map[string][]Image
+}
+
+type twitchBroadcasterIDCacheEntry struct {
+	expiresAt     time.Time
+	broadcasterID string
 }
 
 func (b *Badge) UnmarshalJSON(data []byte) error {
@@ -1519,6 +1585,513 @@ func parseTwitchBadgeVersions(raw string) map[string]string {
 	return out
 }
 
+func extractTwitchRoomID(raw any) string {
+	rawMap, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	twitchRaw, ok := rawMap["twitch"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"room-id", "room_id", "roomid"} {
+		value, _ := twitchRaw[key].(string)
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cloneBadgeImageMap(in map[string]map[string][]Image) map[string]map[string][]Image {
+	if len(in) == 0 {
+		return map[string]map[string][]Image{}
+	}
+	out := make(map[string]map[string][]Image, len(in))
+	for setID, versions := range in {
+		if len(versions) == 0 {
+			continue
+		}
+		versionOut := make(map[string][]Image, len(versions))
+		for version, images := range versions {
+			if len(images) == 0 {
+				continue
+			}
+			copied := make([]Image, len(images))
+			copy(copied, images)
+			versionOut[version] = copied
+		}
+		if len(versionOut) > 0 {
+			out[setID] = versionOut
+		}
+	}
+	return out
+}
+
+func logTwitchBadgeWarnOnce(key string, format string, args ...any) {
+	key = strings.TrimSpace(strings.ToLower(key))
+	if key == "" {
+		key = "unknown"
+	}
+	twitchBadgeWarnState.mu.Lock()
+	_, exists := twitchBadgeWarnState.seen[key]
+	if !exists {
+		twitchBadgeWarnState.seen[key] = struct{}{}
+	}
+	twitchBadgeWarnState.mu.Unlock()
+	if !exists {
+		log.Printf(format, args...)
+	}
+}
+
+func twitchHelixCredentials() (clientID string, clientSecret string) {
+	return strings.TrimSpace(os.Getenv("TWITCH_OAUTH_CLIENT_ID")), strings.TrimSpace(os.Getenv("TWITCH_OAUTH_CLIENT_SECRET"))
+}
+
+func getTwitchHelixAppToken() (string, error) {
+	now := time.Now()
+	twitchBadgeTokenState.mu.Lock()
+	if strings.TrimSpace(twitchBadgeTokenState.token) != "" && now.Add(60*time.Second).Before(twitchBadgeTokenState.expiresAt) {
+		token := twitchBadgeTokenState.token
+		twitchBadgeTokenState.mu.Unlock()
+		return token, nil
+	}
+	twitchBadgeTokenState.mu.Unlock()
+
+	clientID, clientSecret := twitchHelixCredentials()
+	if clientID == "" || clientSecret == "" {
+		return "", fmt.Errorf("missing twitch helix credentials (TWITCH_OAUTH_CLIENT_ID/TWITCH_OAUTH_CLIENT_SECRET)")
+	}
+
+	form := url.Values{}
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
+	form.Set("grant_type", "client_credentials")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, twitchOAuthTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := twitchBadgeHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("twitch helix token http status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var doc twitchAppAccessTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return "", err
+	}
+
+	token := strings.TrimSpace(doc.AccessToken)
+	if token == "" {
+		return "", fmt.Errorf("twitch helix token response missing access_token")
+	}
+	expiresIn := doc.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 3600
+	}
+
+	twitchBadgeTokenState.mu.Lock()
+	twitchBadgeTokenState.token = token
+	twitchBadgeTokenState.expiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
+	twitchBadgeTokenState.mu.Unlock()
+	return token, nil
+}
+
+func clearTwitchHelixAppToken() {
+	twitchBadgeTokenState.mu.Lock()
+	twitchBadgeTokenState.token = ""
+	twitchBadgeTokenState.expiresAt = time.Time{}
+	twitchBadgeTokenState.mu.Unlock()
+}
+
+func fetchTwitchHelixBadgeDisplay(path string, query url.Values) (map[string]map[string][]Image, error) {
+	base := strings.TrimRight(strings.TrimSpace(twitchHelixBaseURL), "/")
+	if base == "" {
+		return map[string]map[string][]Image{}, nil
+	}
+	clientID, _ := twitchHelixCredentials()
+	if clientID == "" {
+		return nil, fmt.Errorf("missing twitch helix client id (TWITCH_OAUTH_CLIENT_ID)")
+	}
+
+	token, err := getTwitchHelixAppToken()
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := base + path
+	if encoded := strings.TrimSpace(query.Encode()); encoded != "" {
+		endpoint += "?" + encoded
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Client-Id", clientID)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := twitchBadgeHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		clearTwitchHelixAppToken()
+
+		token, err = getTwitchHelixAppToken()
+		if err != nil {
+			return nil, err
+		}
+
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Client-Id", clientID)
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err = twitchBadgeHTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("twitch helix badges http status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var doc twitchHelixBadgeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]map[string][]Image, len(doc.Data))
+	for _, set := range doc.Data {
+		setID := strings.TrimSpace(set.SetID)
+		if setID == "" || len(set.Versions) == 0 {
+			continue
+		}
+		versions := make(map[string][]Image, len(set.Versions))
+		for _, version := range set.Versions {
+			versionID := strings.TrimSpace(version.ID)
+			if versionID == "" {
+				continue
+			}
+			images := make([]Image, 0, 3)
+			if url := strings.TrimSpace(version.ImageURL1x); url != "" {
+				images = append(images, Image{URL: url, Width: 18, Height: 18, ID: versionID + "-1x"})
+			}
+			if url := strings.TrimSpace(version.ImageURL2x); url != "" {
+				images = append(images, Image{URL: url, Width: 36, Height: 36, ID: versionID + "-2x"})
+			}
+			if url := strings.TrimSpace(version.ImageURL4x); url != "" {
+				images = append(images, Image{URL: url, Width: 72, Height: 72, ID: versionID + "-4x"})
+			}
+			if len(images) > 0 {
+				versions[versionID] = images
+			}
+		}
+		if len(versions) > 0 {
+			out[setID] = versions
+		}
+	}
+	return out, nil
+}
+
+func resolveTwitchBroadcasterIDByLogin(login string) (string, error) {
+	login = normalizeTwitchChannelIdentity(login)
+	if login == "" {
+		return "", fmt.Errorf("missing twitch channel login")
+	}
+
+	now := time.Now()
+	twitchBroadcasterIDCacheState.mu.RLock()
+	if cached, ok := twitchBroadcasterIDCacheState.byLogin[login]; ok && now.Before(cached.expiresAt) && strings.TrimSpace(cached.broadcasterID) != "" {
+		id := cached.broadcasterID
+		twitchBroadcasterIDCacheState.mu.RUnlock()
+		return id, nil
+	}
+	twitchBroadcasterIDCacheState.mu.RUnlock()
+
+	base := strings.TrimRight(strings.TrimSpace(twitchHelixBaseURL), "/")
+	if base == "" {
+		return "", fmt.Errorf("missing twitch helix base url")
+	}
+	clientID, _ := twitchHelixCredentials()
+	if clientID == "" {
+		return "", fmt.Errorf("missing twitch helix client id (TWITCH_OAUTH_CLIENT_ID)")
+	}
+	token, err := getTwitchHelixAppToken()
+	if err != nil {
+		return "", err
+	}
+
+	query := url.Values{}
+	query.Set("login", login)
+	endpoint := base + "/users?" + query.Encode()
+
+	do := func(accessToken string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Client-Id", clientID)
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		return twitchBadgeHTTPClient.Do(req)
+	}
+
+	resp, err := do(token)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		clearTwitchHelixAppToken()
+		token, err = getTwitchHelixAppToken()
+		if err != nil {
+			return "", err
+		}
+		resp, err = do(token)
+		if err != nil {
+			return "", err
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("twitch helix users http status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var users struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		return "", err
+	}
+	if len(users.Data) == 0 || strings.TrimSpace(users.Data[0].ID) == "" {
+		return "", fmt.Errorf("twitch helix users returned no id for login=%s", login)
+	}
+
+	id := strings.TrimSpace(users.Data[0].ID)
+	twitchBroadcasterIDCacheState.mu.Lock()
+	twitchBroadcasterIDCacheState.byLogin[login] = twitchBroadcasterIDCacheEntry{
+		expiresAt:     now.Add(twitchBadgeCacheTTL),
+		broadcasterID: id,
+	}
+	twitchBroadcasterIDCacheState.mu.Unlock()
+	return id, nil
+}
+
+func selectTwitchBadgeImages(badgeID string, requestedVersion string, versions map[string][]Image) []Image {
+	requestedVersion = strings.TrimSpace(requestedVersion)
+	if imgs := versions[requestedVersion]; len(imgs) > 0 {
+		return imgs
+	}
+
+	// Only subscriber needs increment mapping; other badge sets retain legacy exact->"1" fallback.
+	if !strings.EqualFold(strings.TrimSpace(badgeID), "subscriber") {
+		if imgs := versions["1"]; len(imgs) > 0 {
+			return imgs
+		}
+		return nil
+	}
+
+	requested, err := strconv.Atoi(requestedVersion)
+	if err == nil {
+		bestFloor := -int(^uint(0)>>1) - 1
+		hasFloor := false
+		smallest := int(^uint(0) >> 1)
+		hasSmallest := false
+		for key := range versions {
+			v, convErr := strconv.Atoi(strings.TrimSpace(key))
+			if convErr != nil {
+				continue
+			}
+			if v <= requested && (!hasFloor || v > bestFloor) {
+				bestFloor = v
+				hasFloor = true
+			}
+			if !hasSmallest || v < smallest {
+				smallest = v
+				hasSmallest = true
+			}
+		}
+		if hasFloor {
+			if imgs := versions[strconv.Itoa(bestFloor)]; len(imgs) > 0 {
+				return imgs
+			}
+		}
+		if hasSmallest {
+			if imgs := versions[strconv.Itoa(smallest)]; len(imgs) > 0 {
+				return imgs
+			}
+		}
+	}
+
+	if imgs := versions["1"]; len(imgs) > 0 {
+		return imgs
+	}
+	return nil
+}
+
+func getTwitchBadgeDisplay(roomID string, sourceChannel string) (map[string]map[string][]Image, error) {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		channel := normalizeTwitchChannelIdentity(sourceChannel)
+		if channel != "" {
+			resolvedID, err := resolveTwitchBroadcasterIDByLogin(channel)
+			if err != nil {
+				logTwitchBadgeWarnOnce("helix-users-"+channel, "badges: twitch helix broadcaster resolve failed (channel=%s): %v", channel, err)
+			} else {
+				roomID = resolvedID
+			}
+		} else {
+			logTwitchBadgeWarnOnce("helix-channel-missing", "badges: twitch helix channel lookup skipped: missing room_id and source_channel")
+		}
+	}
+
+	now := time.Now()
+
+	twitchBadgeCacheState.mu.RLock()
+	globalCached := now.Before(twitchBadgeCacheState.global.expiresAt) && len(twitchBadgeCacheState.global.badges) > 0
+	var global map[string]map[string][]Image
+	if globalCached {
+		global = cloneBadgeImageMap(twitchBadgeCacheState.global.badges)
+	}
+	var channel map[string]map[string][]Image
+	channelCached := false
+	if roomID != "" {
+		if entry, ok := twitchBadgeCacheState.channels[roomID]; ok && now.Before(entry.expiresAt) && len(entry.badges) > 0 {
+			channel = cloneBadgeImageMap(entry.badges)
+			channelCached = true
+		}
+	}
+	twitchBadgeCacheState.mu.RUnlock()
+
+	if !globalCached {
+		freshGlobal, err := fetchTwitchHelixBadgeDisplay("/chat/badges/global", nil)
+		if err != nil {
+			return nil, fmt.Errorf("global helix badge lookup failed: %w", err)
+		}
+		twitchBadgeCacheState.mu.Lock()
+		twitchBadgeCacheState.global = twitchBadgeCacheEntry{
+			expiresAt: now.Add(twitchBadgeCacheTTL),
+			badges:    cloneBadgeImageMap(freshGlobal),
+		}
+		twitchBadgeCacheState.mu.Unlock()
+		global = freshGlobal
+	}
+
+	if roomID != "" && !channelCached {
+		query := url.Values{}
+		query.Set("broadcaster_id", roomID)
+		freshChannel, err := fetchTwitchHelixBadgeDisplay("/chat/badges", query)
+		if err != nil {
+			// Fail open: keep global badges even if channel badge lookup fails.
+			logTwitchBadgeWarnOnce("helix-channel-"+roomID, "badges: twitch helix channel badge lookup failed (room_id=%s): %v", roomID, err)
+			channel = map[string]map[string][]Image{}
+		} else {
+			twitchBadgeCacheState.mu.Lock()
+			twitchBadgeCacheState.channels[roomID] = twitchBadgeCacheEntry{
+				expiresAt: now.Add(twitchBadgeCacheTTL),
+				badges:    cloneBadgeImageMap(freshChannel),
+			}
+			twitchBadgeCacheState.mu.Unlock()
+			channel = freshChannel
+		}
+	}
+
+	merged := cloneBadgeImageMap(global)
+	for setID, versions := range channel {
+		if len(versions) == 0 {
+			continue
+		}
+		if _, ok := merged[setID]; !ok {
+			merged[setID] = map[string][]Image{}
+		}
+		for versionID, images := range versions {
+			if len(images) == 0 {
+				continue
+			}
+			copied := make([]Image, len(images))
+			copy(copied, images)
+			merged[setID][versionID] = copied
+		}
+	}
+	return merged, nil
+}
+
+func enrichTwitchBadgesWithImages(badges []Badge, badgesRaw any, sourceChannel string) []Badge {
+	if len(badges) == 0 {
+		return badges
+	}
+
+	needsLookup := false
+	for i := range badges {
+		if !strings.EqualFold(badges[i].Platform, "twitch") {
+			continue
+		}
+		if badgeHasUsableImage(badges[i].Images) {
+			continue
+		}
+		needsLookup = true
+		break
+	}
+	if !needsLookup {
+		return badges
+	}
+
+	roomID := extractTwitchRoomID(badgesRaw)
+	display, err := getTwitchBadgeDisplay(roomID, sourceChannel)
+	if err != nil {
+		logTwitchBadgeWarnOnce("helix-global", "badges: twitch helix badge resolve failed: %v", err)
+		return badges
+	}
+
+	for i := range badges {
+		badge := &badges[i]
+		if !strings.EqualFold(strings.TrimSpace(badge.Platform), "twitch") {
+			continue
+		}
+		if badgeHasUsableImage(badge.Images) {
+			continue
+		}
+		setID := strings.TrimSpace(badge.ID)
+		if setID == "" {
+			continue
+		}
+		versions := display[setID]
+		if len(versions) == 0 {
+			continue
+		}
+		images := selectTwitchBadgeImages(setID, badge.Version, versions)
+		if len(images) == 0 {
+			continue
+		}
+		badge.Images = make([]Image, len(images))
+		copy(badge.Images, images)
+	}
+
+	return badges
+}
+
 func encodeStoredBadges(badges []Badge) string {
 	if len(badges) == 0 {
 		return "[]"
@@ -1614,9 +2187,12 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 					msg.BadgesRaw = raw
 				}
 			}
+			resolveMessageSourceIdentity(&msg, m)
+			if len(msg.Badges) > 0 {
+				msg.Badges = enrichTwitchBadgesWithImages(msg.Badges, msg.BadgesRaw, msg.SourceChannel)
+			}
 			msg.UsernameColor = computeUsernameColor(msg, m)
 			msg.Colour = msg.UsernameColor
-			resolveMessageSourceIdentity(&msg, m)
 			msg.normalize()
 			return json.Marshal(msg.toChatPayload())
 		}
@@ -1638,9 +2214,12 @@ func messagePayloadFromStorage(m storage.Message) ([]byte, error) {
 		BadgesRaw: badgesRaw,
 		Source:    m.Platform,
 	}
+	resolveMessageSourceIdentity(&fallback, m)
+	if len(fallback.Badges) > 0 {
+		fallback.Badges = enrichTwitchBadgesWithImages(fallback.Badges, fallback.BadgesRaw, fallback.SourceChannel)
+	}
 	fallback.UsernameColor = computeUsernameColor(fallback, m)
 	fallback.Colour = fallback.UsernameColor
-	resolveMessageSourceIdentity(&fallback, m)
 	fallback.normalize()
 
 	data, err := json.Marshal(fallback.toChatPayload())
@@ -1879,6 +2458,9 @@ func enrichTailerMessage(m storage.Message) Message {
 
 	msg.Source = normalizeSource(msg.Source)
 	resolveMessageSourceIdentity(&msg, m)
+	if len(msg.Badges) > 0 {
+		msg.Badges = enrichTwitchBadgesWithImages(msg.Badges, msg.BadgesRaw, msg.SourceChannel)
+	}
 	msg.normalize()
 
 	return msg

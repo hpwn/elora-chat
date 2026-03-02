@@ -39,6 +39,28 @@ var runtimeState = struct {
 	current:  runtimeconfig.DefaultsFromEnv(),
 }
 
+var runtimeHooks = struct {
+	mu          sync.RWMutex
+	applyTailer func(runtimeconfig.TailerConfig) error
+}{}
+
+// RegisterTailerConfigApplier sets a hot-apply hook for runtime tailer updates.
+func RegisterTailerConfigApplier(fn func(runtimeconfig.TailerConfig) error) {
+	runtimeHooks.mu.Lock()
+	defer runtimeHooks.mu.Unlock()
+	runtimeHooks.applyTailer = fn
+}
+
+func applyTailerConfig(cfg runtimeconfig.TailerConfig) error {
+	runtimeHooks.mu.RLock()
+	fn := runtimeHooks.applyTailer
+	runtimeHooks.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(cfg)
+}
+
 func initRuntimeConfig(store storage.Store) {
 	defaults := runtimeconfig.DefaultsFromEnv()
 	current := defaults
@@ -106,6 +128,11 @@ func defaultRuntimeConfig() runtimeconfig.Config {
 // EffectiveRuntimeConfig exposes the active effective runtime config for other packages.
 func EffectiveRuntimeConfig() runtimeconfig.Config {
 	return currentRuntimeConfig()
+}
+
+// TriggerGnastyConfigResync performs a best-effort bulk sync using the current runtime config.
+func TriggerGnastyConfigResync(reason string) {
+	syncGnastyConfigBestEffort(currentRuntimeConfig(), reason)
 }
 
 func applyRuntimeConfig(cfg runtimeconfig.Config) {
@@ -218,6 +245,15 @@ func handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	applyRuntimeConfig(normalized)
+	if previous.Tailer != normalized.Tailer {
+		if err := applyTailerConfig(normalized.Tailer); err != nil {
+			writeJSONStatus(w, http.StatusInternalServerError, map[string]any{
+				"error":   "tailer_apply_failed",
+				"message": "failed to apply tailer config",
+			})
+			return
+		}
+	}
 
 	log.Printf(
 		"config: applied twitch_channel=%q youtube_source_url=%q api_base=%q ws_url=%q",
@@ -253,10 +289,7 @@ func handlePutConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func changedSubsystemsRequiringRestart(before, after runtimeconfig.Config) []string {
-	restart := make([]string, 0, 2)
-	if before.Tailer != after.Tailer {
-		restart = append(restart, "tailer")
-	}
+	restart := make([]string, 0, 1)
 	if before.Ingest.GnastyBin != after.Ingest.GnastyBin ||
 		before.Ingest.BackoffBaseMS != after.Ingest.BackoffBaseMS ||
 		before.Ingest.BackoffMaxMS != after.Ingest.BackoffMaxMS ||

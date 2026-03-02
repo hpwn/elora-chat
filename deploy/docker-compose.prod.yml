@@ -1,0 +1,26 @@
+services:
+  elora-chat:
+    container_name: ${COMPOSE_PROJECT_NAME:-elora}-elora-chat
+    ports: !reset []
+    expose:
+      - "8080"
+    dns:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    networks:
+      - elora
+      - edge
+
+  gnasty-harvester:
+    container_name: ${COMPOSE_PROJECT_NAME:-elora}-gnasty-harvester
+    ports: !reset []
+    dns:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    networks:
+      - elora
+
+networks:
+  edge:
+    name: elora-edge
+    external: true
