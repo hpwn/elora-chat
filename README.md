@@ -119,9 +119,9 @@ All of the commands read configuration from `.env`, so update that file (or expo
 
 Run `make configz` to dump the redacted runtime configuration from `/configz`. The `ingest.driver` field confirms gnasty-chat is powering the shared SQLite handoff. See [docs/runbook.md](docs/runbook.md) for topology diagrams, troubleshooting tips, and end-to-end bring-up steps.
 
-### Backup Server (Ubuntu + Caddy)
+### Backup/Prod Split Server (Ubuntu + Caddy)
 
-For an always-on backup deployment behind your own domain (Namecheap DNS + Caddy reverse proxy + production compose override), see [docs/backup-server.md](docs/backup-server.md).
+For a split-domain deployment on one host (`dayo.hayden.it.com` prod and `elora.hayden.it.com` test) with isolated compose projects and shared Caddy edge routing, see [docs/backup-server.md](docs/backup-server.md).
 
 ## gnasty + SQLite (default topology)
 

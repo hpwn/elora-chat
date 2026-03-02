@@ -1,27 +1,21 @@
 services:
   elora-chat:
+    container_name: ${COMPOSE_PROJECT_NAME:-elora}-elora-chat
     ports: !reset []
     expose:
       - "8080"
-
-  gnasty-harvester:
-    ports: !reset []
-
-  caddy:
-    image: caddy:2
-    depends_on:
-      - elora-chat
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
     networks:
       - elora
-    restart: unless-stopped
+      - edge
 
-volumes:
-  caddy_data:
-  caddy_config:
+  gnasty-harvester:
+    container_name: ${COMPOSE_PROJECT_NAME:-elora}-gnasty-harvester
+    ports: !reset []
+    networks:
+      - elora
+      - edge
+
+networks:
+  edge:
+    name: elora-edge
+    external: true

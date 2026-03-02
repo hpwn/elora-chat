@@ -8,14 +8,14 @@ services:
       dockerfile: Dockerfile
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     env_file:
-      - .env
+      - ${ELORA_ENV_FILE:-.env}
     environment:
       TZ: ${TZ}
       LOG_LEVEL: ${LOG_LEVEL}
       ELORA_DEV_SEED_ENABLED: ${ELORA_DEV_SEED_ENABLED:-}
       ELORA_GNASTY_ADMIN_BASE: ${ELORA_GNASTY_ADMIN_BASE:-http://gnasty-harvester:8765}
     volumes:
-      - ./data:/data
+      - ${ELORA_DATA_DIR:-./data}:/data
     ports:
       - "${ELORA_HTTP_PORT:-8080}:${ELORA_HTTP_PORT:-8080}"
     healthcheck:
@@ -34,13 +34,13 @@ services:
     image: ${GNASTY_IMAGE}
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     env_file:
-      - .env
+      - ${ELORA_ENV_FILE:-.env}
     environment:
       TZ: ${TZ}
       GNASTY_SINK_SQLITE_PATH: /data/gnasty.db
     command: ["-http-addr",":8765","-http-access-log=true"]
     volumes:
-      - ./data:/data
+      - ${ELORA_DATA_DIR:-./data}:/data
     depends_on:
       elora-chat:
         condition: service_healthy

@@ -1,3 +1,15 @@
+dayo.hayden.it.com {
+  encode zstd gzip
+
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    X-Frame-Options SAMEORIGIN
+  }
+
+  reverse_proxy elora_dayo-elora-chat:8080
+}
+
 elora.hayden.it.com {
   encode zstd gzip
 
@@ -7,5 +19,5 @@ elora.hayden.it.com {
     X-Frame-Options SAMEORIGIN
   }
 
-  reverse_proxy elora-chat:8080
+  reverse_proxy elora_test-elora-chat:8080
 }
