@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +40,7 @@ func resetRuntimeConfigForTest(t *testing.T) {
 	t.Cleanup(func() {
 		overrideWSEnvelope = nil
 		overrideWSDropEmpty = nil
+		RegisterTailerConfigApplier(nil)
 	})
 }
 
@@ -239,7 +242,7 @@ func TestPutConfigRejectsWrappedConfigPayload(t *testing.T) {
 	}
 
 	wrapped := map[string]any{
-		"config": current.Config,
+		"config":  current.Config,
 		"changed": true,
 	}
 	configMap, ok := wrapped["config"].(runtimeconfig.Config)
@@ -567,6 +570,103 @@ func TestPutConfigNoopAllowsEmptyOptionalSources(t *testing.T) {
 	}
 	if updated.Changed {
 		t.Fatalf("expected changed=false for no-op put")
+	}
+}
+
+func TestPutConfigTailerHotApplySuccess(t *testing.T) {
+	resetRuntimeConfigForTest(t)
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	InitRoutes(chatStore)
+	router := newConfigRouter()
+
+	var called atomic.Bool
+	RegisterTailerConfigApplier(func(cfg runtimeconfig.TailerConfig) error {
+		called.Store(true)
+		if !cfg.Enabled {
+			t.Fatalf("expected enabled tailer in hook")
+		}
+		return nil
+	})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d body=%s", getRR.Code, getRR.Body.String())
+	}
+
+	var current configAPIResponse
+	if err := json.Unmarshal(getRR.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current config: %v", err)
+	}
+	current.Config.Tailer.Enabled = true
+	current.Config.Tailer.PollIntervalMS = 250
+	current.Config.Tailer.MaxBatch = 300
+	body, _ := json.Marshal(current.Config)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	if !called.Load() {
+		t.Fatalf("expected tailer hot-apply hook to be called")
+	}
+
+	var updated configAPIResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode updated config: %v", err)
+	}
+	for _, item := range updated.RestartRequired {
+		if item == "tailer" {
+			t.Fatalf("tailer should not require restart after hot-apply")
+		}
+	}
+}
+
+func TestPutConfigTailerHotApplyFailure(t *testing.T) {
+	resetRuntimeConfigForTest(t)
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	InitRoutes(chatStore)
+	router := newConfigRouter()
+
+	RegisterTailerConfigApplier(func(runtimeconfig.TailerConfig) error {
+		return errors.New("tailer boom")
+	})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d body=%s", getRR.Code, getRR.Body.String())
+	}
+
+	var current configAPIResponse
+	if err := json.Unmarshal(getRR.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current config: %v", err)
+	}
+	current.Config.Tailer.Enabled = true
+	body, _ := json.Marshal(current.Config)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+	if payload["error"] != "tailer_apply_failed" {
+		t.Fatalf("expected tailer_apply_failed, got %+v", payload)
 	}
 }
 

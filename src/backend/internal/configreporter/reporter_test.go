@@ -25,6 +25,9 @@ func TestSnapshotRedactsIngestSecrets(t *testing.T) {
 	if snapshot.Ingest.Driver != ingest.DriverGnasty {
 		t.Fatalf("expected driver %q, got %q", ingest.DriverGnasty, snapshot.Ingest.Driver)
 	}
+	if snapshot.GnastySync.TargetBase != "" {
+		t.Fatalf("expected empty gnasty sync target by default, got %q", snapshot.GnastySync.TargetBase)
+	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)

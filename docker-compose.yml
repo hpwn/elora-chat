@@ -15,7 +15,7 @@ services:
       ELORA_DEV_SEED_ENABLED: ${ELORA_DEV_SEED_ENABLED:-}
       ELORA_GNASTY_ADMIN_BASE: ${ELORA_GNASTY_ADMIN_BASE:-http://gnasty-harvester:8765}
     volumes:
-      - ${ELORA_DATA_DIR:-./data}:/data
+      - ${ELORA_HOST_DATA_DIR:-${ELORA_DATA_DIR:-./data}}:/data
     ports:
       - "${ELORA_HTTP_PORT:-8080}:${ELORA_HTTP_PORT:-8080}"
     healthcheck:
@@ -37,10 +37,9 @@ services:
       - ${ELORA_ENV_FILE:-.env}
     environment:
       TZ: ${TZ}
-      GNASTY_SINK_SQLITE_PATH: /data/gnasty.db
     command: ["-http-addr",":8765","-http-access-log=true"]
     volumes:
-      - ${ELORA_DATA_DIR:-./data}:/data
+      - ${ELORA_HOST_DATA_DIR:-${ELORA_DATA_DIR:-./data}}:/data
     depends_on:
       elora-chat:
         condition: service_healthy

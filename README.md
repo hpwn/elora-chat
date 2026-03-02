@@ -122,6 +122,9 @@ Run `make configz` to dump the redacted runtime configuration from `/configz`. T
 ### Backup/Prod Split Server (Ubuntu + Caddy)
 
 For a split-domain deployment on one host (`dayo.hayden.it.com` prod and `elora.hayden.it.com` test) with isolated compose projects and shared Caddy edge routing, see [docs/backup-server.md](docs/backup-server.md).
+Tailer runtime config changes from `PUT /api/config` are hot-applied and reflected in `/configz` without restarting the stack.
+`/configz.gnasty_sync` now reports best-effort gnasty `/admin/config` sync health (`last_attempt_at`, `last_success_at`, `last_error`, `target_base`).
+For live-only startup diagnostics when WS appears silent after refresh, run `bash deploy/triage-ws-live-only.sh`.
 
 ## gnasty + SQLite (default topology)
 
@@ -135,6 +138,7 @@ Key environment variables to review after copying `.env.example`:
 - `ELORA_TWITCH_WRITE_GNASTY_TOKENS` – leave enabled to keep gnasty's `${ELORA_DATA_DIR}/twitch_irc.pass` and `twitch_refresh.pass` up to date.
 - `ELORA_GNASTY_ADMIN_BASE` - gnasty admin API base used by startup + `PUT /api/config` bulk sync through `POST /admin/config` (defaults to `http://gnasty-harvester:8765`).
 - `ELORA_GNASTY_RELOAD_URL` - optional token-reload endpoint override for Twitch OAuth/service-token refresh (defaults to `http://gnasty:${GNASTY_HTTP_PORT:-8765}/admin/twitch/reload`).
+- `GNASTY_TWITCH_TOKEN_FILE` - should point at `${ELORA_DATA_DIR}/twitch_irc.pass` so gnasty can consume OAuth-maintained Twitch tokens.
 - `ELORA_UI_*`, `ELORA_TAILER_*`, `ELORA_WS_*`, `GNASTY_*` non-secret runtime knobs, `VITE_PUBLIC_*` - bootstrap defaults only; once `/api/config` is written these env values are no longer the source of truth.
 
 After the stack is up, run `make configz` to confirm the shared volume paths and ingest driver. gnasty logs a reload message whenever fresh Twitch tokens land in the shared volume.

@@ -58,6 +58,7 @@ Edit both files before first deploy:
 
 - `GNASTY_IMAGE`
 - Twitch OAuth client ID/secret
+- `GNASTY_TWITCH_TOKEN_FILE` (set to `/data/twitch_irc.pass`)
 - Any default source bootstrap fields (`TWITCH_CHANNEL`, `YOUTUBE_URL`, `TWITCH_NICK`)
 - UID/GID if host user is not `1000:1000`
 
@@ -111,6 +112,13 @@ curl -fsS https://dayo.hayden.it.com/api/config | jq '.config | {twitchChannel,y
 curl -fsS https://elora.hayden.it.com/api/config | jq '.config | {twitchChannel,youtubeSourceUrl,apiBaseUrl,wsUrl}'
 ```
 
+Check gnasty sync telemetry in `/configz`:
+
+```bash
+curl -fsS https://dayo.hayden.it.com/configz | jq '.gnasty_sync'
+curl -fsS https://elora.hayden.it.com/configz | jq '.gnasty_sync'
+```
+
 ## 8. Isolation Validation
 
 1. Change source/channel on `elora.hayden.it.com`.
@@ -122,6 +130,27 @@ curl -fsS https://elora.hayden.it.com/api/config | jq '.config | {twitchChannel,
 ```
 
 4. Confirm prod remains healthy.
+
+Run this divergence check to prove live source isolation:
+
+```bash
+# Show distinct runtime source targets
+curl -fsS https://dayo.hayden.it.com/api/config | jq '.config | {twitchChannel,youtubeSourceUrl}'
+curl -fsS https://elora.hayden.it.com/api/config | jq '.config | {twitchChannel,youtubeSourceUrl}'
+
+# Sample latest persisted messages per domain (author/platform/text preview)
+curl -fsS 'https://dayo.hayden.it.com/api/messages?limit=5' | jq '.items[] | {platform,username,text}'
+curl -fsS 'https://elora.hayden.it.com/api/messages?limit=5' | jq '.items[] | {platform,username,text}'
+```
+
+If either stack drifts from its expected source/channel after restart, force a no-op re-sync:
+
+```bash
+for DOMAIN in dayo.hayden.it.com elora.hayden.it.com; do
+  cfg="$(curl -fsS "https://$DOMAIN/api/config" | jq '.config')"
+  curl -fsS -X PUT "https://$DOMAIN/api/config" -H 'Content-Type: application/json' --data "$cfg" >/dev/null
+done
+```
 
 ## 9. Operational Commands
 
@@ -159,3 +188,25 @@ docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-fil
   - Verify `ELORA_ALLOWED_ORIGINS` and `ELORA_WS_ALLOWED_ORIGINS` per domain.
 - Permission errors on SQLite/token handoff:
   - Verify ownership and write perms on `/data_dayo` and `/data_test`.
+- Tailer updates via `PUT /api/config`:
+  - Tailer changes now hot-apply immediately and should appear in `/configz` without restarting the stack.
+  - Ingest process settings still require a stack restart for full effect.
+
+## 11. WS Looks Silent After Hard Refresh (Live-Only Mode)
+
+In live-only mode (`replay=0`), a hard refresh can look empty until a new message arrives.
+This is expected when no fresh rows are ingested after the socket reconnects.
+
+Run the non-mutating triage script:
+
+```bash
+bash deploy/triage-ws-live-only.sh
+```
+
+What it verifies:
+
+- `/configz` tailer state is enabled on both domains.
+- Raw WS transport receives `__keepalive__` (outside UI parsing).
+- `/api/messages?limit=1` changes over time (ingest movement check).
+- End-to-end checks to run after sending one fresh message per domain.
+- Log commands to separate WS publish issues from ingest issues.

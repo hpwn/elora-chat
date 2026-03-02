@@ -4,6 +4,9 @@ services:
     ports: !reset []
     expose:
       - "8080"
+    dns:
+      - "1.1.1.1"
+      - "8.8.8.8"
     networks:
       - elora
       - edge
@@ -11,9 +14,11 @@ services:
   gnasty-harvester:
     container_name: ${COMPOSE_PROJECT_NAME:-elora}-gnasty-harvester
     ports: !reset []
+    dns:
+      - "1.1.1.1"
+      - "8.8.8.8"
     networks:
       - elora
-      - edge
 
 networks:
   edge:

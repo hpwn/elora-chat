@@ -4,13 +4,38 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/runtimeconfig"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 )
+
+func resetTwitchBadgeResolverForTests() {
+	twitchBadgeCacheState.mu.Lock()
+	twitchBadgeCacheState.global = twitchBadgeCacheEntry{}
+	twitchBadgeCacheState.channels = map[string]twitchBadgeCacheEntry{}
+	twitchBadgeCacheState.mu.Unlock()
+
+	twitchBadgeTokenState.mu.Lock()
+	twitchBadgeTokenState.token = ""
+	twitchBadgeTokenState.expiresAt = time.Time{}
+	twitchBadgeTokenState.mu.Unlock()
+
+	twitchBadgeWarnState.mu.Lock()
+	twitchBadgeWarnState.seen = map[string]struct{}{}
+	twitchBadgeWarnState.mu.Unlock()
+
+	twitchBroadcasterIDCacheState.mu.Lock()
+	twitchBroadcasterIDCacheState.byLogin = map[string]twitchBroadcasterIDCacheEntry{}
+	twitchBroadcasterIDCacheState.mu.Unlock()
+}
 
 func TestBadgeUnmarshalJSONCompat(t *testing.T) {
 	var badges []Badge
@@ -264,6 +289,389 @@ func TestMessagePayloadFromStoragePreservesBadgeImages(t *testing.T) {
 	}
 	if badge.Images[0].URL != "https://static.twitchcdn.net/badges/v1/subscriber_1x.png" || badge.Images[1].URL != "https://static.twitchcdn.net/badges/v1/subscriber_2x.png" {
 		t.Fatalf("unexpected badge images: %#v", badge.Images)
+	}
+}
+
+func TestMessagePayloadFromStorageEnrichesTwitchBadgeImages(t *testing.T) {
+	const (
+		testClientID     = "test-client-id"
+		testClientSecret = "test-client-secret"
+		testToken        = "test-token"
+	)
+	t.Setenv("TWITCH_OAUTH_CLIENT_ID", testClientID)
+	t.Setenv("TWITCH_OAUTH_CLIENT_SECRET", testClientSecret)
+
+	tokenRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth2/token":
+			tokenRequests++
+			if got := r.Header.Get("Content-Type"); !strings.Contains(got, "application/x-www-form-urlencoded") {
+				t.Fatalf("expected token request content-type form-encoded, got %q", got)
+			}
+			body, _ := io.ReadAll(r.Body)
+			values, err := url.ParseQuery(string(body))
+			if err != nil {
+				t.Fatalf("expected parseable token body, got error: %v", err)
+			}
+			if values.Get("client_id") != testClientID || values.Get("client_secret") != testClientSecret {
+				t.Fatalf("unexpected token credentials in body: %q", string(body))
+			}
+			_, _ = w.Write([]byte(`{"access_token":"` + testToken + `","expires_in":3600,"token_type":"bearer"}`))
+		case "/helix/chat/badges/global":
+			if got := r.Header.Get("Client-Id"); got != testClientID {
+				t.Fatalf("expected Client-Id header %q, got %q", testClientID, got)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer "+testToken {
+				t.Fatalf("expected Authorization header %q, got %q", "Bearer "+testToken, got)
+			}
+			_, _ = w.Write([]byte(`{"data":[{"set_id":"subscriber","versions":[{"id":"12","image_url_1x":"https://img.example/sub12-1x.png","image_url_2x":"https://img.example/sub12-2x.png"}]}]}`))
+		case "/helix/chat/badges":
+			if got := r.Header.Get("Client-Id"); got != testClientID {
+				t.Fatalf("expected Client-Id header %q, got %q", testClientID, got)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer "+testToken {
+				t.Fatalf("expected Authorization header %q, got %q", "Bearer "+testToken, got)
+			}
+			if got := r.URL.Query().Get("broadcaster_id"); got != "40934651" {
+				t.Fatalf("expected broadcaster_id 40934651, got %q", got)
+			}
+			_, _ = w.Write([]byte(`{"data":[{"set_id":"vip","versions":[{"id":"1","image_url_1x":"https://img.example/vip1-1x.png"}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldHelixBase := twitchHelixBaseURL
+	oldTokenURL := twitchOAuthTokenURL
+	oldClient := twitchBadgeHTTPClient
+	twitchHelixBaseURL = server.URL + "/helix"
+	twitchOAuthTokenURL = server.URL + "/oauth2/token"
+	twitchBadgeHTTPClient = server.Client()
+	resetTwitchBadgeResolverForTests()
+	t.Cleanup(func() {
+		twitchHelixBaseURL = oldHelixBase
+		twitchOAuthTokenURL = oldTokenURL
+		twitchBadgeHTTPClient = oldClient
+		resetTwitchBadgeResolverForTests()
+	})
+
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username: "tester",
+		Text:     "hello",
+		Platform: "Twitch",
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"12"},{"platform":"twitch","id":"vip","version":"1"}],` +
+			`"raw":{"twitch":{"badges":"subscriber/12,vip/1","room_id":"40934651"}}}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg struct {
+		Badges []Badge `json:"badges"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if len(msg.Badges) != 2 {
+		t.Fatalf("expected 2 badges, got %d", len(msg.Badges))
+	}
+	if len(msg.Badges[0].Images) == 0 || msg.Badges[0].Images[0].URL != "https://img.example/sub12-1x.png" {
+		t.Fatalf("expected subscriber badge images, got %#v", msg.Badges[0].Images)
+	}
+	if len(msg.Badges[1].Images) == 0 || msg.Badges[1].Images[0].URL != "https://img.example/vip1-1x.png" {
+		t.Fatalf("expected vip badge images, got %#v", msg.Badges[1].Images)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("expected one token request due to cache reuse, got %d", tokenRequests)
+	}
+}
+
+func TestMessagePayloadFromStorageTwitchBadgeResolveFailOpen(t *testing.T) {
+	t.Setenv("TWITCH_OAUTH_CLIENT_ID", "")
+	t.Setenv("TWITCH_OAUTH_CLIENT_SECRET", "")
+
+	oldHelixBase := twitchHelixBaseURL
+	oldTokenURL := twitchOAuthTokenURL
+	oldClient := twitchBadgeHTTPClient
+	twitchHelixBaseURL = "http://127.0.0.1:1/helix"
+	twitchOAuthTokenURL = "http://127.0.0.1:1/oauth2/token"
+	twitchBadgeHTTPClient = &http.Client{}
+	resetTwitchBadgeResolverForTests()
+	t.Cleanup(func() {
+		twitchHelixBaseURL = oldHelixBase
+		twitchOAuthTokenURL = oldTokenURL
+		twitchBadgeHTTPClient = oldClient
+		resetTwitchBadgeResolverForTests()
+	})
+
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username:   "tester",
+		Text:       "hello",
+		Platform:   "Twitch",
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"12"}],"raw":{"twitch":{"badges":"subscriber/12","room_id":"40934651"}}}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg struct {
+		Badges []Badge `json:"badges"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if len(msg.Badges) != 1 {
+		t.Fatalf("expected 1 badge, got %d", len(msg.Badges))
+	}
+	if len(msg.Badges[0].Images) != 0 {
+		t.Fatalf("expected fail-open without images, got %#v", msg.Badges[0].Images)
+	}
+}
+
+func TestEnrichTwitchBadgesWithImagesSkipsNonTwitch(t *testing.T) {
+	t.Setenv("TWITCH_OAUTH_CLIENT_ID", "unused")
+	t.Setenv("TWITCH_OAUTH_CLIENT_SECRET", "unused")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected resolver request for non-twitch badge: %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	oldHelixBase := twitchHelixBaseURL
+	oldTokenURL := twitchOAuthTokenURL
+	oldClient := twitchBadgeHTTPClient
+	twitchHelixBaseURL = server.URL + "/helix"
+	twitchOAuthTokenURL = server.URL + "/oauth2/token"
+	twitchBadgeHTTPClient = server.Client()
+	resetTwitchBadgeResolverForTests()
+	t.Cleanup(func() {
+		twitchHelixBaseURL = oldHelixBase
+		twitchOAuthTokenURL = oldTokenURL
+		twitchBadgeHTTPClient = oldClient
+		resetTwitchBadgeResolverForTests()
+	})
+
+	in := []Badge{{Platform: "youtube", ID: "moderator", Version: "1"}}
+	out := enrichTwitchBadgesWithImages(in, map[string]any{"twitch": map[string]any{"room_id": "40934651"}}, "dayoman")
+	if len(out) != 1 {
+		t.Fatalf("expected single badge, got %d", len(out))
+	}
+	if len(out[0].Images) != 0 {
+		t.Fatalf("expected non-twitch badge images unchanged, got %#v", out[0].Images)
+	}
+}
+
+func TestGetTwitchHelixAppTokenUsesCacheUntilExpiryWindow(t *testing.T) {
+	t.Setenv("TWITCH_OAUTH_CLIENT_ID", "cid")
+	t.Setenv("TWITCH_OAUTH_CLIENT_SECRET", "secret")
+
+	tokenRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth2/token" {
+			http.NotFound(w, r)
+			return
+		}
+		tokenRequests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"cache-token","expires_in":3600,"token_type":"bearer"}`))
+	}))
+	defer server.Close()
+
+	oldTokenURL := twitchOAuthTokenURL
+	oldClient := twitchBadgeHTTPClient
+	twitchOAuthTokenURL = server.URL + "/oauth2/token"
+	twitchBadgeHTTPClient = server.Client()
+	resetTwitchBadgeResolverForTests()
+	t.Cleanup(func() {
+		twitchOAuthTokenURL = oldTokenURL
+		twitchBadgeHTTPClient = oldClient
+		resetTwitchBadgeResolverForTests()
+	})
+
+	token1, err := getTwitchHelixAppToken()
+	if err != nil {
+		t.Fatalf("first token fetch failed: %v", err)
+	}
+	token2, err := getTwitchHelixAppToken()
+	if err != nil {
+		t.Fatalf("second token fetch failed: %v", err)
+	}
+	if token1 != "cache-token" || token2 != "cache-token" {
+		t.Fatalf("expected cached token, got %q and %q", token1, token2)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("expected one token request, got %d", tokenRequests)
+	}
+}
+
+func TestGetTwitchHelixAppTokenRefreshesNearExpiry(t *testing.T) {
+	t.Setenv("TWITCH_OAUTH_CLIENT_ID", "cid")
+	t.Setenv("TWITCH_OAUTH_CLIENT_SECRET", "secret")
+
+	tokenRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth2/token" {
+			http.NotFound(w, r)
+			return
+		}
+		tokenRequests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"refreshed-token","expires_in":3600,"token_type":"bearer"}`))
+	}))
+	defer server.Close()
+
+	oldTokenURL := twitchOAuthTokenURL
+	oldClient := twitchBadgeHTTPClient
+	twitchOAuthTokenURL = server.URL + "/oauth2/token"
+	twitchBadgeHTTPClient = server.Client()
+	resetTwitchBadgeResolverForTests()
+	t.Cleanup(func() {
+		twitchOAuthTokenURL = oldTokenURL
+		twitchBadgeHTTPClient = oldClient
+		resetTwitchBadgeResolverForTests()
+	})
+
+	twitchBadgeTokenState.mu.Lock()
+	twitchBadgeTokenState.token = "stale-token"
+	twitchBadgeTokenState.expiresAt = time.Now().Add(30 * time.Second)
+	twitchBadgeTokenState.mu.Unlock()
+
+	token, err := getTwitchHelixAppToken()
+	if err != nil {
+		t.Fatalf("token refresh failed: %v", err)
+	}
+	if token != "refreshed-token" {
+		t.Fatalf("expected refreshed token, got %q", token)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("expected refresh token request, got %d", tokenRequests)
+	}
+}
+
+func TestMessagePayloadFromStorageEnrichesTwitchSubscriberViaSourceChannelFallback(t *testing.T) {
+	const (
+		testClientID     = "test-client-id"
+		testClientSecret = "test-client-secret"
+		testToken        = "test-token"
+	)
+	t.Setenv("TWITCH_OAUTH_CLIENT_ID", testClientID)
+	t.Setenv("TWITCH_OAUTH_CLIENT_SECRET", testClientSecret)
+
+	tokenRequests := 0
+	userResolveRequests := 0
+	channelBadgeRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth2/token":
+			tokenRequests++
+			_, _ = w.Write([]byte(`{"access_token":"` + testToken + `","expires_in":3600,"token_type":"bearer"}`))
+		case "/helix/users":
+			userResolveRequests++
+			if got := r.URL.Query().Get("login"); got != "dayoman" {
+				t.Fatalf("expected login=dayoman, got %q", got)
+			}
+			_, _ = w.Write([]byte(`{"data":[{"id":"40934651"}]}`))
+		case "/helix/chat/badges/global":
+			_, _ = w.Write([]byte(`{"data":[{"set_id":"subscriber","versions":[{"id":"1","image_url_1x":"https://img.example/global-sub-1x.png"}]}]}`))
+		case "/helix/chat/badges":
+			channelBadgeRequests++
+			if got := r.URL.Query().Get("broadcaster_id"); got != "40934651" {
+				t.Fatalf("expected broadcaster_id=40934651, got %q", got)
+			}
+			_, _ = w.Write([]byte(`{"data":[{"set_id":"subscriber","versions":[` +
+				`{"id":"0","image_url_1x":"https://img.example/ch-sub0-1x.png"},` +
+				`{"id":"3","image_url_1x":"https://img.example/ch-sub3-1x.png"},` +
+				`{"id":"6","image_url_1x":"https://img.example/ch-sub6-1x.png"},` +
+				`{"id":"12","image_url_1x":"https://img.example/ch-sub12-1x.png"},` +
+				`{"id":"24","image_url_1x":"https://img.example/ch-sub24-1x.png"}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldHelixBase := twitchHelixBaseURL
+	oldTokenURL := twitchOAuthTokenURL
+	oldClient := twitchBadgeHTTPClient
+	twitchHelixBaseURL = server.URL + "/helix"
+	twitchOAuthTokenURL = server.URL + "/oauth2/token"
+	twitchBadgeHTTPClient = server.Client()
+	resetTwitchBadgeResolverForTests()
+	t.Cleanup(func() {
+		twitchHelixBaseURL = oldHelixBase
+		twitchOAuthTokenURL = oldTokenURL
+		twitchBadgeHTTPClient = oldClient
+		resetTwitchBadgeResolverForTests()
+	})
+
+	payload, err := messagePayloadFromStorage(storage.Message{
+		Username: "tester",
+		Text:     "hello",
+		Platform: "Twitch",
+		RawJSON:  `{"channel":"dayoman"}`,
+		BadgesJSON: `{"badges":[{"platform":"twitch","id":"subscriber","version":"17"}],` +
+			`"raw":{"twitch":{"badges":"subscriber/17"}}}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var msg struct {
+		Badges []Badge `json:"badges"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if len(msg.Badges) != 1 {
+		t.Fatalf("expected 1 badge, got %d", len(msg.Badges))
+	}
+	if len(msg.Badges[0].Images) == 0 || msg.Badges[0].Images[0].URL != "https://img.example/ch-sub12-1x.png" {
+		t.Fatalf("expected channel increment badge image (12-month), got %#v", msg.Badges[0].Images)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("expected one token request, got %d", tokenRequests)
+	}
+	if userResolveRequests != 1 {
+		t.Fatalf("expected one user resolve request, got %d", userResolveRequests)
+	}
+	if channelBadgeRequests != 1 {
+		t.Fatalf("expected one channel badge request, got %d", channelBadgeRequests)
+	}
+}
+
+func TestSelectTwitchBadgeImagesSubscriberUsesChannelIncrements(t *testing.T) {
+	versions := map[string][]Image{
+		"0":  {{URL: "u0"}},
+		"3":  {{URL: "u3"}},
+		"6":  {{URL: "u6"}},
+		"12": {{URL: "u12"}},
+		"24": {{URL: "u24"}},
+		"36": {{URL: "u36"}},
+	}
+
+	imgs := selectTwitchBadgeImages("subscriber", "17", versions)
+	if len(imgs) == 0 || imgs[0].URL != "u12" {
+		t.Fatalf("expected floor match u12 for version 17, got %#v", imgs)
+	}
+	imgs = selectTwitchBadgeImages("subscriber", "36", versions)
+	if len(imgs) == 0 || imgs[0].URL != "u36" {
+		t.Fatalf("expected exact u36 for version 36, got %#v", imgs)
+	}
+	imgs = selectTwitchBadgeImages("subscriber", "1", versions)
+	if len(imgs) == 0 || imgs[0].URL != "u0" {
+		t.Fatalf("expected smallest increment u0 for version 1, got %#v", imgs)
+	}
+
+	nonSub := map[string][]Image{
+		"1": {{URL: "v1"}},
+	}
+	imgs = selectTwitchBadgeImages("vip", "2", nonSub)
+	if len(imgs) == 0 || imgs[0].URL != "v1" {
+		t.Fatalf("expected non-subscriber fallback to version 1, got %#v", imgs)
 	}
 }
 
