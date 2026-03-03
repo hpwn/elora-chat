@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/hpwn/EloraChat/src/backend/internal/authutil"
+	"github.com/hpwn/EloraChat/src/backend/internal/runtimeconfig"
 	"github.com/hpwn/EloraChat/src/backend/internal/storage"
 	"github.com/hpwn/EloraChat/src/backend/internal/tokenfile"
 	"github.com/hpwn/EloraChat/src/backend/internal/ws"
@@ -85,7 +86,11 @@ var (
 var (
 	twitchHelixBaseURL    = "https://api.twitch.tv/helix"
 	twitchOAuthTokenURL   = "https://id.twitch.tv/oauth2/token"
+	youtubeDataAPIBaseURL = "https://www.googleapis.com/youtube/v3"
 	twitchBadgeHTTPClient = &http.Client{
+		Timeout: 3 * time.Second,
+	}
+	youtubeDataHTTPClient = &http.Client{
 		Timeout: 3 * time.Second,
 	}
 	twitchBadgeCacheState = struct {
@@ -117,6 +122,7 @@ var (
 const twitchBadgeCacheTTL = 30 * time.Minute
 
 var tokenizer Tokenizer
+var emoteCacheMu sync.RWMutex
 
 var commandParser CommandParser
 
@@ -174,6 +180,278 @@ type twitchBadgeCacheEntry struct {
 type twitchBroadcasterIDCacheEntry struct {
 	expiresAt     time.Time
 	broadcasterID string
+}
+
+type emodlTargets struct {
+	twitchLogin         string
+	twitchBroadcasterID string
+	youTubeSourceURL    string
+	youTubeChannelID    string
+}
+
+func tokenizerSnapshot() Tokenizer {
+	emoteCacheMu.RLock()
+	defer emoteCacheMu.RUnlock()
+	return tokenizer
+}
+
+func emoteCacheSnapshot() map[string]Emote {
+	emoteCacheMu.RLock()
+	defer emoteCacheMu.RUnlock()
+	if len(tokenizer.EmoteCache) == 0 {
+		return map[string]Emote{}
+	}
+	clone := make(map[string]Emote, len(tokenizer.EmoteCache))
+	for k, v := range tokenizer.EmoteCache {
+		clone[k] = v
+	}
+	return clone
+}
+
+func replaceEmoteCache(cache map[string]Emote) {
+	emoteCacheMu.Lock()
+	defer emoteCacheMu.Unlock()
+	if cache == nil {
+		tokenizer.EmoteCache = map[string]Emote{}
+		return
+	}
+	tokenizer.EmoteCache = cache
+}
+
+func upsertEmoteCache(emotes []Emote) {
+	if len(emotes) == 0 {
+		return
+	}
+	next := emoteCacheSnapshot()
+	for _, e := range emotes {
+		if strings.TrimSpace(e.Name) == "" {
+			continue
+		}
+		next[e.Name] = e
+	}
+	replaceEmoteCache(next)
+}
+
+func normalizeYouTubeChannelIDIdentity(raw string) string {
+	id := strings.TrimSpace(raw)
+	if len(id) != 24 || !strings.HasPrefix(id, "UC") {
+		return ""
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return id
+}
+
+func resolveYouTubeChannelIDBySource(sourceURL string) (string, error) {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if channelID := normalizeYouTubeChannelIDIdentity(sourceURL); channelID != "" {
+		return channelID, nil
+	}
+	normalized := normalizeYouTubeSourceIdentity(sourceURL)
+	if normalized == "" {
+		return "", fmt.Errorf("missing youtube source identity")
+	}
+	if channelID := normalizeYouTubeChannelIDIdentity(normalized); channelID != "" {
+		return channelID, nil
+	}
+
+	apiKey := strings.TrimSpace(os.Getenv("YOUTUBE_API_KEY"))
+	if apiKey == "" {
+		return "", fmt.Errorf("missing youtube data api key (YOUTUBE_API_KEY)")
+	}
+
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", err
+	}
+
+	base := strings.TrimRight(strings.TrimSpace(youtubeDataAPIBaseURL), "/")
+	if base == "" {
+		return "", fmt.Errorf("missing youtube data api base url")
+	}
+
+	doRequest := func(endpoint string, query url.Values, out any) error {
+		query.Set("key", apiKey)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
+		if reqErr != nil {
+			return reqErr
+		}
+		resp, reqErr := youtubeDataHTTPClient.Do(req)
+		if reqErr != nil {
+			return reqErr
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			return fmt.Errorf("youtube data api http status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+
+	videoID := normalizeYouTubeVideoIDIdentity(parsed.Query().Get("v"))
+	if videoID != "" {
+		var payload struct {
+			Items []struct {
+				Snippet struct {
+					ChannelID string `json:"channelId"`
+				} `json:"snippet"`
+			} `json:"items"`
+		}
+		q := url.Values{}
+		q.Set("part", "snippet")
+		q.Set("id", videoID)
+		if err := doRequest(base+"/videos", q, &payload); err != nil {
+			return "", err
+		}
+		if len(payload.Items) == 0 {
+			return "", fmt.Errorf("youtube videos returned no items for id=%s", videoID)
+		}
+		channelID := normalizeYouTubeChannelIDIdentity(payload.Items[0].Snippet.ChannelID)
+		if channelID == "" {
+			return "", fmt.Errorf("youtube videos returned empty channel id for id=%s", videoID)
+		}
+		return channelID, nil
+	}
+
+	path := strings.Trim(strings.TrimSpace(parsed.Path), "/")
+	if strings.HasPrefix(path, "@") {
+		handle := normalizeYouTubeHandleIdentity(strings.TrimPrefix(strings.Split(path, "/")[0], "@"))
+		if handle == "" {
+			return "", fmt.Errorf("invalid youtube handle in source identity")
+		}
+		var payload struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		}
+		q := url.Values{}
+		q.Set("part", "id")
+		q.Set("forHandle", handle)
+		if err := doRequest(base+"/channels", q, &payload); err != nil {
+			return "", err
+		}
+		if len(payload.Items) == 0 {
+			return "", fmt.Errorf("youtube channels returned no items for handle=%s", handle)
+		}
+		channelID := normalizeYouTubeChannelIDIdentity(payload.Items[0].ID)
+		if channelID == "" {
+			return "", fmt.Errorf("youtube channels returned invalid channel id for handle=%s", handle)
+		}
+		return channelID, nil
+	}
+
+	return "", fmt.Errorf("unsupported youtube source identity")
+}
+
+func buildEmodlOptions(cfg runtimeconfig.Config) (emodl.DownloaderOptions, emodlTargets, error) {
+	targets := emodlTargets{
+		twitchLogin:      normalizeTwitchChannelIdentity(cfg.TwitchChannel),
+		youTubeSourceURL: normalizeYouTubeSourceIdentity(cfg.YouTubeSourceURL),
+	}
+	options := emodl.DownloaderOptions{}
+	var errs []error
+
+	if targets.twitchLogin != "" {
+		id, err := resolveTwitchBroadcasterIDByLogin(targets.twitchLogin)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("twitch broadcaster id resolve failed (channel=%s): %w", targets.twitchLogin, err))
+		} else {
+			targets.twitchBroadcasterID = id
+		}
+	}
+
+	if targets.youTubeSourceURL != "" {
+		id, err := resolveYouTubeChannelIDBySource(targets.youTubeSourceURL)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("youtube channel id resolve failed (source=%s): %w", targets.youTubeSourceURL, err))
+		} else {
+			targets.youTubeChannelID = id
+		}
+	}
+
+	// emodl only accepts one platform-scoped ID per provider in a single load.
+	// Prefer Twitch for the primary scoped pass; YouTube is loaded in a second pass when present.
+	if targets.twitchBroadcasterID != "" {
+		options.SevenTV = &emodl.SevenTVOptions{Platform: "twitch", PlatformID: targets.twitchBroadcasterID}
+		options.BTTV = &emodl.BTTVOptions{Platform: "twitch", PlatformID: targets.twitchBroadcasterID}
+		options.FFZ = &emodl.FFZOptions{Platform: "twitch", PlatformID: targets.twitchBroadcasterID}
+	} else if targets.youTubeChannelID != "" {
+		options.SevenTV = &emodl.SevenTVOptions{Platform: "youtube", PlatformID: targets.youTubeChannelID}
+		options.BTTV = &emodl.BTTVOptions{Platform: "youtube", PlatformID: targets.youTubeChannelID}
+		options.FFZ = &emodl.FFZOptions{Platform: "youtube", PlatformID: targets.youTubeChannelID}
+	}
+
+	if len(errs) > 0 {
+		return options, targets, errors.Join(errs...)
+	}
+	return options, targets, nil
+}
+
+func loadEmoteCache(options emodl.DownloaderOptions) (map[string]Emote, error) {
+	downloader := emodl.NewDownloader(options)
+	emoteCacheTmp, err := downloader.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]Emote, len(emoteCacheTmp))
+	for name, emote := range emoteCacheTmp {
+		next := Emote{
+			ID:        emote.ID,
+			Name:      emote.Name,
+			Locations: emote.Locations,
+			Images:    []Image{},
+		}
+		if len(emote.Images) > 0 {
+			next.Images = append(next.Images, Image(emote.Images[0]))
+		}
+		out[name] = next
+	}
+	return out, nil
+}
+
+func reloadThirdPartyEmotes(cfg runtimeconfig.Config) error {
+	options, targets, buildErr := buildEmodlOptions(cfg)
+	if buildErr != nil {
+		log.Printf("emodl: target resolution warning: %v", buildErr)
+	}
+
+	log.Printf(
+		"emodl: reload targets twitch_login=%q twitch_id=%q youtube_source=%q youtube_channel_id=%q",
+		targets.twitchLogin,
+		targets.twitchBroadcasterID,
+		targets.youTubeSourceURL,
+		targets.youTubeChannelID,
+	)
+
+	next, err := loadEmoteCache(options)
+	if err != nil {
+		return fmt.Errorf("failed to load third party emotes: %w", err)
+	}
+
+	if targets.twitchBroadcasterID != "" && targets.youTubeChannelID != "" {
+		ytOptions := emodl.DownloaderOptions{
+			SevenTV: &emodl.SevenTVOptions{Platform: "youtube", PlatformID: targets.youTubeChannelID},
+			BTTV:    &emodl.BTTVOptions{Platform: "youtube", PlatformID: targets.youTubeChannelID},
+			FFZ:     &emodl.FFZOptions{Platform: "youtube", PlatformID: targets.youTubeChannelID},
+		}
+		ytCache, ytErr := loadEmoteCache(ytOptions)
+		if ytErr != nil {
+			log.Printf("emodl: youtube scoped load warning (channel_id=%s): %v", targets.youTubeChannelID, ytErr)
+		} else {
+			for name, emote := range ytCache {
+				next[name] = emote
+			}
+		}
+	}
+
+	replaceEmoteCache(next)
+	log.Printf("emodl: cache size = %d", len(next))
+	return nil
 }
 
 func (b *Badge) UnmarshalJSON(data []byte) error {
@@ -2260,6 +2538,7 @@ func InitRoutes(store storage.Store) {
 	subscribersMu.Unlock()
 
 	initRuntimeConfig(store)
+	RegisterThirdPartyEmoteReloader(reloadThirdPartyEmotes)
 
 	// Initialize tokenizer
 	tokenizer.TextEffectSep = ':'
@@ -2272,41 +2551,9 @@ func InitRoutes(store storage.Store) {
 		HelpResetDuration: 10 * time.Second,
 	}
 
-	// Load third party emotes
-	downloader := emodl.NewDownloader(emodl.DownloaderOptions{
-		// TEMP: (Dayoman ID hard coded)
-		SevenTV: &emodl.SevenTVOptions{
-			Platform:   "twitch",
-			PlatformID: "39226538",
-		},
-		BTTV: &emodl.BTTVOptions{
-			Platform:   "twitch",
-			PlatformID: "39226538",
-		},
-		FFZ: &emodl.FFZOptions{
-			Platform:   "twitch",
-			PlatformID: "39226538",
-		},
-	})
-	emoteCacheTmp, err := downloader.Load()
-	if err != nil {
-		log.Printf("emodl: Failed to load third party emotes: %v", err)
+	if err := reloadThirdPartyEmotes(currentRuntimeConfig()); err != nil {
+		log.Printf("emodl: failed to load third party emotes: %v", err)
 	}
-	tokenizer.EmoteCache = make(map[string]Emote, len(emoteCacheTmp))
-	for name, emote := range emoteCacheTmp {
-		tokenizer.EmoteCache[name] = Emote{
-			ID:        emote.ID,
-			Name:      emote.Name,
-			Locations: emote.Locations,
-			Images:    []Image{Image(emote.Images[0])},
-		}
-	}
-	log.Printf("emodl: cache size = %d", len(tokenizer.EmoteCache))
-	// DEBUG
-	// log.Println("3P EMOTES SUPPORTED")
-	// for _, e := range tokenizer.EmoteCache {
-	// 	log.Println(e.Name)
-	// }
 }
 
 func maybeExportStoredTwitchToken(store storage.Store) {
@@ -2398,14 +2645,7 @@ func enrichTailerMessage(m storage.Message) Message {
 		msg.Emotes = []Emote{}
 	}
 
-	if tokenizer.EmoteCache == nil {
-		tokenizer.EmoteCache = make(map[string]Emote)
-	}
-	for _, e := range msg.Emotes {
-		if e.Name != "" {
-			tokenizer.EmoteCache[e.Name] = e
-		}
-	}
+	upsertEmoteCache(msg.Emotes)
 
 	if parsed, raw := parseStoredBadges(m.BadgesJSON); parsed != nil || raw != nil {
 		if msg.Badges == nil || len(msg.Badges) == 0 {
@@ -2435,16 +2675,12 @@ func enrichTailerMessage(m storage.Message) Message {
 		if strings.EqualFold(m.Platform, "twitch") && len(msg.Emotes) == 0 {
 			if dec := decodeTwitchSpans(m.Text, m.EmotesJSON); len(dec) > 0 {
 				// Seed tokenizer cache by NAME so tokenization emits emote fragments.
-				for _, e := range dec {
-					if strings.TrimSpace(e.Name) != "" {
-						tokenizer.EmoteCache[e.Name] = e
-					}
-				}
+				upsertEmoteCache(dec)
 				msg.Emotes = append(msg.Emotes, dec...)
 			}
 		}
 
-		for token := range tokenizer.Iter(msg.Message) {
+		for token := range tokenizerSnapshot().Iter(msg.Message) {
 			msg.Tokens = append(msg.Tokens, token)
 		}
 	}

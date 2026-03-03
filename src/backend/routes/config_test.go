@@ -41,6 +41,7 @@ func resetRuntimeConfigForTest(t *testing.T) {
 		overrideWSEnvelope = nil
 		overrideWSDropEmpty = nil
 		RegisterTailerConfigApplier(nil)
+		RegisterThirdPartyEmoteReloader(nil)
 	})
 }
 
@@ -570,6 +571,83 @@ func TestPutConfigNoopAllowsEmptyOptionalSources(t *testing.T) {
 	}
 	if updated.Changed {
 		t.Fatalf("expected changed=false for no-op put")
+	}
+}
+
+func TestPutConfigReloadsThirdPartyEmotesOnSourceChange(t *testing.T) {
+	resetRuntimeConfigForTest(t)
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	InitRoutes(chatStore)
+	router := newConfigRouter()
+
+	var reloadCalls atomic.Int32
+	RegisterThirdPartyEmoteReloader(func(runtimeconfig.Config) error {
+		reloadCalls.Add(1)
+		return nil
+	})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d body=%s", getRR.Code, getRR.Body.String())
+	}
+
+	var current configAPIResponse
+	if err := json.Unmarshal(getRR.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current config: %v", err)
+	}
+	current.Config.TwitchChannel = "dagnel"
+	body, _ := json.Marshal(current.Config)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := reloadCalls.Load(); got != 1 {
+		t.Fatalf("expected one emote reload call, got %d", got)
+	}
+}
+
+func TestPutConfigNoopDoesNotReloadThirdPartyEmotes(t *testing.T) {
+	resetRuntimeConfigForTest(t)
+	cleanup := withSQLiteStore(t)
+	defer cleanup()
+
+	InitRoutes(chatStore)
+	router := newConfigRouter()
+
+	var reloadCalls atomic.Int32
+	RegisterThirdPartyEmoteReloader(func(runtimeconfig.Config) error {
+		reloadCalls.Add(1)
+		return nil
+	})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d body=%s", getRR.Code, getRR.Body.String())
+	}
+
+	var current configAPIResponse
+	if err := json.Unmarshal(getRR.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current config: %v", err)
+	}
+	body, _ := json.Marshal(current.Config)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := reloadCalls.Load(); got != 0 {
+		t.Fatalf("expected no emote reload for no-op put, got %d", got)
 	}
 }
 

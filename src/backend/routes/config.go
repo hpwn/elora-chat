@@ -40,8 +40,9 @@ var runtimeState = struct {
 }
 
 var runtimeHooks = struct {
-	mu          sync.RWMutex
-	applyTailer func(runtimeconfig.TailerConfig) error
+	mu                   sync.RWMutex
+	applyTailer          func(runtimeconfig.TailerConfig) error
+	applyThirdPartyEmote func(runtimeconfig.Config) error
 }{}
 
 // RegisterTailerConfigApplier sets a hot-apply hook for runtime tailer updates.
@@ -51,9 +52,26 @@ func RegisterTailerConfigApplier(fn func(runtimeconfig.TailerConfig) error) {
 	runtimeHooks.applyTailer = fn
 }
 
+// RegisterThirdPartyEmoteReloader sets the hot-apply hook for channel-aware emote cache reloads.
+func RegisterThirdPartyEmoteReloader(fn func(runtimeconfig.Config) error) {
+	runtimeHooks.mu.Lock()
+	defer runtimeHooks.mu.Unlock()
+	runtimeHooks.applyThirdPartyEmote = fn
+}
+
 func applyTailerConfig(cfg runtimeconfig.TailerConfig) error {
 	runtimeHooks.mu.RLock()
 	fn := runtimeHooks.applyTailer
+	runtimeHooks.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(cfg)
+}
+
+func applyThirdPartyEmoteReload(cfg runtimeconfig.Config) error {
+	runtimeHooks.mu.RLock()
+	fn := runtimeHooks.applyThirdPartyEmote
 	runtimeHooks.mu.RUnlock()
 	if fn == nil {
 		return nil
@@ -272,6 +290,17 @@ func handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	runtimeState.mu.Lock()
 	runtimeState.current = normalized
 	runtimeState.mu.Unlock()
+
+	if previous.TwitchChannel != normalized.TwitchChannel || previous.YouTubeSourceURL != normalized.YouTubeSourceURL {
+		if err := applyThirdPartyEmoteReload(normalized); err != nil {
+			log.Printf(
+				"config: third-party emote reload warning twitch_channel=%q youtube_source=%q err=%v",
+				normalized.TwitchChannel,
+				normalized.YouTubeSourceURL,
+				err,
+			)
+		}
+	}
 
 	syncGnastyConfigBestEffort(normalized, "put")
 

@@ -113,6 +113,20 @@ Notes:
 - For troubleshooting seed failures, prefer `curl -i` (instead of `-fsS`) to keep response status/body visible.
 - `devctl ws` runs websocat + filter directly and does not rely on `make ws*`.
 
+### Docker Compose plugin troubleshooting
+
+If `docker compose ps` crashes (for example with a compose-go/jsonschema segfault) during local development:
+
+1. Verify service status via Docker Engine directly:
+   ```bash
+   docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "elora|gnasty"
+   ```
+2. Verify app readiness independently of compose status output:
+   ```bash
+   make health
+   ```
+3. Continue logs/build/restart with the existing `devctl` commands while upgrading Docker Engine/Compose plugin on the host.
+
 All of the commands read configuration from `.env`, so update that file (or export overrides) before running them.
 
 ### Which mode am I in?
