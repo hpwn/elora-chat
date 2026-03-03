@@ -551,6 +551,96 @@ func TestGetTwitchHelixAppTokenRefreshesNearExpiry(t *testing.T) {
 	}
 }
 
+func TestResolveYouTubeChannelIDBySourceDirectID(t *testing.T) {
+	got, err := resolveYouTubeChannelIDBySource("UCmbSGFM9OU8FwjxZCevr6zw")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "UCmbSGFM9OU8FwjxZCevr6zw" {
+		t.Fatalf("unexpected channel id %q", got)
+	}
+}
+
+func TestResolveYouTubeChannelIDBySourceHandle(t *testing.T) {
+	t.Setenv("YOUTUBE_API_KEY", "test-key")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/channels" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("forHandle"); got != "ludwig" {
+			t.Fatalf("expected forHandle=ludwig, got %q", got)
+		}
+		if got := r.URL.Query().Get("key"); got != "test-key" {
+			t.Fatalf("expected key=test-key, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"UCmbSGFM9OU8FwjxZCevr6zw"}]}`))
+	}))
+	defer server.Close()
+
+	oldBase := youtubeDataAPIBaseURL
+	oldClient := youtubeDataHTTPClient
+	youtubeDataAPIBaseURL = server.URL
+	youtubeDataHTTPClient = server.Client()
+	t.Cleanup(func() {
+		youtubeDataAPIBaseURL = oldBase
+		youtubeDataHTTPClient = oldClient
+	})
+
+	got, err := resolveYouTubeChannelIDBySource("https://www.youtube.com/@ludwig/live")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "UCmbSGFM9OU8FwjxZCevr6zw" {
+		t.Fatalf("unexpected channel id %q", got)
+	}
+}
+
+func TestResolveYouTubeChannelIDBySourceVideo(t *testing.T) {
+	t.Setenv("YOUTUBE_API_KEY", "test-key")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/videos" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("id"); got != "abcdefghijk" {
+			t.Fatalf("expected id=abcdefghijk, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"snippet":{"channelId":"UCmbSGFM9OU8FwjxZCevr6zw"}}]}`))
+	}))
+	defer server.Close()
+
+	oldBase := youtubeDataAPIBaseURL
+	oldClient := youtubeDataHTTPClient
+	youtubeDataAPIBaseURL = server.URL
+	youtubeDataHTTPClient = server.Client()
+	t.Cleanup(func() {
+		youtubeDataAPIBaseURL = oldBase
+		youtubeDataHTTPClient = oldClient
+	})
+
+	got, err := resolveYouTubeChannelIDBySource("https://www.youtube.com/watch?v=abcdefghijk")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "UCmbSGFM9OU8FwjxZCevr6zw" {
+		t.Fatalf("unexpected channel id %q", got)
+	}
+}
+
+func TestResolveYouTubeChannelIDBySourceMissingAPIKey(t *testing.T) {
+	t.Setenv("YOUTUBE_API_KEY", "")
+	_, err := resolveYouTubeChannelIDBySource("https://www.youtube.com/watch?v=abcdefghijk")
+	if err == nil {
+		t.Fatalf("expected missing key error")
+	}
+	if !strings.Contains(err.Error(), "YOUTUBE_API_KEY") {
+		t.Fatalf("expected YOUTUBE_API_KEY error, got %v", err)
+	}
+}
+
 func TestMessagePayloadFromStorageEnrichesTwitchSubscriberViaSourceChannelFallback(t *testing.T) {
 	const (
 		testClientID     = "test-client-id"
