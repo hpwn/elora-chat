@@ -3141,7 +3141,7 @@ func SetupChatRoutes(router *mux.Router) {
 	protectedRoutes.HandleFunc("/restart-server", StopChatFetches).Methods("POST")
 }
 
-// decodeTwitchSpans converts Twitch first-party span strings (e.g. "425618:12-14")
+// decodeTwitchSpans converts Twitch first-party span strings (e.g. "425618:12-14,16-20")
 // into Emote entries with a 1x image URL. It is ASCII-safe and bounds-checked.
 func decodeTwitchSpans(text string, spansJSON string) []Emote {
 	if strings.TrimSpace(spansJSON) == "" {
@@ -3155,45 +3155,63 @@ func decodeTwitchSpans(text string, spansJSON string) []Emote {
 	out := make([]Emote, 0, len(raw))
 	// NOTE: we index by bytes; Twitch spans for common ASCII emotes (e.g., "LUL") align with byte boundaries.
 	for _, s := range raw {
-		parts := strings.SplitN(s, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		id := strings.TrimSpace(parts[0])
-		rng := parts[1]
-		bounds := strings.SplitN(rng, "-", 2)
-		if len(bounds) != 2 {
-			continue
-		}
-		start, err1 := strconv.Atoi(bounds[0])
-		end, err2 := strconv.Atoi(bounds[1])
-		if err1 != nil || err2 != nil || start < 0 || end < start {
-			continue
-		}
-		if start >= len(text) {
-			continue
-		}
-		if end >= len(text) {
-			end = len(text) - 1
-		}
-		name := text[start : end+1]
-		if strings.TrimSpace(name) == "" {
-			continue
-		}
+		entries := strings.Split(s, "/")
+		for _, entry := range entries {
+			parts := strings.SplitN(strings.TrimSpace(entry), ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			id := strings.TrimSpace(parts[0])
+			if id == "" {
+				continue
+			}
 
-		// Build a single 1x image (28px nominal) for first-party Twitch emotes.
-		img := Image{
-			ID:     id + "-1x",
-			URL:    "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/1.0",
-			Width:  28,
-			Height: 28,
+			locationParts := strings.Split(parts[1], ",")
+			locations := make([]string, 0, len(locationParts))
+			name := ""
+			for _, loc := range locationParts {
+				bounds := strings.SplitN(strings.TrimSpace(loc), "-", 2)
+				if len(bounds) != 2 {
+					continue
+				}
+				start, err1 := strconv.Atoi(strings.TrimSpace(bounds[0]))
+				end, err2 := strconv.Atoi(strings.TrimSpace(bounds[1]))
+				if err1 != nil || err2 != nil || start < 0 || end < start {
+					continue
+				}
+				if start >= len(text) {
+					continue
+				}
+				if end >= len(text) {
+					end = len(text) - 1
+				}
+				locName := text[start : end+1]
+				if strings.TrimSpace(locName) == "" {
+					continue
+				}
+				if name == "" {
+					name = locName
+				}
+				locations = append(locations, strconv.Itoa(start)+"-"+strconv.Itoa(end))
+			}
+			if name == "" || len(locations) == 0 {
+				continue
+			}
+
+			// Build a single 1x image (28px nominal) for first-party Twitch emotes.
+			img := Image{
+				ID:     id + "-1x",
+				URL:    "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/default/dark/1.0",
+				Width:  28,
+				Height: 28,
+			}
+			out = append(out, Emote{
+				ID:        id,
+				Name:      name,
+				Locations: locations,
+				Images:    []Image{img},
+			})
 		}
-		out = append(out, Emote{
-			ID:        id,
-			Name:      name,
-			Locations: []string{bounds[0] + "-" + bounds[1]},
-			Images:    []Image{img},
-		})
 	}
 	return out
 }
