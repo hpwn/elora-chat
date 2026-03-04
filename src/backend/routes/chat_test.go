@@ -1122,6 +1122,57 @@ func TestBroadcastFromTailerYouTubeEmoteFragments(t *testing.T) {
 	}
 }
 
+func TestBroadcastFromTailerTwitchFirstPartyRepeatedEmoteFragments(t *testing.T) {
+	tokenizer.TextEffectSep = ':'
+	tokenizer.TextCommandPrefix = '!'
+	tokenizer.EmoteCache = make(map[string]Emote)
+
+	subscribersMu.Lock()
+	subscribers = nil
+	subscribersMu.Unlock()
+
+	ch := addSubscriber()
+	defer removeSubscriber(ch)
+
+	BroadcastFromTailer(storage.Message{
+		Username:   "TWUser",
+		Platform:   "Twitch",
+		Text:       "Kappa Kappa",
+		EmotesJSON: `["25:0-4,6-10"]`,
+	})
+
+	select {
+	case payload := <-ch:
+		sanitized, err := sanitizeMessagePayload(payload)
+		if err != nil {
+			t.Fatalf("sanitizeMessagePayload returned error: %v", err)
+		}
+
+		var msg Message
+		if err := json.Unmarshal(sanitized, &msg); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+
+		emoteCount := 0
+		for _, token := range msg.Tokens {
+			if token.Type == TokenTypeEmote {
+				emoteCount++
+				if token.Emote.ID != "25" {
+					t.Fatalf("expected emote id 25, got %q", token.Emote.ID)
+				}
+				if len(token.Emote.Images) == 0 || token.Emote.Images[0].URL == "" {
+					t.Fatalf("expected emote images to be populated, got %#v", token.Emote.Images)
+				}
+			}
+		}
+		if emoteCount != 2 {
+			t.Fatalf("expected 2 emote fragments, got %d", emoteCount)
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
+	}
+}
+
 func TestMessagePayloadFromStorageIncludesTwitchSourceChannel(t *testing.T) {
 	payload, err := messagePayloadFromStorage(storage.Message{
 		Username: "tester",
