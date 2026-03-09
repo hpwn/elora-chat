@@ -10,11 +10,12 @@ ACTION="deploy"
 
 usage() {
   cat <<'EOF'
-Usage: ./deploy/update.sh --target <dayo|test|edge> [--action <deploy|status|logs>] [--no-git]
+Usage: ./deploy/update.sh --target <dayo|test|dylan|edge> [--action <deploy|status|logs>] [--no-git]
 
 Targets:
   dayo  Update dayo.hayden.it.com app stack (elora-chat + gnasty-harvester)
   test  Update elora.hayden.it.com app stack (elora-chat + gnasty-harvester)
+  dylan Update dylan.hayden.it.com app stack (elora-chat + gnasty-harvester)
   edge  Update shared Caddy edge router stack
 
 Flags:
@@ -61,6 +62,12 @@ case "${TARGET}" in
   test)
     ENV_FILE="deploy/.env.prod.test"
     APP_HOST="elora.hayden.it.com"
+    COMPOSE_ARGS=(-f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file "${ENV_FILE}")
+    SERVICES=(elora-chat gnasty-harvester)
+    ;;
+  dylan)
+    ENV_FILE="deploy/.env.prod.dylan"
+    APP_HOST="dylan.hayden.it.com"
     COMPOSE_ARGS=(-f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file "${ENV_FILE}")
     SERVICES=(elora-chat gnasty-harvester)
     ;;
