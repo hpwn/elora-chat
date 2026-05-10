@@ -2,27 +2,32 @@
 
 ![Elora](https://static.wikia.nocookie.net/spyro/images/a/a6/Elora_PS1.jpg/revision/latest?cb=20180824195930)
 
-## Description 📝
+Real-time multi-platform chat overlay for Twitch, YouTube, and Kick. Three active production deployments serving Twitch Partners and Affiliates, with peak concurrent load around 500-600 connections across platforms.
 
-elora-chat is a versatile chat application designed to unify the streaming experience across multiple platforms. It aims to simplify the chat and alert management for streamers like [Dayoman](https://www.twitch.tv/dayoman) who juggle various services and bots during their streams.
+**Stack:** Go - SvelteKit - WebSockets - SQLite - Docker - Tailscale/Headscale
+
+---
+
+## What it does
+
+elora-chat unifies live chat from Twitch, YouTube, and Kick into a single real-time overlay. It replaces the patchwork of bots and platform-specific widgets that most streamers deal with, and gives each client their own hosted deployment with a stable URL they can drop directly into OBS.
+
+The backend is written in Go and handles WebSocket fan-out, token management, and SQLite persistence. The frontend is SvelteKit. Chat ingestion runs through [gnasty-chat](https://github.com/hpwn/gnasty), a companion service that scrapes platform chat and writes into a shared SQLite volume that the Elora tailer broadcasts live to connected clients.
+
+Features:
+- Unified real-time chat from Twitch, YouTube, and Kick in one overlay
+- Per-client deployments with isolated configs, each accessible via their own URL
+- Runtime config management via `/api/config` - no restart needed for channel changes
+- Chat history export (NDJSON or CSV) with time-range filtering
+- Twitch OAuth with automated gnasty token handoff
+- Environment-driven config, Docker Compose stack, shared volume architecture
+- Self-hosted Tailscale control plane (Headscale) for secure mesh networking between deployment nodes
 
 Automation contributors should review [AGENTS.md](AGENTS.md) for pull request and branching conventions used across this workspace.
 
-## Why? 🤔
+## Origin
 
-On 1/22/24, [Dayoman](https://twitch.tv/dayoman) expressed the need for a streamlined solution to manage chats and alerts during his streams. He wished to move away from unreliable bots and desired a human touch to his alert systems. Our motivation is to enhance audience interaction and provide a seamless viewing experience across platforms, setting a new standard for multi-stream chats.
-
-elora-chat aims to:
-
-- Reduce the reliance on multiple bots and services.
-
-- Offer a single, human-supported chat system for multiple streaming platforms.
-
-- Enhance the chat experience, ensuring contributions are seen, heard, and appreciated.
-
-- Drive audience engagement, encouraging viewers to participate actively on their preferred networks.
-
-Inspired by pioneers like DougDoug, elora-chat aspires to revolutionize chat interaction while adhering to platform terms of service, ensuring a future-proof solution.
+On 1/22/24, [Dayoman](https://twitch.tv/dayoman) - a Twitch Partner running simultaneous Twitch, YouTube, and Kick streams - needed a way to manage all three chats without juggling a stack of unreliable bots. elora-chat was built to solve that. It's been in active production use since then, with additional streamer clients added over time.
 
 ## Quick Start ➡️
 
@@ -367,11 +372,6 @@ This project is licensed under the **Business Source License 1.1 (BUSL-1.1)**.
 - On April 25, 2028, the license will convert to Apache 2.0 automatically.
 
 See [LICENSE](./LICENSE) and [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) for more details.
-
-## Global CSS Policy
-- Use `src/frontend/src/app.css` only for reset + `:root` tokens (fonts/colors/shared sizes).
-- All layout/visual rules must live in component `.svelte` files (scoped).
-- Import remains via `+layout.svelte` global style import.
 
 ### Ingestion driver
 
