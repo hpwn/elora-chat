@@ -4,7 +4,7 @@
 
 Real-time multi-platform chat overlay for Twitch, YouTube, and Kick. Three active production deployments serving Twitch Partners and Affiliates, with peak concurrent load around 500-600 connections across platforms.
 
-**Stack:** Go - SvelteKit - WebSockets - SQLite - Docker - Tailscale/Headscale
+**Stack:** Go - SvelteKit - WebSockets - SQLite - Docker
 
 ---
 
